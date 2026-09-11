@@ -1175,6 +1175,44 @@ is a local demonstration system and the README says so in those words.
 Seed per run, recorded in the ground-truth log. The plant is fully reproducible. The model
 is not, which is why evaluation reports rates.
 
+### 10.7 Toolchain and container conventions
+
+**Python: `uv`, everywhere, for both the interpreter and the dependencies.** It replaces
+pyenv, pip and venv with one tool, and it is what makes a container build reproducible
+rather than merely repeatable.
+
+- The Python version is pinned in `.python-version` and `requires-python`, and **uv
+  provisions the interpreter itself** — the base image does not dictate it. Default 3.13;
+  confirm `asyncua` supports it during M1 rather than assuming.
+- `uv.lock` is committed. Builds run `uv sync --frozen`, so a build that *would* change
+  the lockfile fails instead of silently drifting.
+- The uv binary is copied from its official pinned image, never fetched by a script at
+  build time: `COPY --from=ghcr.io/astral-sh/uv:<pinned> /uv /uvx /bin/`.
+- Dockerfiles are layered for caching: copy `pyproject.toml` and `uv.lock`, run
+  `uv sync --frozen --no-install-project`, *then* copy source. Dependencies survive every
+  source edit. Container env: `UV_COMPILE_BYTECODE=1`, `UV_LINK_MODE=copy`.
+- Multi-stage: build with uv, run from a slim image carrying only the resolved
+  environment.
+
+**Two workspaces, one per stack — not one at the repository root.** `plant/` and
+`diagnostics/` each own a uv workspace with their services as members. §10.1 claims the
+two stacks share no code; a single root lockfile would make that false at build time, and
+it would mean bumping a dependency in the agent service could move a version underneath
+the simulator. The duplication between the two lockfiles is the correct cost — the plant
+has no business caring what the diagnostics stack resolves. `harness/` is a third,
+independent project: it is the referee and belongs to neither.
+
+**The same discipline for the other two languages**, so the convention is uniform rather
+than a Python exception:
+
+| | Pinned by | Locked by |
+|---|---|---|
+| Python | `.python-version`, `requires-python` | `uv.lock`, `uv sync --frozen` |
+| .NET | `global.json` | `packages.lock.json`, restore with `--locked-mode` |
+| Node | `.nvmrc`, `engines`, pnpm via corepack | `pnpm-lock.yaml`, `--frozen-lockfile` |
+
+Every base image is pinned by digest, not by tag.
+
 ---
 
 ## 11. Technology choices
@@ -1192,6 +1230,7 @@ is not, which is why evaluation reports rates.
 | Identity provider | Zitadel (OIDC, brokering upstream), reusing the same Postgres |
 | Diagnostics UI | TypeScript, React + Vite |
 | Harness | Python |
+| Python toolchain | `uv` — interpreter and dependencies, one workspace per stack (§10.7) |
 | Deployment | Docker Compose ×2, external `field-net` |
 
 **Why this split.** OPC UA's reference implementation lives in .NET and the edge gateway is
