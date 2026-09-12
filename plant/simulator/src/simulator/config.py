@@ -53,12 +53,30 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # line
     takt_seconds: float = 6.0
     seed: int = 20260912
+    # Additive Gaussian jitter on the takt written to TaktTime, ~0.8 % of a 6 s takt.
+    # Not §3.5's noise model (that arrives in M2) -- this exists so TaktTime is
+    # historised at all: asyncua's monitored-item filter drops a notification
+    # whenever the written value is unchanged, and a bare constant takt (M1, with no
+    # noise model yet) means only the very first write is ever historised. See
+    # station_s3._next_takt.
+    takt_jitter_sigma: float = 0.05
+
+    # catch-up pacing -- asyncua's own per-monitored-item notification queue caps at
+    # 10,000 and silently discards the oldest entry past that, so generate_history
+    # must give the ~10 ms publish loop a chance to drain before any one stream's
+    # backlog gets there. 500 parts is comfortably under the cap even though every
+    # part now writes a distinct TaktTime (see takt_jitter_sigma); 0.05 s matches
+    # what was measured to drain a batch that size. See
+    # station_s3.generate_history.
+    catchup_batch_size: int = 500
+    catchup_batch_pause_seconds: float = 0.05
 
     # inspection — M1's reject rate is a measurement knob for R4, not §3.5's
     # 1.5 % noise floor, which arrives with the noise model in M2.
     reject_rate: float = 0.05
     image_width: int = 640
     image_height: int = 480
+    model_version: str = "simulated-1"
 
     # boundary
     endpoint_url: str = "opc.tcp://line-simulator:4840/plant"
