@@ -94,6 +94,27 @@ public sealed class PostgresWriterTests : IAsyncLifetime
         Assert.Equal(image, (byte[]?)await command.ExecuteScalarAsync());
     }
 
+    [Fact]
+    public async Task RepeatedWritesDoNotAdvanceTheStationSequence()
+    {
+        // ON CONFLICT DO UPDATE evaluates nextval even when the row already exists, so the
+        // station id sequence advanced once per record. SMALLSERIAL stops at 32,767 and every
+        // write then failed — reached in a single 18 h backfill against a one-row table.
+        for (var i = 0; i < 200; i++)
+        {
+            await _writer.WriteBatchAsync([SampleDataChange("TaktTime", Instant.AddSeconds(i), 6.0)]);
+        }
+
+        Assert.Equal(1, await CountAsync("stations"));
+
+        await using var connection = new NpgsqlConnection(_postgres.GetConnectionString());
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand("SELECT last_value FROM stations_id_seq", connection);
+        Assert.True(
+            Convert.ToInt64(await command.ExecuteScalarAsync()) <= 2,
+            "the station id sequence advanced per record");
+    }
+
     private static IngestRecord SampleDataChange(string signal, DateTime ts, double value) => new(
         Kind: "datachange", NodeId: "ns=2;i=7", SourceTs: ts, ServerTs: ts, StatusCode: 0,
         PayloadJson: $$"""{"Station":"S3","Signal":"{{signal}}","Value":{{value}}}""",

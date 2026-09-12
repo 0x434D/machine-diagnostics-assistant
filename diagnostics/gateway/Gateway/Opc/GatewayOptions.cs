@@ -46,6 +46,32 @@ public sealed record GatewayOptions
     public int DrainBatchSize { get; init; } = 200;
     public int DrainIdleMs { get; init; } = 250;
     public int DrainRetryMs { get; init; } = 2_000;
+
+    /// <summary>
+    /// One backfill window. At a 6 s takt this is 600 values per signal — sixteen times under
+    /// the 10,000 ceiling F1 measured, so a window can never silently truncate.
+    /// </summary>
+    public TimeSpan BackfillWindow { get; init; } = TimeSpan.FromHours(1);
+    public int HistoryPageSize { get; init; } = 1_000;
+
+    /// <summary>
+    /// The event stream needs its own, far smaller page because its rows carry images.
+    /// R4 measured a reject image at up to 110,486 B, so a worst-case page of 25 all-reject
+    /// events is ~2.7 MB against the 4 MiB response limit. At the plan's shared page size of
+    /// 1,000 the response exceeds that limit and the read fails as BadEncodingLimitsExceeded
+    /// — measured against the live plant, not predicted.
+    /// </summary>
+    public int HistoryEventPageSize { get; init; } = 25;
+
+    /// <summary>
+    /// The floor for subdividing an event window. At a 6 s takt a 30 s window holds ~5 parts,
+    /// well under any page size, so reaching this floor means something other than volume is
+    /// wrong and the run should fail rather than lose rows quietly.
+    /// </summary>
+    public TimeSpan MinimumBackfillWindow { get; init; } = TimeSpan.FromSeconds(30);
+
+    /// <summary>How far back to reach on a first boot, when storage holds nothing.</summary>
+    public TimeSpan HistoryDepth { get; init; } = TimeSpan.FromHours(18);
     public int PublishingIntervalMs { get; init; } = 250;
     public int SamplingIntervalMs { get; init; } = 250;
     public uint QueueSize { get; init; } = 100;
@@ -97,6 +123,7 @@ public sealed record GatewayOptions
             QueuePath = Read(environment, "GATEWAY_QUEUE_PATH", DefaultQueuePath),
             PostgresConnectionString = Read(environment, "GATEWAY_POSTGRES", ""),
             DrainBatchSize = ReadInt(environment, "GATEWAY_DRAIN_BATCH_SIZE", 200),
+            HistoryEventPageSize = ReadInt(environment, "GATEWAY_HISTORY_EVENT_PAGE_SIZE", 25),
             MaxByteStringLength = ReadInt(
                 environment, "GATEWAY_MAX_BYTE_STRING_LENGTH", DefaultMaxByteStringLength),
             MaxMessageSize = ReadInt(

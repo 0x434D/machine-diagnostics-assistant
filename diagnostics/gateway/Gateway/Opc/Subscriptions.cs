@@ -103,7 +103,7 @@ public sealed class Subscriptions
         return subscription;
     }
 
-    private static EventFilter BuildInspectionFilter()
+    public static EventFilter BuildInspectionFilter()
     {
         var select = new SimpleAttributeOperandCollection();
         foreach (var field in InspectionEventFields)
@@ -119,22 +119,14 @@ public sealed class Subscriptions
         return new EventFilter { SelectClauses = select };
     }
 
-    private void OnDataChange(MonitoredItem item, MonitoredItemNotificationEventArgs e)
+    /// <summary>
+    /// One decoder for a variable sample, used by the live subscription and by the history
+    /// backfill. Two decoders would be two chances to disagree about the payload shape the
+    /// writer depends on.
+    /// </summary>
+    public static IngestRecord ToDataChangeRecord(string signal, string nodeId, DataValue value)
     {
-        if (e.NotificationValue is not MonitoredItemNotification notification)
-        {
-            return;
-        }
-
-        // §4.4: the server sets the overflow bit when it dropped notifications.
-        // DiscardOldest=false replaces the NEWEST value — it is not a lossless setting.
-        // Losslessness comes from an adequate queue plus a fast publishing interval, with
-        // this bit as the honest detector when that fails. Persisting the gap as a row is
-        // Task 9's, once there is a table to put it in.
-        if (notification.Value.StatusCode.Overflow)
-        {
-            OverflowCount++;
-        }
+        ArgumentNullException.ThrowIfNull(value);
 
         // Shape is the contract with PostgresWriter: station, signal, and a numeric value,
         // because signals.value is DOUBLE PRECISION and a stringified number would land as
@@ -142,26 +134,24 @@ public sealed class Subscriptions
         var payload = JsonSerializer.Serialize(new Dictionary<string, object?>(StringComparer.Ordinal)
         {
             ["Station"] = AddressSpace.StationCode,
-            ["Signal"] = item.DisplayName,
-            ["Value"] = Convert.ToDouble(notification.Value.Value, CultureInfo.InvariantCulture),
+            ["Signal"] = signal,
+            ["Value"] = Convert.ToDouble(value.Value, CultureInfo.InvariantCulture),
         });
 
-        _ = _onRecord(new IngestRecord(
+        return new IngestRecord(
             Kind: "datachange",
-            NodeId: item.StartNodeId.ToString(),
-            SourceTs: notification.Value.SourceTimestamp,
-            ServerTs: notification.Value.ServerTimestamp,
-            StatusCode: notification.Value.StatusCode.Code,
+            NodeId: nodeId,
+            SourceTs: value.SourceTimestamp,
+            ServerTs: value.ServerTimestamp,
+            StatusCode: value.StatusCode.Code,
             PayloadJson: payload,
-            ImageBytes: null));
+            ImageBytes: null);
     }
 
-    private void OnEvent(MonitoredItem item, MonitoredItemNotificationEventArgs e)
+    /// <summary>One decoder for an inspection event, shared for the same reason.</summary>
+    public static IngestRecord ToEventRecord(string nodeId, IList<Variant> fields)
     {
-        if (e.NotificationValue is not EventFieldList fields)
-        {
-            return;
-        }
+        ArgumentNullException.ThrowIfNull(fields);
 
         byte[]? image = null;
         var payload = new Dictionary<string, object?>(StringComparer.Ordinal)
@@ -170,10 +160,10 @@ public sealed class Subscriptions
         };
         var sourceTs = DateTime.UtcNow;
 
-        for (var i = 0; i < InspectionEventFields.Length && i < fields.EventFields.Count; i++)
+        for (var i = 0; i < InspectionEventFields.Length && i < fields.Count; i++)
         {
             var name = InspectionEventFields[i];
-            var value = fields.EventFields[i].Value;
+            var value = fields[i].Value;
 
             if (name == ImageField)
             {
@@ -195,13 +185,49 @@ public sealed class Subscriptions
                 : Convert.ToString(value, CultureInfo.InvariantCulture);
         }
 
-        _ = _onRecord(new IngestRecord(
+        return new IngestRecord(
             Kind: "event",
-            NodeId: item.StartNodeId.ToString(),
+            NodeId: nodeId,
             SourceTs: sourceTs,
             ServerTs: DateTime.UtcNow,
             StatusCode: 0,
             PayloadJson: JsonSerializer.Serialize(payload),
-            ImageBytes: image));
+            ImageBytes: image);
+    }
+
+    private void OnDataChange(MonitoredItem item, MonitoredItemNotificationEventArgs e)
+    {
+        if (e.NotificationValue is not MonitoredItemNotification notification)
+        {
+            return;
+        }
+
+        // §4.4: the server sets the overflow bit when it dropped notifications.
+        // DiscardOldest=false replaces the NEWEST value — it is not a lossless setting.
+        // Losslessness comes from an adequate queue plus a fast publishing interval, with
+        // this bit as the honest detector when that fails. Persisting the gap as a row is
+        // Task 9's, once there is a table to put it in.
+        // §4.4: the server sets the overflow bit when it dropped notifications.
+        // DiscardOldest=false replaces the NEWEST value — it is not a lossless setting.
+        // Losslessness comes from an adequate queue plus a fast publishing interval, with
+        // this bit as the honest detector when that fails. Persisting the gap as a row is
+        // Task 10's, once backfill can close it.
+        if (notification.Value.StatusCode.Overflow)
+        {
+            OverflowCount++;
+        }
+
+        _ = _onRecord(ToDataChangeRecord(
+            item.DisplayName, item.StartNodeId.ToString(), notification.Value));
+    }
+
+    private void OnEvent(MonitoredItem item, MonitoredItemNotificationEventArgs e)
+    {
+        if (e.NotificationValue is not EventFieldList fields)
+        {
+            return;
+        }
+
+        _ = _onRecord(ToEventRecord(item.StartNodeId.ToString(), fields.EventFields));
     }
 }

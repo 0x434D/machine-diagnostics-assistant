@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Reflection;
 using System.Text.Json;
 using Npgsql;
@@ -16,6 +17,11 @@ public sealed class PostgresWriter
 
     private readonly string _connectionString;
 
+    // One station in M1 and four in M2, resolved once each. Without this the lookup runs per
+    // record, which is both a round trip per row and — with the ON CONFLICT DO UPDATE this
+    // replaced — a sequence value burned per row.
+    private readonly ConcurrentDictionary<string, short> _stationIds = new(StringComparer.Ordinal);
+
     public PostgresWriter(string connectionString) => _connectionString = connectionString;
 
     public static async Task ApplySchemaAsync(
@@ -25,6 +31,21 @@ public sealed class PostgresWriter
         await connection.OpenAsync(ct).ConfigureAwait(false);
         await using var command = new NpgsqlCommand(ReadMigration(), connection);
         await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Where this gateway's own storage ends, or null if it holds nothing. §4.3: backfill
+    /// closes exactly the gap it has — after first boot, after a crash, after an outage.
+    /// One mechanism, three situations.
+    /// </summary>
+    public async Task<DateTime?> LastStoredSourceTimestampAsync(CancellationToken ct = default)
+    {
+        await using var connection = new NpgsqlConnection(_connectionString);
+        await connection.OpenAsync(ct).ConfigureAwait(false);
+        await using var command = new NpgsqlCommand(
+            "SELECT max(source_ts) FROM raw_events", connection);
+        var value = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        return value is DateTime stored ? stored : null;
     }
 
     /// <returns>Rows affected across every table this batch touched.</returns>
@@ -86,17 +107,42 @@ public sealed class PostgresWriter
     /// Stations are discovered, not configured (§4.1). Task 11 fills name, function and
     /// position by browsing; until then a station is known by the code its signals carry.
     /// </summary>
-    private static async Task<short> EnsureStationAsync(
+    private async Task<short> EnsureStationAsync(
+        NpgsqlConnection connection, string code, CancellationToken ct)
+    {
+        if (_stationIds.TryGetValue(code, out var cached))
+        {
+            return cached;
+        }
+
+        // Selected before inserting, and ON CONFLICT DO NOTHING rather than DO UPDATE.
+        // DO UPDATE evaluates nextval even when the row already exists, so the id sequence
+        // advances once per record — measured: 55,956 records exhausted SMALLSERIAL's 32,767
+        // range on a table holding one row, and every write then failed.
+        var id = await SelectStationIdAsync(connection, code, ct).ConfigureAwait(false);
+        if (id is null)
+        {
+            await using var insert = new NpgsqlCommand(
+                "INSERT INTO stations (code, name) VALUES ($1, $1) ON CONFLICT (code) DO NOTHING",
+                connection);
+            insert.Parameters.AddWithValue(code);
+            await insert.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+
+            id = await SelectStationIdAsync(connection, code, ct).ConfigureAwait(false)
+                ?? throw new InvalidOperationException($"station {code} vanished after insert");
+        }
+
+        _stationIds[code] = id.Value;
+        return id.Value;
+    }
+
+    private static async Task<short?> SelectStationIdAsync(
         NpgsqlConnection connection, string code, CancellationToken ct)
     {
         await using var command = new NpgsqlCommand(
-            """
-            INSERT INTO stations (code, name) VALUES ($1, $1)
-            ON CONFLICT (code) DO UPDATE SET code = EXCLUDED.code
-            RETURNING id
-            """, connection);
+            "SELECT id FROM stations WHERE code = $1", connection);
         command.Parameters.AddWithValue(code);
-        return (short)(await command.ExecuteScalarAsync(ct).ConfigureAwait(false))!;
+        return await command.ExecuteScalarAsync(ct).ConfigureAwait(false) is short id ? id : null;
     }
 
     private static async Task<int> UpsertSignalAsync(

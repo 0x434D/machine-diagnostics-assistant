@@ -17,12 +17,15 @@ var logger = app.Logger;
 var queue = await LocalQueue.OpenAsync(options.QueuePath).ConfigureAwait(false);
 
 QueueDrain? drain = null;
+HistoryBackfill? backfill = null;
+PostgresWriter? writer = null;
 if (!string.IsNullOrWhiteSpace(options.PostgresConnectionString))
 {
     await PostgresWriter.ApplySchemaAsync(options.PostgresConnectionString).ConfigureAwait(false);
+    writer = new PostgresWriter(options.PostgresConnectionString);
     drain = new QueueDrain(
         queue,
-        new PostgresWriter(options.PostgresConnectionString),
+        writer,
         options,
         app.Services.GetRequiredService<ILoggerFactory>().CreateLogger<QueueDrain>());
 }
@@ -39,7 +42,7 @@ StatusEndpoint.Map(app, async () => new GatewayStatus(
     State: state,
     LastEventSourceTs: lastEventSourceTs,
     QueueDepth: await queue.DepthAsync().ConfigureAwait(false),
-    BackfillProgress: 0.0,
+    BackfillProgress: backfill?.Progress ?? 0.0,
     OverflowCount: subscriptions?.OverflowCount ?? 0,
     RowsWritten: drain?.RowsWritten ?? 0,
     HistoryAvailableFrom: null));
@@ -51,7 +54,7 @@ var ingest = Task.Run(
         var session = await connection.ConnectAsync(stopping).ConfigureAwait(false);
         var space = await AddressSpace.ResolveAsync(session, stopping).ConfigureAwait(false);
 
-        subscriptions = new Subscriptions(options, async record =>
+        async Task EnqueueAsync(IngestRecord record)
         {
             if (record.Kind == "event")
             {
@@ -59,14 +62,28 @@ var ingest = Task.Run(
             }
 
             await queue.EnqueueAsync(record).ConfigureAwait(false);
-        });
+        }
 
+        // Drains while backfill runs, or 18 h of history would sit in the local queue waiting
+        // for a subscription that has not started yet.
+        var draining = drain is null ? Task.CompletedTask : drain.RunAsync(stopping);
+
+        // §4.3: HistoryRead for the past, subscriptions for live, and backfill first — a
+        // subscription opened before the plant finishes catching up delivers its history
+        // through the live path at ~100 events/second, which is the thing §4.3 exists to
+        // avoid. Backfill closes exactly the gap this gateway has.
+        backfill = new HistoryBackfill(session, space, EnqueueAsync, options);
+        var to = DateTime.UtcNow;
+        var from = (writer is null
+            ? null
+            : await writer.LastStoredSourceTimestampAsync(stopping).ConfigureAwait(false))
+            ?? to - options.HistoryDepth;
+        await backfill.RunAsync(from, to, stopping).ConfigureAwait(false);
+
+        subscriptions = new Subscriptions(options, EnqueueAsync);
         await subscriptions.StartAsync(session, space, stopping).ConfigureAwait(false);
 
-        if (drain is not null)
-        {
-            await drain.RunAsync(stopping).ConfigureAwait(false);
-        }
+        await draining.ConfigureAwait(false);
     },
     stopping);
 
