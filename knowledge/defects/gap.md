@@ -1,0 +1,55 @@
+---
+id: gap
+title: gap — the two components are not fully seated
+applies_to:
+  defect_classes: [gap]
+  question_types: [quality_investigation, knowledge]
+---
+
+# `gap`
+
+The two components have not come fully together. A dimensional defect: there is a measurable
+distance where there should be none.
+
+## First check: gauge a pulled part
+
+Take a rejected assembly off the line and **measure the gap**. Before anything else, before
+any trend.
+
+This does two things. It confirms the defect is real rather than a classifier artefact, and
+it gives a magnitude to reason with — a gap you can barely gauge and a gap you can see across
+the shop floor are not the same problem and do not have the same cause.
+
+## Then: what does the evidence point at
+
+`gap` has (at least) two causes on this line and **the symptom does not choose between them**:
+
+| | Press problem | Material problem |
+|---|---|---|
+| Joining force | drifts | stable |
+| Joining distance | moves with the force | moves while force holds |
+| Defects track | time | **the component lot** |
+| Alarm | A-207 likely | none — nothing is out of tolerance |
+
+So the second check is: **did the joining force actually move?**
+
+- Force drifting, `gap` following → the press. DP-01, the scenario-3 shape.
+- Force stable, `gap` rising → **material**. DP-05. Go to the lot.
+
+Do not stop at the force trend looking normal and conclude "no cause found". A stable force
+during a `gap` rise is not an absence of evidence; it is the evidence.
+
+## The limit you must state
+
+Peak force and joining distance are two scalars. The **force–distance curve** is what actually
+separates a press problem from a material one, and the curve is not recorded (see S2). Lot
+correlation is the strongest discriminator available here, and where the scalars and the lot
+evidence disagree, the lot evidence wins.
+
+## What it is not
+
+- Not `misalignment`. `gap` is components not fully together; `misalignment` is components
+  together in the wrong position. They can co-occur and they have different causes.
+- Not automatically a press fault, however much the press is the obvious suspect.
+
+See also: S2, A-207, A-201, DP-01, DP-05, SOP-02.
