@@ -135,6 +135,13 @@ lint-python: lock-check
 	  && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini .
 	cd diagnostics && uv run --frozen ruff format --check . && uv run --frozen ruff check . \
 	  && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini .
+# measurements/ is not a package and sits outside both workspaces, so neither line above
+# reaches it -- while gate.yml's path filter does list measurements/**, which made CI run a
+# check that never looked at the file that changed. Its runners execute inside the plant
+# workspace, so they are checked with the plant's interpreter and dependencies.
+	cd plant && uv run --frozen ruff format --check $(CURDIR)/measurements \
+	  && uv run --frozen ruff check $(CURDIR)/measurements \
+	  && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini $(CURDIR)/measurements
 
 test-python: lock-check
 	$(call pytest-package,plant,simulator)
