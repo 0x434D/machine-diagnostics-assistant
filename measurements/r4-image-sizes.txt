@@ -72,3 +72,56 @@ against simulator.render.render_part:
 A later task uses img_p99 (110,419 bytes at this configuration) as the base of R4's
 ceiling search (the brief names Task 14 for this; the Task 5 assignment names Task 9 --
 flagged as a numbering discrepancy to resolve, not silently picked one way).
+
+R4 Step 5 -- the ceiling itself (measurements/r4-ceiling.py, full ladder and detail in
+measurements/r4-ceiling.json)
+
+Doubling ladder from img_p99, scaling PLANT_IMAGE_WIDTH/HEIGHT to hit each target size
+(§10.3), each rung a real reject event sent over a real OPC UA subscription (a bare
+asyncua Server and Client, not the production Sign-only boundary and not the real C#
+gateway -- see the script's module docstring for exactly what that does and does not
+cover):
+
+  multiple    resolution   actual bytes   delivered
+       1x      320x240        110,101       yes
+       2x      453x339        219,260       yes
+       4x      640x480        436,744       yes
+       8x      905x679        872,306       yes
+      16x     1280x960      1,741,578       yes
+      32x     1810x1358     3,480,517       yes
+      64x     2560x1920     6,949,377       yes
+     128x     3620x2715    13,890,454       yes
+     256x     5120x3840    27,766,637       yes
+     512x     7241x5431    55,512,304       yes
+    1024x    10240x7680   110,950,943       NO -- BadRequestTooLarge
+
+R4's pass condition (ceiling >= 4 x img_p99, i.e. >= 441,676 B) is satisfied with three
+orders of magnitude to spare -- the 4x rung alone (436,744 B) already clears it.
+
+The ceiling itself sits between 512x (55.5 MiB, delivered) and 1024x (105.8 MiB,
+rejected): asyncua's client raises BadRequestTooLarge once an incoming message's chunk
+count exceeds TransportLimits.max_chunk_count (1601 by default, i.e. up to ~1601 x
+65,535 B chunks, ~100.02 MiB of body). Confirmed by reading asyncua 2.0.1's own source
+(asyncua.common.connection.SecureConnection._receive), not inferred from the failure
+alone: neither of the two named limits in §4.4/§12 is what actually fires here --
+MaxByteStringLength is not enforced anywhere in asyncua's binary ByteString codec, and
+the byte-size check against MaxMessageSize (TransportLimits.is_msg_size_within_limit)
+exists but is never called by anything in the installed version. The failure is
+real and reproducible; the specific mechanism producing it is a chunk-count guard on
+the receiving side, not a direct byte-count comparison against either spec-named limit.
+
+Server-side ceiling only, and only a generic asyncua Python client's default, not the
+real gateway's: the plant's own address space and event generator raised no objection
+at any rung, including the failing one -- it is asyncua's own default receive-side
+guard that fires, on a bare, unsecured client standing in for the eventual C#/
+UA-.NETStandard gateway, which is a different stack with its own TransportQuotas
+defaults. These numbers are the reference point for configuring that generously
+(GatewayOptions), not a measurement of the gateway itself.
+
+Four figures for the gateway session's GatewayOptions:
+  img_p99          = 110,419 B  (320x240, seed=20260912, this file's earlier measurement)
+  failing size      = 110,950,943 B (~105.8 MiB) at 10240x7680 (1024x)
+  StatusCode        = BadRequestTooLarge
+  producing limit   = asyncua TransportLimits.max_chunk_count (default 1601 chunks x
+                       65,535 B), enforced client-side in SecureConnection._receive --
+                       not MaxByteStringLength, not a MaxMessageSize byte check

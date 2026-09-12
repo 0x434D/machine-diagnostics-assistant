@@ -1,0 +1,127 @@
+{
+  "img_p99_reference": "measurements/r4-image-sizes.txt (110419 B at 320x240, seed=20260912)",
+  "pass_condition": "ceiling >= 4 * img_p99",
+  "rungs": [
+    {
+      "multiple": 1,
+      "width": 320,
+      "height": 240,
+      "actual_bytes": 110101,
+      "delivered": true,
+      "elapsed_seconds": 1.0,
+      "status_code": null,
+      "limit": null,
+      "detail": ""
+    },
+    {
+      "multiple": 2,
+      "width": 453,
+      "height": 339,
+      "actual_bytes": 219260,
+      "delivered": true,
+      "elapsed_seconds": 1.0,
+      "status_code": null,
+      "limit": null,
+      "detail": ""
+    },
+    {
+      "multiple": 4,
+      "width": 640,
+      "height": 480,
+      "actual_bytes": 436744,
+      "delivered": true,
+      "elapsed_seconds": 1.0,
+      "status_code": null,
+      "limit": null,
+      "detail": ""
+    },
+    {
+      "multiple": 8,
+      "width": 905,
+      "height": 679,
+      "actual_bytes": 872306,
+      "delivered": true,
+      "elapsed_seconds": 1.0,
+      "status_code": null,
+      "limit": null,
+      "detail": ""
+    },
+    {
+      "multiple": 16,
+      "width": 1280,
+      "height": 960,
+      "actual_bytes": 1741578,
+      "delivered": true,
+      "elapsed_seconds": 1.0,
+      "status_code": null,
+      "limit": null,
+      "detail": ""
+    },
+    {
+      "multiple": 32,
+      "width": 1810,
+      "height": 1358,
+      "actual_bytes": 3480517,
+      "delivered": true,
+      "elapsed_seconds": 1.0,
+      "status_code": null,
+      "limit": null,
+      "detail": ""
+    },
+    {
+      "multiple": 64,
+      "width": 2560,
+      "height": 1920,
+      "actual_bytes": 6949377,
+      "delivered": true,
+      "elapsed_seconds": 1.0,
+      "status_code": null,
+      "limit": null,
+      "detail": ""
+    },
+    {
+      "multiple": 128,
+      "width": 3620,
+      "height": 2715,
+      "actual_bytes": 13890454,
+      "delivered": true,
+      "elapsed_seconds": 1.0,
+      "status_code": null,
+      "limit": null,
+      "detail": ""
+    },
+    {
+      "multiple": 256,
+      "width": 5120,
+      "height": 3840,
+      "actual_bytes": 27766637,
+      "delivered": true,
+      "elapsed_seconds": 1.0,
+      "status_code": null,
+      "limit": null,
+      "detail": ""
+    },
+    {
+      "multiple": 512,
+      "width": 7241,
+      "height": 5431,
+      "actual_bytes": 55512304,
+      "delivered": true,
+      "elapsed_seconds": 1.0,
+      "status_code": null,
+      "limit": null,
+      "detail": ""
+    },
+    {
+      "multiple": 1024,
+      "width": 10240,
+      "height": 7680,
+      "actual_bytes": 110950943,
+      "delivered": false,
+      "elapsed_seconds": 23.02,
+      "status_code": "BadRequestTooLarge",
+      "limit": "asyncua TransportLimits.max_chunk_count (client-side, default 1601 x 65535 B chunks)",
+      "detail": "TimeoutError: "
+    }
+  ]
+}
