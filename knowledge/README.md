@@ -17,7 +17,34 @@ file without one.
 | `stations/` | what each station does, and its failure modes | 4 |
 | `alarms/` | one per alarm code, with documented checks | 11 |
 | `defects/` | one per defect class | 6 |
-| `patterns/` | pattern → hypothesis → checks to run | 10 |
+| `patterns/` | pattern → hypothesis → checks to run | 11 |
+
+§6.2 sizes `patterns/` at 8–10. There are 11, because auditing the tree against the
+evaluation case classes in §8.1 found the **contradiction** class with no document behind it —
+only mentions in an SOP and in `core/`. DP-11 fills it. One document over a guide figure is a
+smaller failure than a case class the knowledge base cannot carry.
+
+## Coverage against §8.1
+
+Every evaluation case class has a document responsible for it. Kept current when either side
+changes:
+
+| Case class | Carried by |
+|---|---|
+| Root cause | SOP-01, DP-07, DP-08, CORE-01 |
+| Negative | DP-10, CORE-02 |
+| Coverage | CORE-01, CORE-02 (always loaded) |
+| Hypothesis labelling | CORE-02 |
+| Micro-stop | SOP-01, A-900, DP-09 |
+| Ambiguity, and its mirror | CORE-01 |
+| Contradiction | DP-11, CORE-02, SOP-01 |
+| Out of scope | SOP-06 |
+| Traceability | SOP-04 |
+| Containment | SOP-04, A-103 |
+| Lot vs. single part | DP-06, DP-05 |
+| Misleading symptom | DP-05, DP-01 |
+| Statistics and charts | SOP-05 |
+| Citation integrity | CORE-02 |
 
 ## Front-matter
 

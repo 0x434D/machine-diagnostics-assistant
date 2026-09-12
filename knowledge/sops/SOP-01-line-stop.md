@@ -59,5 +59,12 @@ answered the wrong question.
 An operator acknowledging an alarm, resetting a station or restarting mid-stop changes the
 state timeline in ways the mechanical chain follows faithfully and misleadingly. If the
 timeline shows an intervention between the consequence and the apparent root, check whether
-the chain is following the intervention rather than the fault. This is the documented case
-for contradicting the computation (CORE-02).
+the chain is following the intervention rather than the fault. **DP-11 carries the checks**,
+and this is the documented case for contradicting the computation (CORE-02).
+
+## Duration is not one number
+
+Split it when reporting: how long before the alarm was acknowledged, and how long the recovery
+then took. A stop whose length is dominated by the wait for someone to arrive is a finding
+about response, not about the machine, and saying "S2 was down for 24 minutes" hides which of
+the two it was. DP-11 covers this.

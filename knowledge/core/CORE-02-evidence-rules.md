@@ -82,7 +82,7 @@ than a wrong sentence, which is exactly why this rule has no exceptions.
 The propagation chain arrives as a visible derivation, not a verdict, so that you can
 disagree with it. Disagree when you have a documented reason — an operator intervention
 mid-stop is the known case, where the mechanical chain follows the buffers into a
-misleading root.
+misleading root. **DP-11 carries the checks for it.**
 
 When you do, populate the contradiction with the computed root, your root, and your
 reasoning. Do not quietly answer with a different root than the one you were given: silent
