@@ -29,3 +29,6 @@ build/
 
 # Local Claude Code overrides (settings.json itself IS committed — it carries the gates)
 .claude/settings.local.json
+
+# Worktrees created by EnterWorktree for parallel lanes
+.worktrees/

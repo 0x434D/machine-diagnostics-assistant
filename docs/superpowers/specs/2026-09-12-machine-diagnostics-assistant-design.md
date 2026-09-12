@@ -1239,17 +1239,17 @@ the suite, `make check` is lint plus test.
 |---|---|---|---|
 | Python | `ruff format`, `ruff check` | `mypy --strict` | `pytest` |
 | C# | `dotnet format --verify-no-changes` | `Nullable=enable`, `TreatWarningsAsErrors=true`, `AnalysisMode=All` | `xunit` |
-| TypeScript | `biome check` | `tsc --noEmit`, `strict: true` | `vitest` |
+| TypeScript | `oxlint check` | `tsc --noEmit`, `strict: true` | `vitest` |
 
 One tool per job per language, chosen for speed and for having no configuration argument:
-`ruff` replaces black, isort and flake8; `biome` replaces eslint and prettier. The C# column
+`ruff` replaces black, isort and flake8; `oxlint` replaces eslint and prettier. The C# column
 costs nothing at all — it is three properties in the csproj, and nullable reference types
 plus warnings-as-errors is the highest-value quality lever .NET offers.
 
 Rules:
 
 - **Warnings are errors.** A gate that can be ignored is not a gate.
-- **No blanket suppressions.** `# type: ignore`, `# noqa`, `biome-ignore` and
+- **No blanket suppressions.** `# type: ignore`, `# noqa`, `oxlint-ignore` and
   `#pragma warning disable` each require a specific rule code and a comment giving the
   reason. Never file-wide, never bare.
 - **New code is typed.** No untyped signatures in Python, no `any` in TypeScript, nullable
@@ -1266,7 +1266,7 @@ Conventional-commit prefixes, one commit per completed plan step, never one per 
 never one per session.
 
 Frontend tooling is revisitable at M6, when the UI stops being a chat box and React-specific
-lint rules may argue for eslint over biome.
+lint rules may argue for eslint over oxlint.
 
 ---
 

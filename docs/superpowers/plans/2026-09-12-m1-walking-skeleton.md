@@ -51,9 +51,9 @@ Every task's requirements implicitly include this section. Values are copied ver
   place, `make lint` checks without changing.
 - Python: `ruff format`, `ruff check`, `mypy --strict`. C#: `dotnet format
   --verify-no-changes`, plus `Nullable=enable`, `TreatWarningsAsErrors=true`,
-  `AnalysisMode=All`. TypeScript: `biome check`, `tsc --noEmit` with `strict`.
+  `AnalysisMode=All`. TypeScript: `oxlint check`, `tsc --noEmit` with `strict`.
 - Warnings are errors. No blanket suppressions — every `# type: ignore`, `# noqa`,
-  `biome-ignore` or `#pragma warning disable` carries a specific rule code and a reason.
+  `oxlint-ignore` or `#pragma warning disable` carries a specific rule code and a reason.
 - New code is typed: no untyped signatures in Python, no `any` in TypeScript.
 - **Every task ends with `make check` green, then its commit.** A commit asserts the gates
   passed. Never `--no-verify`.
@@ -444,7 +444,7 @@ The layering here is copied by every Python service in every later milestone. Ge
 - Consumes: nothing.
 - Produces: two uv workspaces whose members build with `uv sync --locked --package <name>`; a `Dockerfile` per stack taking `--build-arg PACKAGE=<member>`; `make` targets `preflight`, `fmt`, `lint`, `test`, `check`, `verify`, `lock-check`; the §10.8 quality-gate configuration that every later task's commit asserts.
 
-- [ ] **Step 1: Write the failing toolchain test**
+- [x] **Step 1: Write the failing toolchain test**
 
 This is the spec's own open question from §10.7 ("confirm `asyncua` supports it during M1 rather than assuming"), turned into a test.
 
@@ -487,12 +487,12 @@ def test_plant_workspace_does_not_reach_into_diagnostics() -> None:
     assert (ROOT.parent / "diagnostics" / "uv.lock").exists()
 ```
 
-- [ ] **Step 2: Run it to watch it fail**
+- [x] **Step 2: Run it to watch it fail**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_toolchain.py -v`
 Expected: FAIL — the workspace does not exist yet.
 
-- [ ] **Step 3: Create both workspace roots**
+- [x] **Step 3: Create both workspace roots**
 
 ```toml
 # plant/pyproject.toml
@@ -608,12 +608,12 @@ mkdir -p plant/simulator/tests plant/inspection/tests \
 (cd diagnostics && uv lock)
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_toolchain.py -v`
 Expected: PASS, 4 tests. `uv python install` will fetch CPython 3.13 on first run — that is uv provisioning the interpreter, which is §10.7's point.
 
-- [ ] **Step 5: Write the shared Dockerfile**
+- [x] **Step 5: Write the shared Dockerfile**
 
 One per stack, parameterised by workspace member. The interpreter comes from uv, not from the base image, so the base is bare Debian.
 
@@ -668,7 +668,7 @@ USER app
 
 `UV_PROJECT_ENVIRONMENT=/opt/venv` keeps the environment outside `/src`, so step 3's `COPY . .` cannot clobber it. `UV_PYTHON_PREFERENCE=only-managed` forbids falling back to a system interpreter, which is what makes "the base image does not dictate it" true rather than aspirational.
 
-- [ ] **Step 6: Pin the other two toolchains and write the digest script**
+- [x] **Step 6: Pin the other two toolchains and write the digest script**
 
 ```json
 // global.json
@@ -723,7 +723,7 @@ node_modules/
 !*.env.example
 ```
 
-- [ ] **Step 7: Write the Makefile skeleton**
+- [x] **Step 7: Write the Makefile skeleton**
 
 ```makefile
 SHELL := /bin/bash
@@ -790,10 +790,10 @@ The pre-commit hook runs only the fast half — `ruff format --check`, `ruff che
 `dotnet format --verify-no-changes` — so mistakes surface in seconds. `make check` remains
 the full gate.
 
-TypeScript tooling (`biome`, `tsc --noEmit`, `vitest`) lands with the first frontend code in
+TypeScript tooling (`oxlint`, `tsc --noEmit`, `vitest`) lands with the first frontend code in
 Task 14, wired into the same four targets.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 make check
@@ -819,7 +819,7 @@ Pure crypto, testable on its own. Task 6 makes the connection work; this task ma
 - Consumes: Task 1's toolchain.
 - Produces: `pki/<party>/key.pem`, `pki/<party>/cert.der`, `pki/edge-gateway/cert.pfx`, and `pki/trusted/<party>.der` for both parties. `gen_party(party, app_uri, dns_names, ip_addresses, role, out_root) -> None`, idempotent.
 
-- [ ] **Step 1: Write the failing certificate test**
+- [x] **Step 1: Write the failing certificate test**
 
 ```python
 # plant/simulator/tests/test_certificates.py
@@ -913,12 +913,12 @@ def test_regeneration_is_idempotent(pki: Path) -> None:
     assert (pki / "line-simulator" / "cert.der").read_bytes() == before
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_certificates.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'simulator.pki'`.
 
-- [ ] **Step 3: Write the generator**
+- [x] **Step 3: Write the generator**
 
 ```python
 # plant/simulator/src/simulator/pki.py
@@ -1059,12 +1059,12 @@ if __name__ == "__main__":
 
 Both stacks run the same module. Each generates both parties' public material if missing, which is what lets either stack be brought up first.
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_certificates.py -v`
 Expected: PASS, 7 tests.
 
-- [ ] **Step 5: Generate once and inspect by eye**
+- [x] **Step 5: Generate once and inspect by eye**
 
 ```bash
 cd plant && uv run --frozen --package simulator python -m simulator.pki ../pki
@@ -1072,7 +1072,7 @@ openssl x509 -in ../pki/line-simulator/cert.der -inform DER -noout -text | grep 
 ```
 Expected: `URI:urn:machine-agent:plant:line-simulator, DNS:line-simulator, DNS:localhost, IP Address:127.0.0.1`
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add scripts plant/simulator/src/simulator/pki.py plant/simulator/tests/test_certificates.py
@@ -1091,7 +1091,7 @@ git commit -m "feat(pki): multi-SAN application instance certificates with pre-s
 - Consumes: Task 1.
 - Produces: `Phase` (`BOOTING`/`CATCHUP`/`LIVE`), `SimulatedClock(cfg, wall_fn)` with `.now() -> datetime` (UTC-aware), `.phase -> Phase`, `.catchup_duration -> timedelta`; `required_history_depth(at_local) -> timedelta`; `Settings` carrying every §10.3 number.
 
-- [ ] **Step 1: Write the failing clock test**
+- [x] **Step 1: Write the failing clock test**
 
 The third test is the one that matters — it checks the spec's own claim about why 18 h was chosen.
 
@@ -1170,12 +1170,12 @@ def test_the_default_depth_covers_every_boot_time_in_the_year() -> None:
     assert worst <= ClockConfig.DEFAULT_HISTORY_DEPTH
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_clock.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'simulator.clock'`.
 
-- [ ] **Step 3: Write the config**
+- [x] **Step 3: Write the config**
 
 ```python
 # plant/simulator/src/simulator/config.py
@@ -1225,7 +1225,7 @@ class Settings(BaseSettings):
     inspection_url: str = "http://inspection-service:8100"
 ```
 
-- [ ] **Step 4: Write the clock**
+- [x] **Step 4: Write the clock**
 
 ```python
 # plant/simulator/src/simulator/clock.py
@@ -1323,12 +1323,12 @@ def required_history_depth(at_local: datetime) -> timedelta:
     return at_local.astimezone(timezone.utc) - start.astimezone(timezone.utc)
 ```
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [x] **Step 5: Run the test to verify it passes**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_clock.py -v`
 Expected: PASS, 5 tests. Record the value `test_the_default_depth_covers_every_boot_time_in_the_year` computes — it is one of the numbers Task 17 writes into §3.2.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add plant/simulator/src/simulator/clock.py plant/simulator/src/simulator/config.py plant/simulator/tests/test_clock.py
@@ -1357,7 +1357,7 @@ git commit -m "feat(simulator): simulated clock, and the history depth a night-s
   - `Ledger` with `.takt`, `.part_count`, `.events`, `.images` counters
   - `async generate(space, clock, settings, produce, ledger) -> None`
 
-- [ ] **Step 1: Write the failing address-space test**
+- [x] **Step 1: Write the failing address-space test**
 
 ```python
 # plant/simulator/tests/test_address_space.py
@@ -1418,12 +1418,12 @@ async def test_event_type_carries_an_image_field() -> None:
     } <= props
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_address_space.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'simulator.address_space'`.
 
-- [ ] **Step 3: Build the address space**
+- [x] **Step 3: Build the address space**
 
 ```python
 # plant/simulator/src/simulator/address_space.py
@@ -1492,12 +1492,12 @@ async def build_address_space(server: Server, idx: int) -> AddressSpace:
     )
 ```
 
-- [ ] **Step 4: Run the address-space test to verify it passes**
+- [x] **Step 4: Run the address-space test to verify it passes**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_address_space.py -v`
 Expected: PASS, 3 tests.
 
-- [ ] **Step 5: Write the failing generation test**
+- [x] **Step 5: Write the failing generation test**
 
 ```python
 # plant/simulator/tests/test_generation.py
@@ -1575,12 +1575,12 @@ async def test_source_timestamps_are_simulated_not_wall_clock(tmp_path) -> None:
     )
 ```
 
-- [ ] **Step 6: Run it to verify it fails**
+- [x] **Step 6: Run it to verify it fails**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_generation.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'simulator.historian'`.
 
-- [ ] **Step 7: Write the historian wiring**
+- [x] **Step 7: Write the historian wiring**
 
 ```python
 # plant/simulator/src/simulator/historian.py
@@ -1630,7 +1630,7 @@ async def attach_historian(
     return storage
 ```
 
-- [ ] **Step 8: Write the station loop**
+- [x] **Step 8: Write the station loop**
 
 ```python
 # plant/simulator/src/simulator/station_s3.py
@@ -1758,12 +1758,12 @@ async def run_live(
         await asyncio.sleep(settings.takt_seconds)
 ```
 
-- [ ] **Step 9: Run the generation tests to verify they pass**
+- [x] **Step 9: Run the generation tests to verify they pass**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_generation.py -v`
 Expected: PASS, 2 tests.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add plant/simulator/src/simulator plant/simulator/tests

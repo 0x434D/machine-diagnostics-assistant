@@ -141,7 +141,7 @@ test-dotnet:
 check-dotnet: lint-dotnet test-dotnet
 
 lint-frontend:
-	$(call in-ui,pnpm install --frozen-lockfile && pnpm biome check . && pnpm tsc --noEmit)
+	$(call in-ui,pnpm install --frozen-lockfile && pnpm oxlint && pnpm prettier --check . && pnpm tsc --noEmit)
 
 test-frontend:
 	$(call in-ui,pnpm vitest run)
@@ -152,7 +152,7 @@ fmt:
 	cd plant && uv run --frozen ruff format . && uv run --frozen ruff check --fix .
 	cd diagnostics && uv run --frozen ruff format . && uv run --frozen ruff check --fix .
 	$(call in-gateway,dotnet format)
-	$(call in-ui,pnpm biome check --write .)
+	$(call in-ui,pnpm oxlint --fix && pnpm prettier --write .)
 
 lint: lint-python lint-dotnet lint-frontend
 
