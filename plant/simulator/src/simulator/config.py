@@ -12,20 +12,21 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class ClockConfig:
     history_depth: timedelta
     catchup_speed: float
-    live_speed: float = 1.0
 
     # §3.2 assumed the worst boot time was an evening one (~24-25 h back to the last
-    # completed night shift). Measured worst case is a boot between 00:00 and 06:00,
-    # inside a night shift that has not yet reached its own 06:00 end: the last
-    # *completed* night shift is then the one before that, ~31 h back on an ordinary
-    # day, 32 h when that span crosses the autumn DST fall-back (2026-10-25 05:00
-    # Europe/Berlin is the worst hour in 2026). Confirmed by
-    # test_the_default_depth_covers_every_boot_time_in_the_year.
+    # completed night shift). The true supremum is a boot approaching 06:00 itself:
+    # the last *completed* night shift is then the one before that -- the ~24 h day
+    # gap back to it, plus that night's own length, which peaks at 9 h instead of the
+    # usual 8 on the autumn DST Sunday (2026-10-25). 24 h + 9 h = 33 h, approached but
+    # never quite reached as boot -> 06:00 that day. Confirmed by
+    # test_the_default_depth_covers_every_boot_time_in_the_year, which probes each
+    # day's 06:00 boundary rather than an hourly grid (a grid samples every day's
+    # interior and misses the true max, which sits at the reset point).
     #
     # This is a plain class constant, not a dataclass field: no type annotation, so it
     # does not become a constructor parameter (see Settings.history_depth_hours below,
     # which derives its default from this one instead of restating the number).
-    DEFAULT_HISTORY_DEPTH = timedelta(hours=32)
+    DEFAULT_HISTORY_DEPTH = timedelta(hours=33)
 
 
 # pydantic's own metaclass takes `**kwargs: Any` in its __new__, which mypy's strict
@@ -43,7 +44,11 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # ergonomics) cannot drift apart; main() converts this back to a timedelta
     # when it builds a ClockConfig.
     history_depth_hours: float = ClockConfig.DEFAULT_HISTORY_DEPTH / timedelta(hours=1)
-    catchup_speed: float = 600.0
+    # 700x keeps catch-up to ~170 s wall (33 h / 699) for the 33 h depth default,
+    # inside R1's <=180 s budget with the depth floor intact; 600x would need ~198 s
+    # for the same depth. Task 10 measures the real catchup_wall; Task 17 records
+    # what was measured, same as the depth default above.
+    catchup_speed: float = 700.0
 
     # line
     takt_seconds: float = 6.0

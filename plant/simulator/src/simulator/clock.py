@@ -10,12 +10,16 @@ from zoneinfo import ZoneInfo
 from simulator.config import ClockConfig
 
 BERLIN = ZoneInfo("Europe/Berlin")
+
+# A shared semantic definition, not a plant tuning knob: M3's diagnostics-side
+# /time/resolve needs these same 22:00/06:00 values. Keeping them as constants here
+# rather than in Settings avoids two sources of truth for the same shift boundary
+# across the stack split.
 NIGHT_START = time(22, 0)
 NIGHT_END = time(6, 0)
 
 
 class Phase(str, Enum):
-    BOOTING = "booting"
     CATCHUP = "catchup"
     LIVE = "live"
 
@@ -83,7 +87,15 @@ class SimulatedClock:
 
 def last_completed_night_shift(at_local: datetime) -> tuple[datetime, datetime]:
     """The most recent night shift (22:00-06:00 local) that has already ended."""
+    # Correct by construction rather than by coincidence: at_local.date() below reads
+    # a *local* calendar date, and normalising first keeps that right for any input
+    # offset. Without this, the `end > at_local` repair below happens to catch a wrong
+    # date guess, but only for offsets within ~6 h of Berlin's own.
+    at_local = at_local.astimezone(BERLIN)
     end_day = at_local.date()
+    # datetime.combine's default fold=0 would be wrong for a local time inside
+    # Berlin's ambiguous 02:00-03:00 autumn hour; it is safe here only because 06:00
+    # and 22:00 never fall inside that window.
     end = datetime.combine(end_day, NIGHT_END, tzinfo=BERLIN)
     if end > at_local:
         end = datetime.combine(end_day - timedelta(days=1), NIGHT_END, tzinfo=BERLIN)
@@ -97,11 +109,15 @@ def required_history_depth(at_local: datetime) -> timedelta:
 
     §3.2 asserts 18 h suffices. It does for a boot after a night shift's own 06:00
     end. It is worse for an evening boot (last completed night started the previous
-    evening, ~24 h back) and worse still for a boot between 00:00 and 06:00: that
-    hour sits inside a night shift still short of its own 06:00 end, so the last
-    *completed* one is the night before that -- ~31 h back on an ordinary day, and
-    32 h when the span crosses the autumn DST fall-back, which lengthens it by the
-    repeated hour.
+    evening, ~24 h back) and worst of all approaching a boot at 06:00 itself: that
+    instant sits at the far edge of a night shift still (barely) short of its own
+    06:00 end, so the last *completed* one is the night before that -- the ~24 h day
+    gap back to it, plus that whole night's own length. The supremum over a year is
+    24 h + 9 h = 33 h, approached but never quite reached as boot -> 06:00 on the
+    autumn DST Sunday, the one night 9 h long instead of the usual 8. This function
+    is piecewise linear with slope 1 and resets at each local 06:00, so every day's
+    maximum sits at that right-hand boundary, not somewhere an hourly sample would
+    land.
     """
     start, _ = last_completed_night_shift(at_local)
     return at_local.astimezone(UTC) - start.astimezone(UTC)
