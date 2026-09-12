@@ -58,7 +58,7 @@ public sealed class Subscriptions
         {
             StartNodeId = space.TaktNodeId,
             AttributeId = Attributes.Value,
-            DisplayName = "S3.TaktTime",
+            DisplayName = "TaktTime",
             SamplingInterval = _options.SamplingIntervalMs,
             QueueSize = _options.QueueSize,
             DiscardOldest = true,
@@ -78,7 +78,7 @@ public sealed class Subscriptions
         {
             StartNodeId = space.PartCountNodeId,
             AttributeId = Attributes.Value,
-            DisplayName = "S3.PartCount",
+            DisplayName = "PartCount",
             SamplingInterval = _options.SamplingIntervalMs,
             QueueSize = _options.QueueSize,
             DiscardOldest = false,   // prefer failing loudly over dropping a count
@@ -136,10 +136,14 @@ public sealed class Subscriptions
             OverflowCount++;
         }
 
-        var payload = JsonSerializer.Serialize(new Dictionary<string, string?>(StringComparer.Ordinal)
+        // Shape is the contract with PostgresWriter: station, signal, and a numeric value,
+        // because signals.value is DOUBLE PRECISION and a stringified number would land as
+        // text that only fails at insert time.
+        var payload = JsonSerializer.Serialize(new Dictionary<string, object?>(StringComparer.Ordinal)
         {
-            ["DisplayName"] = item.DisplayName,
-            ["Value"] = Convert.ToString(notification.Value.Value, CultureInfo.InvariantCulture),
+            ["Station"] = AddressSpace.StationCode,
+            ["Signal"] = item.DisplayName,
+            ["Value"] = Convert.ToDouble(notification.Value.Value, CultureInfo.InvariantCulture),
         });
 
         _ = _onRecord(new IngestRecord(
@@ -160,7 +164,10 @@ public sealed class Subscriptions
         }
 
         byte[]? image = null;
-        var payload = new Dictionary<string, string?>(StringComparer.Ordinal);
+        var payload = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["Station"] = AddressSpace.StationCode,
+        };
         var sourceTs = DateTime.UtcNow;
 
         for (var i = 0; i < InspectionEventFields.Length && i < fields.EventFields.Count; i++)
@@ -183,7 +190,9 @@ public sealed class Subscriptions
                 sourceTs = time;
             }
 
-            payload[name] = Convert.ToString(value, CultureInfo.InvariantCulture);
+            payload[name] = name == "Confidence" && value is not null
+                ? Convert.ToDouble(value, CultureInfo.InvariantCulture)
+                : Convert.ToString(value, CultureInfo.InvariantCulture);
         }
 
         _ = _onRecord(new IngestRecord(

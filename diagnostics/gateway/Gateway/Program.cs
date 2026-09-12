@@ -15,6 +15,17 @@ var app = builder.Build();
 var logger = app.Logger;
 
 var queue = await LocalQueue.OpenAsync(options.QueuePath).ConfigureAwait(false);
+
+QueueDrain? drain = null;
+if (!string.IsNullOrWhiteSpace(options.PostgresConnectionString))
+{
+    await PostgresWriter.ApplySchemaAsync(options.PostgresConnectionString).ConfigureAwait(false);
+    drain = new QueueDrain(
+        queue,
+        new PostgresWriter(options.PostgresConnectionString),
+        options,
+        app.Services.GetRequiredService<ILoggerFactory>().CreateLogger<QueueDrain>());
+}
 var connection = new UaConnection(options, DefaultTelemetry.Create(l => l.AddConsole()));
 
 var state = "disconnected";
@@ -22,15 +33,15 @@ DateTime? lastEventSourceTs = null;
 Subscriptions? subscriptions = null;
 connection.StateChanged += next => state = next;
 
-// Postgres and backfill arrive in Tasks 9 and 10. Until then these report what is true —
-// no writer means no rows, no backfill means no progress — rather than a plausible number.
+// Backfill arrives in Task 10. Until then BackfillProgress reports what is true — no
+// backfill has run — rather than a plausible number.
 StatusEndpoint.Map(app, async () => new GatewayStatus(
     State: state,
     LastEventSourceTs: lastEventSourceTs,
     QueueDepth: await queue.DepthAsync().ConfigureAwait(false),
     BackfillProgress: 0.0,
     OverflowCount: subscriptions?.OverflowCount ?? 0,
-    RowsWritten: 0,
+    RowsWritten: drain?.RowsWritten ?? 0,
     HistoryAvailableFrom: null));
 
 var stopping = app.Lifetime.ApplicationStopping;
@@ -51,6 +62,11 @@ var ingest = Task.Run(
         });
 
         await subscriptions.StartAsync(session, space, stopping).ConfigureAwait(false);
+
+        if (drain is not null)
+        {
+            await drain.RunAsync(stopping).ConfigureAwait(false);
+        }
     },
     stopping);
 

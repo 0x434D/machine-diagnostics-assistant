@@ -40,6 +40,12 @@ public sealed record GatewayOptions
     public int MaxMessageSize { get; init; } = DefaultMaxMessageSize;
     public int ConnectTimeoutSeconds { get; init; } = DefaultConnectTimeoutSeconds;
     public string QueuePath { get; init; } = DefaultQueuePath;
+
+    /// <summary>Empty until Postgres exists for this deployment; the queue then simply fills.</summary>
+    public string PostgresConnectionString { get; init; } = "";
+    public int DrainBatchSize { get; init; } = 200;
+    public int DrainIdleMs { get; init; } = 250;
+    public int DrainRetryMs { get; init; } = 2_000;
     public int PublishingIntervalMs { get; init; } = 250;
     public int SamplingIntervalMs { get; init; } = 250;
     public uint QueueSize { get; init; } = 100;
@@ -89,6 +95,8 @@ public sealed record GatewayOptions
             RejectedStoreRoot = Read(
                 environment, "GATEWAY_REJECTED_STORE_ROOT", DefaultRejectedStoreRoot),
             QueuePath = Read(environment, "GATEWAY_QUEUE_PATH", DefaultQueuePath),
+            PostgresConnectionString = Read(environment, "GATEWAY_POSTGRES", ""),
+            DrainBatchSize = ReadInt(environment, "GATEWAY_DRAIN_BATCH_SIZE", 200),
             MaxByteStringLength = ReadInt(
                 environment, "GATEWAY_MAX_BYTE_STRING_LENGTH", DefaultMaxByteStringLength),
             MaxMessageSize = ReadInt(

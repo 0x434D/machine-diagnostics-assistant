@@ -10,6 +10,12 @@ namespace Gateway.Opc;
 /// </summary>
 public sealed record AddressSpace(NodeId S3NodeId, NodeId TaktNodeId, NodeId PartCountNodeId)
 {
+    /// <summary>
+    /// The station code the schema keys on. Browse name "S3_Inspection" carries both the code
+    /// and the function; §5.2's stations table wants them apart, and Task 11 fills the rest.
+    /// </summary>
+    public static string StationCode => S3Path[^1].Split('_')[0];
+
     public const string PlantNamespaceUri = "http://machine-agent/plant";
 
     private static readonly string[] S3Path = ["Line", "Stations", "S3_Inspection"];

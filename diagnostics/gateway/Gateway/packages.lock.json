@@ -13,6 +13,12 @@
           "SQLitePCLRaw.core": "2.1.12"
         }
       },
+      "Npgsql": {
+        "type": "Direct",
+        "requested": "[10.0.3, )",
+        "resolved": "10.0.3",
+        "contentHash": "7nb5YzXuvWWJxB0J8DiyL3we+X4FOctZrt0fIBnucOIaIevFEEwGQVZKtiu9olXdlNAK1eNgqSral6r/jlhI4w=="
+      },
       "OPCFoundation.NetStandard.Opc.Ua.Client": {
         "type": "Direct",
         "requested": "[1.5.378.176, )",
