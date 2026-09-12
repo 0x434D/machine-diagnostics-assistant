@@ -19,6 +19,8 @@ node_modules/
 dist/
 bin/
 obj/
+# `make images` / `make sbom` output: OCI tarballs and CycloneDX documents.
+build/
 
 # Tool caches
 .pytest_cache/

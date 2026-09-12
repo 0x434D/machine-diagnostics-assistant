@@ -1,0 +1,97 @@
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+
+  // Renovate, not Dependabot (handbook §6). Dependabot has supported uv since March 2025, but
+  // uv *workspace* support is undocumented on its side and documented on Renovate's — and
+  // this repository has two workspaces. Renovate also maintains Docker digest pins and GitHub
+  // Actions SHA pins, which Dependabot does not.
+  //
+  // Requires the Renovate GitHub App installed on the repository; nothing here runs without it.
+
+  extends: [
+    "config:recommended",
+    // Rewrites `uses: owner/action@v1` to a commit SHA with a version comment, and keeps that
+    // SHA current. Handbook §9 requires the pin; this is what stops it rotting into a
+    // two-year-old action nobody dares touch.
+    "helpers:pinGitHubActionDigests",
+    // Commit messages that pass `make lint-commits` without a special case for the bot.
+    ":semanticCommits",
+  ],
+
+  // The single most important line in this file. Supply-chain worms — Shai-Hulud in 2025,
+  // Mini Shai-Hulud and CHAINDROP in 2026 — publish a compromised version and get it yanked
+  // within hours. A cooldown means we are never the canary. Security advisories bypass it
+  // (see vulnerabilityAlerts below).
+  minimumReleaseAge: "7 days",
+
+  // A dependency change is a change to the gate, and a gate change is worth a paragraph.
+  semanticCommitType: "build",
+
+  packageRules: [
+    {
+      // Everything non-major in one branch, merged without ever opening a pull request, so
+      // routine updates produce zero notifications. `branch` automerge still waits for the
+      // `gate` status check — Renovate will not merge a red branch.
+      matchUpdateTypes: ["minor", "patch", "digest", "pin", "pinDigest"],
+      groupName: "all non-major dependencies",
+      automerge: true,
+      automergeType: "branch",
+    },
+    {
+      // Majors individually, waiting as checkboxes on one dashboard issue rather than as six
+      // open pull requests.
+      matchUpdateTypes: ["major"],
+      automerge: false,
+      dependencyDashboardApproval: true,
+    },
+    {
+      // Handbook §6 marks this **verify**: there are 2026 reports of Renovate bumping
+      // Directory.Packages.props without regenerating the per-project packages.lock.json,
+      // which breaks locked-mode restore — and locked-mode restore is what `make check-dotnet`
+      // runs. Until someone confirms otherwise on this repository, NuGet updates are never
+      // automerged and always land as a reviewed pull request.
+      matchManagers: ["nuget"],
+      automerge: false,
+      dependencyDashboardApproval: true,
+    },
+    {
+      // The pinned tool images and versions live in the Makefile and scripts/, not in a
+      // manifest Renovate understands natively. These regexes are what keep them current;
+      // without them `make lint-actions` would still be running zizmor 1.30 in 2028.
+      matchFileNames: ["Makefile", "scripts/pin-images.sh", "scripts/pin-actions.sh"],
+      groupName: "CI tooling",
+      automerge: false,
+    },
+  ],
+
+  customManagers: [
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^Makefile$/"],
+      // ACTIONLINT := rhysd/actionlint:1.7.12@sha256:...
+      matchStrings: [
+        "(?<depName>[a-z0-9./-]+):(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)@(?<currentDigest>sha256:[a-f0-9]{64})",
+      ],
+      datasourceTemplate: "docker",
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^Makefile$/"],
+      // ZIZMOR := zizmor@1.30.1
+      matchStrings: ["(?<depName>zizmor|committed)@(?<currentValue>[0-9]+\\.[0-9]+\\.[0-9]+)"],
+      datasourceTemplate: "pypi",
+    },
+  ],
+
+  vulnerabilityAlerts: {
+    // The one case where being the canary beats waiting: a published advisory means the
+    // vulnerability is already public, so the cooldown is pure exposure.
+    minimumReleaseAge: null,
+    automerge: false,
+  },
+
+  lockFileMaintenance: {
+    enabled: true,
+    schedule: ["before 5am on monday"],
+  },
+}

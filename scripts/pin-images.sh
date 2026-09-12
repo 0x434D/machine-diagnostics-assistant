@@ -5,12 +5,23 @@
 # currently points at so a pin can be refreshed deliberately rather than drifting.
 set -euo pipefail
 IMAGES=(
+  # Base images (spec §10.7).
   "debian:bookworm-slim"
   "postgres:17-bookworm"
   "node:22-bookworm-slim"
   "ghcr.io/astral-sh/uv:0.11.13"
   "mcr.microsoft.com/dotnet/sdk:10.0"
   "mcr.microsoft.com/dotnet/aspnet:10.0"
+
+  # CI tool images. Not base images, but they execute third-party code inside CI with the
+  # repository checked out, which is the threat model handbook §9 pins actions by SHA for.
+  # Same discipline, same reason. zizmor and committed are not here because they are on PyPI
+  # and run through `uvx <tool>@<version>`, which pins just as hard with no daemon.
+  "rhysd/actionlint:1.7.12"
+  "aquasec/trivy:0.74.0"
+  "trufflesecurity/trufflehog:3.97.4"
+  "moby/buildkit:v0.33.0"
+  "docker/buildkit-syft-scanner:stable-1"
 )
 accept='application/vnd.oci.image.index.v1+json,application/vnd.docker.distribution.manifest.list.v2+json'
 for img in "${IMAGES[@]}"; do

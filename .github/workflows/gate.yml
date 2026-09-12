@@ -1,0 +1,216 @@
+name: gate
+
+# Handbook §9: CI contains no logic. Every step here is `make <target>` and nothing else. The
+# moment one grows an inline `run:` that does real work, CI and local have diverged and spec
+# §10.8's "identical to what CI runs" stops being true. The one exception is the `gate` job at
+# the bottom, whose single `run:` is the aggregation itself.
+#
+# To run this whole pipeline with no remote and no network: `make ci`.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Handbook §9, non-negotiable: least privilege at workflow level. No job here widens it.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Change detection with dorny/paths-filter — not tj-actions/changed-files, which was
+  # compromised in March 2025 and dumped CI secrets into build logs across tens of thousands
+  # of repositories. Remediated, but there is no reason to take the risk.
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      python: ${{ steps.filter.outputs.python }}
+      dotnet: ${{ steps.filter.outputs.dotnet }}
+      frontend: ${{ steps.filter.outputs.frontend }}
+      images: ${{ steps.filter.outputs.images }}
+      actions: ${{ steps.filter.outputs.actions }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        id: filter
+        with:
+          # Filter boundaries follow the repository. `contracts/` appears in python, dotnet
+          # AND frontend deliberately — it generates types for all three, so a change there
+          # must trigger every one of them (handbook §9). `Makefile` likewise: it *is* the
+          # gate, so a change to it re-runs every gate.
+          filters: |
+            python:
+              - 'plant/**'
+              - 'diagnostics/analysis/**'
+              - 'diagnostics/agent/**'
+              - 'diagnostics/pyproject.toml'
+              - 'diagnostics/uv.lock'
+              - 'diagnostics/.python-version'
+              - 'contracts/**'
+              - 'harness/**'
+              - 'knowledge/**'
+              - 'measurements/**'
+              - 'ruff.toml'
+              - 'mypy.ini'
+              - 'Makefile'
+            dotnet:
+              - 'diagnostics/gateway/**'
+              - 'contracts/**'
+              - 'Directory.Build.props'
+              - 'Directory.Packages.props'
+              - 'NuGet.config'
+              - 'global.json'
+              - 'Makefile'
+            frontend:
+              - 'diagnostics/ui/**'
+              - 'plant/hmi/**'
+              - 'contracts/**'
+              - '.nvmrc'
+              - 'Makefile'
+            # Source changes cannot break an image build — the Dockerfile copies whatever is
+            # there. Dependency and Dockerfile changes can. Filtering on those keeps four
+            # image builds off every pull request without letting a broken build reach main.
+            images:
+              - '**/Dockerfile'
+              - '**/.dockerignore'
+              - '**/uv.lock'
+              - '**/pyproject.toml'
+              - 'Makefile'
+            actions:
+              - '.github/**'
+              - 'Makefile'
+
+  python:
+    needs: changes
+    if: needs.changes.outputs.python == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          enable-cache: true
+          # Both lock files: the two workspaces resolve separately and must cache separately.
+          cache-dependency-glob: |
+            plant/uv.lock
+            diagnostics/uv.lock
+      - run: make check-python
+
+  dotnet:
+    needs: changes
+    if: needs.changes.outputs.dotnet == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          global-json-file: global.json
+          # TASK 7: add `cache: true` and
+          # `cache-dependency-path: diagnostics/gateway/**/packages.lock.json` here. Not set
+          # yet because setup-dotnet fails hard on a cache-dependency-path that resolves to
+          # nothing, and the gateway — with its lock files — does not exist until then. The
+          # `make` target below already no-ops with a "skip" line until the same moment.
+      - run: make check-dotnet
+
+  frontend:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Order matters and is the reason this is a separate step: setup-node's `cache: pnpm`
+      # resolves the store path by *running* pnpm, so pnpm must already be installed.
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          # TASK 14: delete this and let the action read `packageManager` from the UI's
+          # package.json instead — specifying both is an error. Pinned explicitly for now
+          # because there is no package.json in the repository yet.
+          version: 11.1.3
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          # TASK 14: add `cache: pnpm` and
+          # `cache-dependency-path: diagnostics/ui/pnpm-lock.yaml`. Same reason as dotnet.
+      - run: make check-frontend
+
+  actions:
+    needs: changes
+    if: needs.changes.outputs.actions == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - run: make lint-actions
+
+  commits:
+    # Pull requests only. On a push to main the range is already merged, and `committed` would
+    # be reporting on history nobody can fix without a rewrite.
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # `committed` walks a commit range; a shallow clone has nothing to walk.
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      - run: make lint-commits
+        env:
+          COMMIT_RANGE: ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
+
+  images:
+    needs: changes
+    if: needs.changes.outputs.images == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # No docker/setup-buildx-action here on purpose: `make images` creates and pins its own
+      # docker-container builder, because it needs one on a laptop too. Pushing that into the
+      # workflow would make the runner able to build images the way a developer cannot.
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            plant/uv.lock
+            diagnostics/uv.lock
+      - run: make sbom
+      - run: make scan-images
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        # Keep the SBOM even when the scan fails — a failing scan is exactly when someone
+        # wants to read the bill of materials.
+        if: always()
+        with:
+          name: sbom
+          path: build/sbom/
+          retention-days: 30
+
+  # The aggregating gate, and the one piece of this file that is not obvious.
+  #
+  # A required status check that is skipped by a path filter NEVER REPORTS, so the pull
+  # request blocks forever waiting for it. `if: always()` makes this job run regardless of
+  # what was skipped, and it fails only if something it needed actually failed or was
+  # cancelled — a skipped job is a pass.
+  #
+  # Make ONLY `gate` a required check. Adding any of the jobs above to the required list
+  # recreates the exact deadlock this job exists to avoid.
+  gate:
+    needs: [changes, python, dotnet, frontend, actions, commits, images]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        run: exit 1
