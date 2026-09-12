@@ -29,6 +29,9 @@ public sealed record GatewayOptions
     /// <summary>Bounds the one-shot connect probe so the R3 matrix cannot hang on a dead name.</summary>
     public const int DefaultConnectTimeoutSeconds = 30;
 
+    /// <summary>On a volume, so the queue outlives the container it buffers for (§5.1).</summary>
+    public const string DefaultQueuePath = "/queue/gateway.db";
+
     public required string ApplicationUri { get; init; }
     public required string EndpointUrl { get; init; }
     public required string SecurityMode { get; init; }
@@ -36,6 +39,14 @@ public sealed record GatewayOptions
     public int MaxByteStringLength { get; init; } = DefaultMaxByteStringLength;
     public int MaxMessageSize { get; init; } = DefaultMaxMessageSize;
     public int ConnectTimeoutSeconds { get; init; } = DefaultConnectTimeoutSeconds;
+    public string QueuePath { get; init; } = DefaultQueuePath;
+    public int PublishingIntervalMs { get; init; } = 250;
+    public int SamplingIntervalMs { get; init; } = 250;
+    public uint QueueSize { get; init; } = 100;
+    public uint EventQueueSize { get; init; } = 200;
+
+    /// <summary>Absolute deadband on TaktTime, in seconds.</summary>
+    public double TaktDeadband { get; init; } = 0.05;
 
     public string OwnStoreRoot => Path.Join(PkiRoot, "edge-gateway");
     public string TrustedStoreRoot => Path.Join(PkiRoot, "trusted");
@@ -77,6 +88,7 @@ public sealed record GatewayOptions
             PkiRoot = Read(environment, "GATEWAY_PKI_ROOT", DefaultPkiRoot),
             RejectedStoreRoot = Read(
                 environment, "GATEWAY_REJECTED_STORE_ROOT", DefaultRejectedStoreRoot),
+            QueuePath = Read(environment, "GATEWAY_QUEUE_PATH", DefaultQueuePath),
             MaxByteStringLength = ReadInt(
                 environment, "GATEWAY_MAX_BYTE_STRING_LENGTH", DefaultMaxByteStringLength),
             MaxMessageSize = ReadInt(

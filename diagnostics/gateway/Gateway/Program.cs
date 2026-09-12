@@ -1,5 +1,7 @@
+using Gateway.Ingest;
 using Gateway.Opc;
 using Gateway.Status;
+using Opc.Ua;
 
 var options = GatewayOptions.FromProcessEnvironment();
 
@@ -10,36 +12,65 @@ if (args.Contains(ConnectTest.Flag, StringComparer.Ordinal))
 
 var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
+var logger = app.Logger;
 
-// Ingest, backfill and the writer arrive in Tasks 8-10; until then the gateway holds a
-// session and reports that truthfully rather than inventing progress it has not made.
+var queue = await LocalQueue.OpenAsync(options.QueuePath).ConfigureAwait(false);
+var connection = new UaConnection(options, DefaultTelemetry.Create(l => l.AddConsole()));
+
 var state = "disconnected";
-var connection = new UaConnection(options, Opc.Ua.DefaultTelemetry.Create(
-    logging => logging.AddConsole()));
+DateTime? lastEventSourceTs = null;
+Subscriptions? subscriptions = null;
 connection.StateChanged += next => state = next;
 
-StatusEndpoint.Map(app, () => new GatewayStatus(
+// Postgres and backfill arrive in Tasks 9 and 10. Until then these report what is true —
+// no writer means no rows, no backfill means no progress — rather than a plausible number.
+StatusEndpoint.Map(app, async () => new GatewayStatus(
     State: state,
-    LastEventSourceTs: null,
-    QueueDepth: 0,
+    LastEventSourceTs: lastEventSourceTs,
+    QueueDepth: await queue.DepthAsync().ConfigureAwait(false),
     BackfillProgress: 0.0,
-    OverflowCount: 0,
+    OverflowCount: subscriptions?.OverflowCount ?? 0,
     RowsWritten: 0,
     HistoryAvailableFrom: null));
 
-app.Lifetime.ApplicationStopping.Register(() => connection.DisposeAsync().AsTask().Wait());
+var stopping = app.Lifetime.ApplicationStopping;
+var ingest = Task.Run(
+    async () =>
+    {
+        var session = await connection.ConnectAsync(stopping).ConfigureAwait(false);
+        var space = await AddressSpace.ResolveAsync(session, stopping).ConfigureAwait(false);
 
-_ = Task.Run(async () =>
-{
-    try
+        subscriptions = new Subscriptions(options, async record =>
+        {
+            if (record.Kind == "event")
+            {
+                lastEventSourceTs = record.SourceTs;
+            }
+
+            await queue.EnqueueAsync(record).ConfigureAwait(false);
+        });
+
+        await subscriptions.StartAsync(session, space, stopping).ConfigureAwait(false);
+    },
+    stopping);
+
+// An unobserved Task exception is silently discarded, which for the one task that does all
+// the work would mean a gateway reporting "disconnected" forever with no reason anywhere.
+_ = ingest.ContinueWith(
+    faulted =>
     {
-        await connection.ConnectAsync(app.Lifetime.ApplicationStopping).ConfigureAwait(false);
-    }
-    catch (OperationCanceledException)
-    {
-        throw;
-    }
-});
+        // CA1848 wants a LoggerMessage delegate, which needs a partial class that top-level
+        // statements cannot host. This fires at most once, on the way down.
+#pragma warning disable CA1848
+        logger.LogCritical(faulted.Exception, "ingest failed; stopping");
+#pragma warning restore CA1848
+        app.Lifetime.StopApplication();
+    },
+    CancellationToken.None,
+    TaskContinuationOptions.OnlyOnFaulted,
+    TaskScheduler.Default);
 
 await app.RunAsync().ConfigureAwait(false);
+await connection.DisposeAsync().ConfigureAwait(false);
+await queue.DisposeAsync().ConfigureAwait(false);
 return 0;

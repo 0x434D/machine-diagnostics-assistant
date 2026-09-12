@@ -16,9 +16,12 @@ public sealed record GatewayStatus(
 
 public static class StatusEndpoint
 {
-    public static void Map(WebApplication app, Func<GatewayStatus> snapshot)
+    // Async because the queue depth is a read against SQLite: blocking a request thread on
+    // it would be the one place this service does synchronous I/O.
+    public static void Map(WebApplication app, Func<Task<GatewayStatus>> snapshot)
     {
         ArgumentNullException.ThrowIfNull(app);
-        app.MapGet("/status", () => Results.Json(snapshot()));
+        ArgumentNullException.ThrowIfNull(snapshot);
+        app.MapGet("/status", async () => Results.Json(await snapshot().ConfigureAwait(false)));
     }
 }
