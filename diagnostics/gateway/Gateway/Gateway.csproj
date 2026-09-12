@@ -5,6 +5,14 @@
        the framework. -->
 
   <ItemGroup>
+    <!-- The Web SDK's implicit usings bring in Microsoft.AspNetCore.Http.ISession and
+         .StatusCodes, which collide with the OPC UA types of the same name that this whole
+         service is about. Aliased once here rather than in every file that touches a session. -->
+    <Using Include="Opc.Ua.Client.ISession" Alias="ISession" />
+    <Using Include="Opc.Ua.StatusCodes" Alias="StatusCodes" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="OPCFoundation.NetStandard.Opc.Ua.Client" Version="1.5.378.176" />
     <PackageReference Include="OPCFoundation.NetStandard.Opc.Ua.Configuration" Version="1.5.378.176" />
   </ItemGroup>

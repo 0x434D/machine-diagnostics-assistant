@@ -10,7 +10,7 @@ IMAGES=(
   "postgres:17-bookworm"
   "node:22-bookworm-slim"
   "ghcr.io/astral-sh/uv:0.11.13"
-  "mcr.microsoft.com/dotnet/sdk:10.0"
+  "mcr.microsoft.com/dotnet/sdk:10.0.103"
   "mcr.microsoft.com/dotnet/aspnet:10.0"
 
   # CI tool images. Not base images, but they execute third-party code inside CI with the

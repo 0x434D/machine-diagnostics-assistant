@@ -94,6 +94,10 @@ public sealed class ConnectionTests : IDisposable
 
         Assert.Equal(Path.Join(_pkiRoot, "edge-gateway"), options.OwnStoreRoot);
         Assert.Equal(Path.Join(_pkiRoot, "trusted"), options.TrustedStoreRoot);
-        Assert.Equal(Path.Join(_pkiRoot, "rejected"), options.RejectedStoreRoot);
+
+        // Outside the PKI root on purpose: pki/ is mounted read-only and the stack writes
+        // refused certificates to this store.
+        Assert.Equal(GatewayOptions.DefaultRejectedStoreRoot, options.RejectedStoreRoot);
+        Assert.DoesNotContain(_pkiRoot, options.RejectedStoreRoot, StringComparison.Ordinal);
     }
 }

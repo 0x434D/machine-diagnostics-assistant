@@ -10,6 +10,13 @@ public sealed record GatewayOptions
     public const string DefaultEndpointUrl = "opc.tcp://line-simulator:4840/plant";
     public const string DefaultPkiRoot = "/pki";
 
+    /// <summary>
+    /// Deliberately outside the PKI root. pki/ is bind-mounted read-only — it holds the only
+    /// key material in the system — and the stack writes refused certificates here, so a
+    /// rejected store inside it turns any refusal into an IOException.
+    /// </summary>
+    public const string DefaultRejectedStoreRoot = "/rejected";
+
     /// <summary>Sign, never None. §4.6 — the boundary is authenticated, not merely narrow.</summary>
     public const string DefaultSecurityMode = "Sign";
 
@@ -19,16 +26,20 @@ public sealed record GatewayOptions
     public const int DefaultMaxByteStringLength = 4 * 1024 * 1024;
     public const int DefaultMaxMessageSize = 4 * 1024 * 1024;
 
+    /// <summary>Bounds the one-shot connect probe so the R3 matrix cannot hang on a dead name.</summary>
+    public const int DefaultConnectTimeoutSeconds = 30;
+
     public required string ApplicationUri { get; init; }
     public required string EndpointUrl { get; init; }
     public required string SecurityMode { get; init; }
     public required string PkiRoot { get; init; }
     public int MaxByteStringLength { get; init; } = DefaultMaxByteStringLength;
     public int MaxMessageSize { get; init; } = DefaultMaxMessageSize;
+    public int ConnectTimeoutSeconds { get; init; } = DefaultConnectTimeoutSeconds;
 
     public string OwnStoreRoot => Path.Join(PkiRoot, "edge-gateway");
     public string TrustedStoreRoot => Path.Join(PkiRoot, "trusted");
-    public string RejectedStoreRoot => Path.Join(PkiRoot, "rejected");
+    public string RejectedStoreRoot { get; init; } = DefaultRejectedStoreRoot;
     public string OwnCertificatePath => Path.Join(OwnStoreRoot, "certs", "edge-gateway.der");
 
     public static GatewayOptions Default() =>
@@ -64,10 +75,14 @@ public sealed record GatewayOptions
             EndpointUrl = Read(environment, "GATEWAY_ENDPOINT_URL", DefaultEndpointUrl),
             SecurityMode = securityMode,
             PkiRoot = Read(environment, "GATEWAY_PKI_ROOT", DefaultPkiRoot),
+            RejectedStoreRoot = Read(
+                environment, "GATEWAY_REJECTED_STORE_ROOT", DefaultRejectedStoreRoot),
             MaxByteStringLength = ReadInt(
                 environment, "GATEWAY_MAX_BYTE_STRING_LENGTH", DefaultMaxByteStringLength),
             MaxMessageSize = ReadInt(
                 environment, "GATEWAY_MAX_MESSAGE_SIZE", DefaultMaxMessageSize),
+            ConnectTimeoutSeconds = ReadInt(
+                environment, "GATEWAY_CONNECT_TIMEOUT_SECONDS", DefaultConnectTimeoutSeconds),
         };
     }
 

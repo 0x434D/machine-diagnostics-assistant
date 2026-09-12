@@ -1,0 +1,17 @@
+# Root build context, used by diagnostics/gateway/Dockerfile: Directory.Build.props and
+# global.json live here, so the gateway image cannot be built from a per-stack context.
+#
+# **/obj/ is load-bearing rather than hygiene. Without it the source COPY overwrites the
+# restore output produced inside the image with the host's, whose project.assets.json points
+# at /home/<user>/.nuget — and `dotnet publish --no-restore` then fails with NETSDK1064
+# "package was not found", which reads as a corrupt lock file and is not one.
+.git
+**/bin/
+**/obj/
+**/.venv
+**/__pycache__
+**/*.env
+**/node_modules
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
