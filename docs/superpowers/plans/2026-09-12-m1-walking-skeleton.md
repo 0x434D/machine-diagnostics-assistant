@@ -480,7 +480,9 @@ def test_workspace_members_pin_the_same_python() -> None:
 def test_plant_workspace_does_not_reach_into_diagnostics() -> None:
     """§10.7: two workspaces, one per stack. A shared root lockfile would make
     §10.1's 'the two stacks share no code' false at build time."""
-    assert not (ROOT.parent / "uv.lock").exists(), "no lockfile may exist at the repository root"
+    assert not (ROOT.parent / "uv.lock").exists(), (
+        "no lockfile may exist at the repository root"
+    )
     assert (ROOT / "uv.lock").exists()
     assert (ROOT.parent / "diagnostics" / "uv.lock").exists()
 ```
@@ -847,37 +849,49 @@ def _cert(root: Path, name: str) -> x509.Certificate:
 
 def test_server_uri_san_equals_application_uri(pki: Path) -> None:
     """asyncua raises BadCertificateUriInvalid unless ApplicationUri is a URI SAN."""
-    san = _cert(pki, "line-simulator").extensions.get_extension_for_class(
-        x509.SubjectAlternativeName
-    ).value
+    san = (
+        _cert(pki, "line-simulator")
+        .extensions.get_extension_for_class(x509.SubjectAlternativeName)
+        .value
+    )
     assert san.get_values_for_type(x509.UniformResourceIdentifier) == [SERVER_URI]
 
 
 def test_server_dns_sans_cover_every_name_a_client_may_dial(pki: Path) -> None:
     """The DNS SAN must cover the host component of the endpoint URL, or .NET's
     checkDomain fails as BadCertificateHostNameInvalid. Three clients, three names."""
-    san = _cert(pki, "line-simulator").extensions.get_extension_for_class(
-        x509.SubjectAlternativeName
-    ).value
+    san = (
+        _cert(pki, "line-simulator")
+        .extensions.get_extension_for_class(x509.SubjectAlternativeName)
+        .value
+    )
     assert set(san.get_values_for_type(x509.DNSName)) == {"line-simulator", "localhost"}
     assert ipaddress.ip_address("127.0.0.1") in san.get_values_for_type(x509.IPAddress)
 
 
 def test_roles_are_distinct(pki: Path) -> None:
     """asyncua checks EXT_KEY_USAGE against the peer's expected role."""
-    server = _cert(pki, "line-simulator").extensions.get_extension_for_class(
-        x509.ExtendedKeyUsage
-    ).value
-    client = _cert(pki, "edge-gateway").extensions.get_extension_for_class(
-        x509.ExtendedKeyUsage
-    ).value
+    server = (
+        _cert(pki, "line-simulator")
+        .extensions.get_extension_for_class(x509.ExtendedKeyUsage)
+        .value
+    )
+    client = (
+        _cert(pki, "edge-gateway")
+        .extensions.get_extension_for_class(x509.ExtendedKeyUsage)
+        .value
+    )
     assert ExtendedKeyUsageOID.SERVER_AUTH in server
     assert ExtendedKeyUsageOID.CLIENT_AUTH in client
 
 
 def test_key_usage_satisfies_asyncua_validator(pki: Path) -> None:
     """CertificateValidatorOptions.KEY_USAGE requires all four of these."""
-    ku = _cert(pki, "line-simulator").extensions.get_extension_for_class(x509.KeyUsage).value
+    ku = (
+        _cert(pki, "line-simulator")
+        .extensions.get_extension_for_class(x509.KeyUsage)
+        .value
+    )
     assert ku.digital_signature and ku.content_commitment
     assert ku.key_encipherment and ku.data_encipherment
 
@@ -955,7 +969,11 @@ PARTIES: dict[str, Party] = {
         dns_names=("line-simulator", "localhost"),
         ip_addresses=("127.0.0.1",),
         server_auth=True,
-        subject={"commonName": "line-simulator", "organizationName": "machine-agent", "countryName": "DE"},
+        subject={
+            "commonName": "line-simulator",
+            "organizationName": "machine-agent",
+            "countryName": "DE",
+        },
     ),
     "edge-gateway": Party(
         name="edge-gateway",
@@ -963,7 +981,11 @@ PARTIES: dict[str, Party] = {
         dns_names=("edge-gateway",),
         client_auth=True,
         want_pfx=True,
-        subject={"commonName": "edge-gateway", "organizationName": "machine-agent", "countryName": "DE"},
+        subject={
+            "commonName": "edge-gateway",
+            "organizationName": "machine-agent",
+            "countryName": "DE",
+        },
     ),
 }
 
@@ -1017,7 +1039,9 @@ def gen_party(party: Party, out_root: Path) -> None:
                 )
             )
 
-    (trusted / f"{party.name}.der").write_bytes(cert.public_bytes(encoding=Encoding.DER))
+    (trusted / f"{party.name}.der").write_bytes(
+        cert.public_bytes(encoding=Encoding.DER)
+    )
 
 
 def main() -> None:
@@ -1105,13 +1129,13 @@ def test_phases_run_in_order_and_live_speed_is_exactly_one() -> None:
     assert clock.phase is Phase.CATCHUP
     assert clock.now() == boot - timedelta(hours=18)
 
-    wall[0] = boot + timedelta(seconds=54)          # halfway
+    wall[0] = boot + timedelta(seconds=54)  # halfway
     assert clock.phase is Phase.CATCHUP
     assert clock.now() < wall[0]
 
-    wall[0] = boot + timedelta(seconds=200)         # past catch-up
+    wall[0] = boot + timedelta(seconds=200)  # past catch-up
     assert clock.phase is Phase.LIVE
-    assert clock.now() == wall[0]                   # exactly 1.0, not approximately
+    assert clock.now() == wall[0]  # exactly 1.0, not approximately
 
     wall[0] = boot + timedelta(seconds=260)
     assert clock.now() == wall[0]
@@ -1239,7 +1263,9 @@ class SimulatedClock:
     after history_depth / (speed - 1).
     """
 
-    def __init__(self, cfg: ClockConfig, wall_fn: Callable[[], datetime] = _utc_now) -> None:
+    def __init__(
+        self, cfg: ClockConfig, wall_fn: Callable[[], datetime] = _utc_now
+    ) -> None:
         if cfg.catchup_speed <= 1.0:
             raise ValueError("catchup_speed must exceed 1.0 or history never closes")
         self._cfg = cfg
@@ -1260,7 +1286,11 @@ class SimulatedClock:
 
     @property
     def phase(self) -> Phase:
-        return Phase.CATCHUP if self._wall() < self._boot + self.catchup_duration else Phase.LIVE
+        return (
+            Phase.CATCHUP
+            if self._wall() < self._boot + self.catchup_duration
+            else Phase.LIVE
+        )
 
     def now(self) -> datetime:
         wall = self._wall()
@@ -1375,8 +1405,17 @@ async def test_event_type_carries_an_image_field() -> None:
     idx = await server.register_namespace("http://machine-agent/plant")
     space = await build_address_space(server, idx)
 
-    props = {(await p.read_browse_name()).Name for p in await space.event_type.get_properties()}
-    assert {"AssemblySerial", "Disposition", "DefectClass", "Confidence", "Image"} <= props
+    props = {
+        (await p.read_browse_name()).Name
+        for p in await space.event_type.get_properties()
+    }
+    assert {
+        "AssemblySerial",
+        "Disposition",
+        "DefectClass",
+        "Confidence",
+        "Image",
+    } <= props
 ```
 
 - [ ] **Step 2: Run it to verify it fails**
@@ -1448,7 +1487,9 @@ async def build_address_space(server: Server, idx: int) -> AddressSpace:
     # or event history is silently created with no columns.
     event_gen = await server.get_event_generator(event_type, s3)
 
-    return AddressSpace(idx, line, stations, s3, takt, part_count, event_type, event_gen)
+    return AddressSpace(
+        idx, line, stations, s3, takt, part_count, event_type, event_gen
+    )
 ```
 
 - [ ] **Step 4: Run the address-space test to verify it passes**
@@ -1502,7 +1543,9 @@ async def test_catchup_writes_every_expected_row(tmp_path) -> None:
     assert ledger.takt == expected
     assert ledger.part_count == expected
     assert ledger.events == expected
-    assert ledger.images == sum(1 for i in range(expected) if f"A-{i:08d}".endswith("7"))
+    assert ledger.images == sum(
+        1 for i in range(expected) if f"A-{i:08d}".endswith("7")
+    )
 
 
 @pytest.mark.asyncio
@@ -1527,7 +1570,9 @@ async def test_source_timestamps_are_simulated_not_wall_clock(tmp_path) -> None:
 
     assert rows, "history is empty"
     oldest = min(r.SourceTimestamp for r in rows)
-    assert oldest < datetime.now(timezone.utc).replace(tzinfo=timezone.utc) - timedelta(minutes=50)
+    assert oldest < datetime.now(timezone.utc).replace(tzinfo=timezone.utc) - timedelta(
+        minutes=50
+    )
 ```
 
 - [ ] **Step 6: Run it to verify it fails**
@@ -1578,7 +1623,9 @@ async def attach_historian(
     # rows where SourceTimestamp < now() - period using the REAL wall clock, while
     # our SourceTimestamps are simulated and up to history_depth in the past. Any
     # period shorter than the history depth erases history as it is written.
-    await server.historize_node_data_change([space.takt, space.part_count], period=None, count=0)
+    await server.historize_node_data_change(
+        [space.takt, space.part_count], period=None, count=0
+    )
     await server.historize_node_event(space.s3, period=None, count=0)
     return storage
 ```
@@ -1608,10 +1655,10 @@ MODEL_VERSION = "simulated-1"
 
 @dataclass(frozen=True)
 class PartOutcome:
-    disposition: str               # "good" | "reject"
+    disposition: str  # "good" | "reject"
     defect_class: str | None
     confidence: float
-    image: bytes | None            # §3.4: only rejects carry their image
+    image: bytes | None  # §3.4: only rejects carry their image
 
 
 ProduceFn = Callable[[str, datetime], Awaitable[PartOutcome]]
@@ -1622,8 +1669,12 @@ def serial_for(index: int) -> str:
 
 
 async def _emit_part(
-    space: AddressSpace, index: int, sim_ts: datetime, takt: float,
-    outcome: PartOutcome, ledger: Ledger,
+    space: AddressSpace,
+    index: int,
+    sim_ts: datetime,
+    takt: float,
+    outcome: PartOutcome,
+    ledger: Ledger,
 ) -> None:
     serial = serial_for(index)
 
@@ -1635,7 +1686,9 @@ async def _emit_part(
     )
     ledger.takt += 1
     await space.part_count.write_value(
-        ua.DataValue(ua.Variant(index + 1, ua.VariantType.UInt32), SourceTimestamp=sim_ts)
+        ua.DataValue(
+            ua.Variant(index + 1, ua.VariantType.UInt32), SourceTimestamp=sim_ts
+        )
     )
     ledger.part_count += 1
 
@@ -1655,8 +1708,11 @@ async def _emit_part(
 
 
 async def generate_history(
-    space: AddressSpace, clock: SimulatedClock, settings: Settings,
-    produce: ProduceFn, ledger: Ledger,
+    space: AddressSpace,
+    clock: SimulatedClock,
+    settings: Settings,
+    produce: ProduceFn,
+    ledger: Ledger,
 ) -> None:
     """Catch-up: build the configured depth of history in process (§3.2).
 
@@ -1672,12 +1728,18 @@ async def generate_history(
     total = int(clock._cfg.history_depth.total_seconds() // takt)
     for i in range(total):
         sim_ts = clock.history_start + timedelta(seconds=i * takt)
-        await _emit_part(space, i, sim_ts, takt, await produce(serial_for(i), sim_ts), ledger)
+        await _emit_part(
+            space, i, sim_ts, takt, await produce(serial_for(i), sim_ts), ledger
+        )
 
 
 async def run_live(
-    space: AddressSpace, clock: SimulatedClock, settings: Settings,
-    produce: ProduceFn, ledger: Ledger, start_index: int,
+    space: AddressSpace,
+    clock: SimulatedClock,
+    settings: Settings,
+    produce: ProduceFn,
+    ledger: Ledger,
+    start_index: int,
 ) -> None:
     """Live: one part per takt at exactly 1.0 (§3.2)."""
     index = start_index
@@ -1685,8 +1747,12 @@ async def run_live(
         if clock.phase is Phase.LIVE:
             sim_ts = clock.now()
             await _emit_part(
-                space, index, sim_ts, settings.takt_seconds,
-                await produce(serial_for(index), sim_ts), ledger,
+                space,
+                index,
+                sim_ts,
+                settings.takt_seconds,
+                await produce(serial_for(index), sim_ts),
+                ledger,
             )
             index += 1
         await asyncio.sleep(settings.takt_seconds)
@@ -1741,7 +1807,12 @@ client = TestClient(app)
 
 def test_defect_classes_match_the_spec() -> None:
     assert DEFECT_CLASSES == [
-        "gap", "crack", "misalignment", "missing_part", "scratch", "contamination",
+        "gap",
+        "crack",
+        "misalignment",
+        "missing_part",
+        "scratch",
+        "contamination",
     ]
 
 
@@ -1763,6 +1834,7 @@ def test_inspect_request_carries_no_ground_truth() -> None:
     assert "truth" not in json.dumps(sent)
 
     import base64
+
     sent["image_b64"] = base64.b64encode(image).decode()
     result = client.post("/inspect", json=sent).json()
     assert result["disposition"] == "reject"
@@ -1771,10 +1843,15 @@ def test_inspect_request_carries_no_ground_truth() -> None:
 
 def test_a_part_with_no_truth_entry_passes() -> None:
     import base64
+
     image = render_part("A-00000002", [], 64, 64, seed=1)
     result = client.post(
         "/inspect",
-        json={"part_id": "A-00000002", "image_b64": base64.b64encode(image).decode(), "carrier_id": 1},
+        json={
+            "part_id": "A-00000002",
+            "image_b64": base64.b64encode(image).decode(),
+            "carrier_id": 1,
+        },
     ).json()
     assert result["disposition"] == "good"
 
@@ -1783,11 +1860,16 @@ def test_confidences_are_a_distribution_over_all_classes() -> None:
     """§3.4: plausible per-class confidence distributions, so the confidence field
     carries information."""
     import base64
+
     client.post("/truth/A-00000003", json={"defects": ["scratch"]})
     image = render_part("A-00000003", ["scratch"], 64, 64, seed=1)
     result = client.post(
         "/inspect",
-        json={"part_id": "A-00000003", "image_b64": base64.b64encode(image).decode(), "carrier_id": 1},
+        json={
+            "part_id": "A-00000003",
+            "image_b64": base64.b64encode(image).decode(),
+            "carrier_id": 1,
+        },
     ).json()
 
     conf = result["confidences"]
@@ -1845,11 +1927,17 @@ def render_part(
         x = rng.randint(width // 4, 3 * width // 4)
         y = rng.randint(height // 3, 2 * height // 3)
         if defect == "scratch":
-            draw.line([x, y, x + rng.randint(20, 60), y + rng.randint(-8, 8)], fill=ink, width=2)
+            draw.line(
+                [x, y, x + rng.randint(20, 60), y + rng.randint(-8, 8)],
+                fill=ink,
+                width=2,
+            )
         elif defect == "gap":
             draw.rectangle([mid - 3, height // 4, mid + 3, 3 * height // 4], fill=ink)
         elif defect == "missing_part":
-            draw.rectangle([mid, height // 4, mid + width // 3, 3 * height // 4], fill=ink)
+            draw.rectangle(
+                [mid, height // 4, mid + width // 3, 3 * height // 4], fill=ink
+            )
         else:
             r = rng.randint(6, 18)
             draw.ellipse([x - r, y - r, x + r, y + r], fill=ink)
@@ -1877,7 +1965,12 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 DEFECT_CLASSES = [
-    "gap", "crack", "misalignment", "missing_part", "scratch", "contamination",
+    "gap",
+    "crack",
+    "misalignment",
+    "missing_part",
+    "scratch",
+    "contamination",
 ]
 MODEL_VERSION = "simulated-1"
 
@@ -1890,7 +1983,7 @@ class PartContext:
 
 @dataclass(frozen=True)
 class InspectionResult:
-    disposition: str                    # "good" | "reject"
+    disposition: str  # "good" | "reject"
     defect_class: str | None
     confidence: float
     confidences: dict[str, float]
@@ -1934,7 +2027,9 @@ class SimulatedClassifier:
         confidences = {c: w / total for c, w in weights.items()}
 
         if not defects:
-            return InspectionResult("good", None, max(confidences.values()), confidences)
+            return InspectionResult(
+                "good", None, max(confidences.values()), confidences
+            )
         return InspectionResult("reject", top, confidences[top], confidences)
 ```
 
@@ -1951,12 +2046,17 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from inspection.classifier import (
-    DEFECT_CLASSES, PartContext, SimulatedClassifier, TruthChannel,
+    DEFECT_CLASSES,
+    PartContext,
+    SimulatedClassifier,
+    TruthChannel,
 )
 
 app = FastAPI(title="inspection-service")
 _truth = TruthChannel()
-_classifier = SimulatedClassifier(_truth, seed=int(os.environ.get("PLANT_SEED", "20260912")))
+_classifier = SimulatedClassifier(
+    _truth, seed=int(os.environ.get("PLANT_SEED", "20260912"))
+)
 
 
 class TruthIn(BaseModel):
@@ -2019,7 +2119,12 @@ from simulator.config import Settings
 from simulator.station_s3 import PartOutcome
 
 DEFECT_CLASSES = [
-    "gap", "crack", "misalignment", "missing_part", "scratch", "contamination",
+    "gap",
+    "crack",
+    "misalignment",
+    "missing_part",
+    "scratch",
+    "contamination",
 ]
 
 
@@ -2042,7 +2147,9 @@ class InspectionClient:
         )
 
         # Truth goes down the side channel, keyed by part id.
-        await self._http.post(f"{self._s.inspection_url}/truth/{part_id}", json={"defects": defects})
+        await self._http.post(
+            f"{self._s.inspection_url}/truth/{part_id}", json={"defects": defects}
+        )
 
         # The request itself carries only what a camera would hand over.
         response = await self._http.post(
@@ -2089,16 +2196,22 @@ async def test_only_rejects_carry_an_image() -> None:
         if "/truth/" in str(request.url):
             return httpx.Response(200, json={"status": "ok"})
         reject = b"A-00000007" in request.content
-        return httpx.Response(200, json={
-            "disposition": "reject" if reject else "good",
-            "defect_class": "gap" if reject else None,
-            "confidence": 0.88,
-            "confidences": {}, "model_version": "simulated-1",
-        })
+        return httpx.Response(
+            200,
+            json={
+                "disposition": "reject" if reject else "good",
+                "defect_class": "gap" if reject else None,
+                "confidence": 0.88,
+                "confidences": {},
+                "model_version": "simulated-1",
+            },
+        )
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as http:
-        client = InspectionClient(Settings(reject_rate=1.0, image_width=64, image_height=64), http)
+        client = InspectionClient(
+            Settings(reject_rate=1.0, image_width=64, image_height=64), http
+        )
         rejected = await client.produce("A-00000007", None)
         good = await client.produce("A-00000008", None)
 
@@ -2113,14 +2226,22 @@ async def test_truth_never_appears_in_the_inspect_request() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if "/inspect" in str(request.url):
             bodies.append(request.content)
-            return httpx.Response(200, json={
-                "disposition": "good", "defect_class": None, "confidence": 0.9,
-                "confidences": {}, "model_version": "simulated-1",
-            })
+            return httpx.Response(
+                200,
+                json={
+                    "disposition": "good",
+                    "defect_class": None,
+                    "confidence": 0.9,
+                    "confidences": {},
+                    "model_version": "simulated-1",
+                },
+            )
         return httpx.Response(200, json={"status": "ok"})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        await InspectionClient(Settings(reject_rate=1.0, image_width=64, image_height=64), http).produce("A-1", None)
+        await InspectionClient(
+            Settings(reject_rate=1.0, image_width=64, image_height=64), http
+        ).produce("A-1", None)
 
     assert bodies
     for body in bodies:
@@ -2216,7 +2337,9 @@ async def test_an_untrusted_client_is_rejected() -> None:
         )
         with pytest.raises(Exception) as excinfo:
             await client.connect()
-        assert "Untrusted" in str(excinfo.value) or "BadCertificate" in str(excinfo.value)
+        assert "Untrusted" in str(excinfo.value) or "BadCertificate" in str(
+            excinfo.value
+        )
 
 
 @pytest.mark.asyncio
@@ -2234,7 +2357,9 @@ async def test_the_trusted_gateway_certificate_connects_and_browses() -> None:
         )
         async with client:
             node = client.get_node(space.s3.nodeid)
-            names = {(await c.read_browse_name()).Name for c in await node.get_children()}
+            names = {
+                (await c.read_browse_name()).Name for c in await node.get_children()
+            }
             assert {"TaktTime", "PartCount"} <= names
 ```
 
@@ -2321,7 +2446,9 @@ async def build_server(settings: Settings) -> tuple[Server, AddressSpace]:
 
 
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO, format='{"lvl":"%(levelname)s","msg":"%(message)s"}')
+    logging.basicConfig(
+        level=logging.INFO, format='{"lvl":"%(levelname)s","msg":"%(message)s"}'
+    )
     settings = Settings()
 
     from simulator.historian import Ledger, attach_historian
@@ -2330,7 +2457,9 @@ async def main() -> None:
     import httpx
 
     server, space = await build_server(settings)
-    await attach_historian(server, space, Path("/data/history.db"), settings.history_page_size)
+    await attach_historian(
+        server, space, Path("/data/history.db"), settings.history_page_size
+    )
 
     clock = SimulatedClock(
         ClockConfig(
@@ -2342,13 +2471,23 @@ async def main() -> None:
 
     async with server, httpx.AsyncClient(timeout=30.0) as http:
         produce = InspectionClient(settings, http).produce
-        log.info("phase=catchup depth=%s speed=%s", clock._cfg.history_depth, settings.catchup_speed)
+        log.info(
+            "phase=catchup depth=%s speed=%s",
+            clock._cfg.history_depth,
+            settings.catchup_speed,
+        )
         await generate_history(space, clock, settings, produce, ledger)
         log.info(
             "phase=live ledger takt=%d part_count=%d events=%d images=%d image_bytes=%d",
-            ledger.takt, ledger.part_count, ledger.events, ledger.images, ledger.image_bytes,
+            ledger.takt,
+            ledger.part_count,
+            ledger.events,
+            ledger.images,
+            ledger.image_bytes,
         )
-        await run_live(space, clock, settings, produce, ledger, start_index=ledger.events)
+        await run_live(
+            space, clock, settings, produce, ledger, start_index=ledger.events
+        )
 
 
 if __name__ == "__main__":
@@ -2469,14 +2608,24 @@ def gateway_cell(secure: bool) -> dict[str, object]:
     """Row 1 uses the real UA-.NETStandard client from inside field-net.
     Requires Task 7's --connect-test mode."""
     cmd = [
-        "docker", "run", "--rm", "--network", "field-net",
-        "-v", f"{subprocess.check_output(['pwd']).decode().strip()}/pki:/pki:ro",
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "field-net",
+        "-v",
+        f"{subprocess.check_output(['pwd']).decode().strip()}/pki:/pki:ro",
         "machine-agent/edge-gateway:dev",
-        "--connect-test", "opc.tcp://line-simulator:4840/plant",
-        "--security", "Sign" if secure else "None",
+        "--connect-test",
+        "opc.tcp://line-simulator:4840/plant",
+        "--security",
+        "Sign" if secure else "None",
     ]
     out = subprocess.run(cmd, capture_output=True, text=True)
-    return {"ok": out.returncode == 0, "status": (out.stdout + out.stderr).strip()[-200:]}
+    return {
+        "ok": out.returncode == 0,
+        "status": (out.stdout + out.stderr).strip()[-200:],
+    }
 
 
 async def main() -> None:
@@ -2491,7 +2640,9 @@ async def main() -> None:
     print()
     required = ["gateway-field-net/Sign"]
     host_rows = [k for k in matrix if k.startswith("host-") and k.endswith("/Sign")]
-    passed = all(matrix[k]["ok"] for k in required) and any(matrix[k]["ok"] for k in host_rows)
+    passed = all(matrix[k]["ok"] for k in required) and any(
+        matrix[k]["ok"] for k in host_rows
+    )
     print(f"\nR3: {'PASS' if passed else 'FAIL'}", file=sys.stderr)
     sys.exit(0 if passed else 1)
 
@@ -3237,40 +3388,56 @@ The numbers in Pre-flight were taken on Python 3.14. Confirm them on the pinned 
 ```python
 # measurements/probe_history.py
 """Reproduces F1 (the 10,000 ceiling) and F2 (page-boundary duplicates)."""
+
 import asyncio, sys, tempfile, os
 from datetime import datetime, timedelta, timezone
 from asyncua import ua, Server, Client
 from asyncua.server.history_sql import HistorySQLite
 
+
 async def probe(n: int, page: int, port: int) -> tuple[int, int]:
     tmp = tempfile.mkdtemp()
-    server = Server(); await server.init()
+    server = Server()
+    await server.init()
     server.set_endpoint(f"opc.tcp://127.0.0.1:{port}/probe")
     idx = await server.register_namespace("probe")
     obj = await server.nodes.objects.add_object(idx, "S3")
     var = await obj.add_variable(idx, "TaktTime", 6.0)
     st = HistorySQLite(os.path.join(tmp, "h.db"), max_history_data_response_size=page)
-    await st.init(); server.iserver.history_manager.set_storage(st)
+    await st.init()
+    server.iserver.history_manager.set_storage(st)
     base = datetime.now(timezone.utc) - timedelta(hours=18)
     async with server:
         await server.historize_node_data_change(var, period=None, count=0)
         for i in range(n):
-            await var.write_value(ua.DataValue(
-                ua.Variant(6.0 + i * 0.001, ua.VariantType.Double),
-                SourceTimestamp=base + timedelta(seconds=6 * i)))
+            await var.write_value(
+                ua.DataValue(
+                    ua.Variant(6.0 + i * 0.001, ua.VariantType.Double),
+                    SourceTimestamp=base + timedelta(seconds=6 * i),
+                )
+            )
         await asyncio.sleep(2)
         async with Client(f"opc.tcp://127.0.0.1:{port}/probe") as cl:
             rows = await cl.get_node(var.nodeid).read_raw_history(
-                base - timedelta(minutes=1), datetime.now(timezone.utc) + timedelta(days=1), 0)
+                base - timedelta(minutes=1),
+                datetime.now(timezone.utc) + timedelta(days=1),
+                0,
+            )
     await st.stop()
     return n, len(rows)
 
+
 async def main() -> None:
-    for n, page, port in ((3000, 500, 48420), (10800, 1000, 48421), (12000, 1000, 48422)):
+    for n, page, port in (
+        (3000, 500, 48420),
+        (10800, 1000, 48421),
+        (12000, 1000, 48422),
+    ):
         wrote, read = await probe(n, page, port)
         print(f"wrote={wrote:6d} page={page:5d} read={read:6d} delta={read - wrote:+d}")
 
-asyncio.run(main())   # run with python -u: buffered output is lost if it is killed
+
+asyncio.run(main())  # run with python -u: buffered output is lost if it is killed
 ```
 
 Expected, from the pre-flight run: `3000/500 -> 3007` (duplicates), `10800/1000 -> 10000` and `12000/1000 -> 10000` (a hard ceiling at 10,000 independent of page size). Record what you actually get in `measurements/r1-probe.txt`.
@@ -3563,17 +3730,23 @@ def test_coverage_is_part_of_every_stats_response() -> None:
 ```python
 # diagnostics/analysis/tests/test_endpoints.py
 def test_stats_window_is_closed_and_counts_are_exact(client, seeded_db) -> None:
-    r = client.get("/inspection/stats", params={"from": "2026-09-12T01:00:00Z", "to": "2026-09-12T02:00:00Z"})
+    r = client.get(
+        "/inspection/stats",
+        params={"from": "2026-09-12T01:00:00Z", "to": "2026-09-12T02:00:00Z"},
+    )
     body = r.json()
-    assert body["total"] == 600            # one hour at 6 s takt
-    assert body["rejects"] == 30           # seeded at 5 %
+    assert body["total"] == 600  # one hour at 6 s takt
+    assert body["rejects"] == 30  # seeded at 5 %
     assert sum(d["count"] for d in body["by_defect_class"]) == 30
 
 
 def test_stats_reports_gaps_rather_than_hiding_them(client, seeded_db_with_gap) -> None:
     """§4.4: without gap markers, missing data is indistinguishable from a quiet
     machine, and the agent will confidently describe a stop that was a blackout."""
-    r = client.get("/inspection/stats", params={"from": "2026-09-12T01:00:00Z", "to": "2026-09-12T02:00:00Z"})
+    r = client.get(
+        "/inspection/stats",
+        params={"from": "2026-09-12T01:00:00Z", "to": "2026-09-12T02:00:00Z"},
+    )
     assert r.json()["coverage"]["gaps"]
 
 
@@ -3652,9 +3825,15 @@ from agent.citations import VerificationResult, verify
 async def test_a_citation_that_does_not_resolve_is_rejected(fake_analysis) -> None:
     """§6.5: every cited id is resolved against the database before the answer ships."""
     answer = Answer(
-        findings=[Finding(statement="Part A-99999999 was rejected.", basis="measured",
-                          citations=[Citation(kind="part", id="A-99999999")])],
-        answer_markdown="...", method={"sops_used": [], "tools_called": [], "budget_used": 1},
+        findings=[
+            Finding(
+                statement="Part A-99999999 was rejected.",
+                basis="measured",
+                citations=[Citation(kind="part", id="A-99999999")],
+            )
+        ],
+        answer_markdown="...",
+        method={"sops_used": [], "tools_called": [], "budget_used": 1},
         caveats=[],
     )
     result = await verify(answer, fake_analysis)
@@ -3662,17 +3841,26 @@ async def test_a_citation_that_does_not_resolve_is_rejected(fake_analysis) -> No
 
 
 @pytest.mark.asyncio
-async def test_unresolvable_claims_are_removed_and_the_answer_says_so(fake_analysis) -> None:
+async def test_unresolvable_claims_are_removed_and_the_answer_says_so(
+    fake_analysis,
+) -> None:
     """§6.5: after one failed retry the offending claims are removed and the answer
     ships with a visible note. The failure is logged so its frequency is measurable."""
     answer = Answer(
         findings=[
-            Finding(statement="A-00000007 was rejected for a gap.", basis="measured",
-                    citations=[Citation(kind="part", id="A-00000007")]),
-            Finding(statement="A-99999999 was rejected too.", basis="measured",
-                    citations=[Citation(kind="part", id="A-99999999")]),
+            Finding(
+                statement="A-00000007 was rejected for a gap.",
+                basis="measured",
+                citations=[Citation(kind="part", id="A-00000007")],
+            ),
+            Finding(
+                statement="A-99999999 was rejected too.",
+                basis="measured",
+                citations=[Citation(kind="part", id="A-99999999")],
+            ),
         ],
-        answer_markdown="...", method={"sops_used": [], "tools_called": [], "budget_used": 1},
+        answer_markdown="...",
+        method={"sops_used": [], "tools_called": [], "budget_used": 1},
         caveats=[],
     )
     stripped = await VerificationResult.strip(answer, fake_analysis)
@@ -3685,14 +3873,21 @@ def test_m1_never_claims_a_hypothesis() -> None:
     base. M1 has no knowledge base, so a hypothesis would be an invention.
     §6.3 also requires evidence_strength whenever basis is hypothesis."""
     with pytest.raises(ValueError, match="knowledge base"):
-        Finding(statement="Carrier 7 is worn.", basis="hypothesis",
-                citations=[], evidence_strength="92 %, n=214")
+        Finding(
+            statement="Carrier 7 is worn.",
+            basis="hypothesis",
+            citations=[],
+            evidence_strength="92 %, n=214",
+        )
 
 
 def test_evidence_strength_is_required_for_a_hypothesis() -> None:
     from agent.answer import validate_basis
+
     with pytest.raises(ValueError, match="evidence_strength"):
-        validate_basis(basis="hypothesis", evidence_strength=None, allow_hypothesis=True)
+        validate_basis(
+            basis="hypothesis", evidence_strength=None, allow_hypothesis=True
+        )
 ```
 
 - [ ] **Step 2: Write the failing pipeline test**
@@ -3705,13 +3900,17 @@ async def test_time_windows_are_computed_in_code_not_by_the_model(monkeypatch) -
     calendar maths. Date arithmetic is what models are unreliable at."""
     from agent.pipeline import resolve_window
 
-    window = resolve_window("last hour", now=datetime(2026, 9, 12, 14, 30, tzinfo=timezone.utc))
+    window = resolve_window(
+        "last hour", now=datetime(2026, 9, 12, 14, 30, tzinfo=timezone.utc)
+    )
     assert window.start == datetime(2026, 9, 12, 13, 30, tzinfo=timezone.utc)
     assert window.end == datetime(2026, 9, 12, 14, 30, tzinfo=timezone.utc)
 
 
 @pytest.mark.asyncio
-async def test_a_window_with_gaps_forces_a_caveat(fake_analysis_with_gap, fake_model) -> None:
+async def test_a_window_with_gaps_forces_a_caveat(
+    fake_analysis_with_gap, fake_model
+) -> None:
     """§6.1 step 3 is a guard, not a choice: if the window has gaps, that fact
     enters the context and the answer must mention it."""
     answer = await run("how many rejects in the last hour?", session_id="s1")
@@ -3719,7 +3918,9 @@ async def test_a_window_with_gaps_forces_a_caveat(fake_analysis_with_gap, fake_m
 
 
 @pytest.mark.asyncio
-async def test_an_empty_window_says_so_instead_of_inventing(fake_analysis_empty, fake_model) -> None:
+async def test_an_empty_window_says_so_instead_of_inventing(
+    fake_analysis_empty, fake_model
+) -> None:
     """§1's agent authenticity proof: it says 'I have no data for that window'
     instead of inventing an answer."""
     answer = await run("how many rejects last hour?", session_id="s1")
@@ -3747,7 +3948,7 @@ from __future__ import annotations
 
 import anthropic
 
-MODEL = "claude-sonnet-5"   # §6.9's default
+MODEL = "claude-sonnet-5"  # §6.9's default
 
 
 class AnthropicProvider:
