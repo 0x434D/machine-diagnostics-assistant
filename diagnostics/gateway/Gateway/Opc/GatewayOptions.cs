@@ -124,6 +124,7 @@ public sealed record GatewayOptions
             PostgresConnectionString = Read(environment, "GATEWAY_POSTGRES", ""),
             DrainBatchSize = ReadInt(environment, "GATEWAY_DRAIN_BATCH_SIZE", 200),
             HistoryEventPageSize = ReadInt(environment, "GATEWAY_HISTORY_EVENT_PAGE_SIZE", 25),
+            HistoryPageSize = ReadInt(environment, "GATEWAY_HISTORY_PAGE_SIZE", 1_000),
             MaxByteStringLength = ReadInt(
                 environment, "GATEWAY_MAX_BYTE_STRING_LENGTH", DefaultMaxByteStringLength),
             MaxMessageSize = ReadInt(

@@ -28,6 +28,19 @@ public sealed class HistoryBackfill
     /// </summary>
     public const int SilentTruncationCeiling = 10_000;
 
+    /// <summary>
+    /// One page-reading pass. <c>MayBeTruncated</c> is the whole point: the final page came
+    /// back full to its limit and the server offered no continuation point, which is
+    /// indistinguishable from a window that had more rows and did not say so.
+    ///
+    /// asyncua's history_sql caps its SQL at the *client's* page size and only emits a
+    /// continuation point when the result exceeds the *server's* cap, so whenever the client
+    /// pages smaller than that cap the point is structurally always null — for variables as
+    /// well as events. Variables here page at exactly asyncua's default cap, which is the only
+    /// reason they were not silently truncated too; lowering HistoryPageSize reopens it.
+    /// </summary>
+    private sealed record PageOutcome(int Rows, int Pages, long DurationMs, bool MayBeTruncated);
+
     private readonly ISession _session;
     private readonly AddressSpace _space;
     private readonly Func<IngestRecord, Task> _onRecord;
@@ -58,11 +71,18 @@ public sealed class HistoryBackfill
                 end = to;
             }
 
-            windows.Add(await ReadVariableWindowAsync(
-                _space.TaktNodeId, "TaktTime", start, end, ct).ConfigureAwait(false));
-            windows.Add(await ReadVariableWindowAsync(
-                _space.PartCountNodeId, "PartCount", start, end, ct).ConfigureAwait(false));
-            windows.Add(await ReadEventWindowAsync(start, end, ct).ConfigureAwait(false));
+            windows.Add(await ReadWindowAsync(
+                "TaktTime", start, end,
+                (a, b, token) => ReadVariablePagesAsync(_space.TaktNodeId, "TaktTime", a, b, token),
+                ct).ConfigureAwait(false));
+
+            windows.Add(await ReadWindowAsync(
+                "PartCount", start, end,
+                (a, b, token) => ReadVariablePagesAsync(_space.PartCountNodeId, "PartCount", a, b, token),
+                ct).ConfigureAwait(false));
+
+            windows.Add(await ReadWindowAsync(
+                "InspectionResult", start, end, ReadEventPagesAsync, ct).ConfigureAwait(false));
 
             Progress = total <= 0 ? 1.0 : (start - from).TotalSeconds / total;
         }
@@ -71,7 +91,49 @@ public sealed class HistoryBackfill
         return new BackfillReport(windows);
     }
 
-    private async Task<WindowReport> ReadVariableWindowAsync(
+    /// <summary>
+    /// Reads a window, halving it whenever the result cannot be trusted, until every part comes
+    /// back short of its page.
+    ///
+    /// Measured against the live plant: every one-hour event window returned exactly the page
+    /// size — 25 rows where ~600 existed — losing 96% of the event history while the run
+    /// reported success. The F1 ceiling guard could not see it, because 25 is nowhere near
+    /// 10,000. This is that guard at the level the failure actually happens.
+    /// </summary>
+    private async Task<WindowReport> ReadWindowAsync(
+        string stream,
+        DateTime from,
+        DateTime to,
+        Func<DateTime, DateTime, CancellationToken, Task<PageOutcome>> readPages,
+        CancellationToken ct)
+    {
+        var outcome = await readPages(from, to, ct).ConfigureAwait(false);
+        if (!outcome.MayBeTruncated)
+        {
+            return Checked(
+                new WindowReport(from, to, stream, outcome.Rows, outcome.Pages, outcome.DurationMs));
+        }
+
+        var span = to - from;
+        if (span <= _options.MinimumBackfillWindow)
+        {
+            throw new InvalidOperationException(
+                $"{stream} window {from:O}..{to:O} filled its page with no continuation point "
+                + "and cannot be subdivided further; rows would be lost silently");
+        }
+
+        var middle = from.Add(span / 2);
+        var first = await ReadWindowAsync(stream, from, middle, readPages, ct).ConfigureAwait(false);
+        var second = await ReadWindowAsync(stream, middle, to, readPages, ct).ConfigureAwait(false);
+
+        return new WindowReport(
+            from, to, stream,
+            first.RowsReturned + second.RowsReturned,
+            first.Pages + second.Pages,
+            first.DurationMs + second.DurationMs);
+    }
+
+    private async Task<PageOutcome> ReadVariablePagesAsync(
         NodeId node, string signal, DateTime from, DateTime to, CancellationToken ct)
     {
         var details = new ReadRawModifiedDetails
@@ -85,10 +147,64 @@ public sealed class HistoryBackfill
             ReturnBounds = false,
         };
 
+        return await ReadPagesAsync(
+            node, details, _options.HistoryPageSize,
+            async result =>
+            {
+                var data = (HistoryData)ExtensionObject.ToEncodeable(result);
+                foreach (var value in data.DataValues)
+                {
+                    await _onRecord(Subscriptions.ToDataChangeRecord(signal, node.ToString(), value))
+                        .ConfigureAwait(false);
+                }
+
+                return data.DataValues.Count;
+            },
+            ct).ConfigureAwait(false);
+    }
+
+    private async Task<PageOutcome> ReadEventPagesAsync(
+        DateTime from, DateTime to, CancellationToken ct)
+    {
+        var node = _space.S3NodeId;
+        var details = new ReadEventDetails
+        {
+            StartTime = from,
+            EndTime = to,
+            NumValuesPerNode = (uint)_options.HistoryEventPageSize,
+            // The identical filter the live subscription uses. A second filter would be a
+            // second statement of the field order, and the order is the decoding contract.
+            Filter = Subscriptions.BuildInspectionFilter(),
+        };
+
+        return await ReadPagesAsync(
+            node, details, _options.HistoryEventPageSize,
+            async result =>
+            {
+                var data = (HistoryEvent)ExtensionObject.ToEncodeable(result);
+                foreach (var entry in data.Events)
+                {
+                    await _onRecord(Subscriptions.ToEventRecord(node.ToString(), entry.EventFields))
+                        .ConfigureAwait(false);
+                }
+
+                return data.Events.Count;
+            },
+            ct).ConfigureAwait(false);
+    }
+
+    private async Task<PageOutcome> ReadPagesAsync(
+        NodeId node,
+        object details,
+        int pageSize,
+        Func<ExtensionObject, Task<int>> decode,
+        CancellationToken ct)
+    {
         var clock = Stopwatch.StartNew();
         byte[]? continuationPoint = null;
-        var returned = 0;
+        var rows = 0;
         var pages = 0;
+        var lastPageRows = 0;
 
         try
         {
@@ -105,14 +221,8 @@ public sealed class HistoryBackfill
                 var result = response.Results[0];
                 ThrowIfBad(result.StatusCode, node);
 
-                var data = (HistoryData)ExtensionObject.ToEncodeable(result.HistoryData);
-                foreach (var value in data.DataValues)
-                {
-                    await _onRecord(Subscriptions.ToDataChangeRecord(signal, node.ToString(), value))
-                        .ConfigureAwait(false);
-                    returned++;
-                }
-
+                lastPageRows = await decode(result.HistoryData).ConfigureAwait(false);
+                rows += lastPageRows;
                 continuationPoint = result.ContinuationPoint;
                 pages++;
             }
@@ -129,118 +239,16 @@ public sealed class HistoryBackfill
         }
 
         ct.ThrowIfCancellationRequested();
-        return Checked(new WindowReport(from, to, signal, returned, pages, clock.ElapsedMilliseconds));
-    }
 
-    /// <summary>
-    /// Reads one event window, subdividing it when the result cannot be trusted.
-    ///
-    /// asyncua returns a full page of event history with no continuation point, so a naive
-    /// loop exits believing the window is complete. Measured against the live plant: every
-    /// one-hour window returned exactly HistoryEventPageSize rows where ~600 existed, losing
-    /// 96% of the event history and reporting success. A full page with nowhere to continue
-    /// is indistinguishable from a truncated one, so it is treated as truncated and the
-    /// window is halved until every part comes back short of its page.
-    /// </summary>
-    private async Task<WindowReport> ReadEventWindowAsync(
-        DateTime from, DateTime to, CancellationToken ct)
-    {
-        var window = await ReadEventPageAsync(from, to, ct).ConfigureAwait(false);
-        if (!IsSuspiciouslyFull(window))
-        {
-            return window;
-        }
-
-        var span = to - from;
-        if (span <= _options.MinimumBackfillWindow)
-        {
-            throw new InvalidOperationException(
-                $"event window {from:O}..{to:O} filled its {_options.HistoryEventPageSize}-row "
-                + "page with no continuation point and cannot be subdivided further; rows "
-                + "would be lost silently");
-        }
-
-        var middle = from.Add(span / 2);
-        var first = await ReadEventWindowAsync(from, middle, ct).ConfigureAwait(false);
-        var second = await ReadEventWindowAsync(middle, to, ct).ConfigureAwait(false);
-
-        return new WindowReport(
-            from, to, "InspectionResult",
-            first.RowsReturned + second.RowsReturned,
-            first.Pages + second.Pages,
-            first.DurationMs + second.DurationMs);
-    }
-
-    /// <summary>
-    /// A page filled to its limit with no continuation point proves nothing about whether
-    /// more rows existed. The same shape as the F1 ceiling guard, one level down.
-    /// </summary>
-    private bool IsSuspiciouslyFull(WindowReport window) =>
-        window.RowsReturned >= _options.HistoryEventPageSize;
-
-    private async Task<WindowReport> ReadEventPageAsync(
-        DateTime from, DateTime to, CancellationToken ct)
-    {
-        var details = new ReadEventDetails
-        {
-            StartTime = from,
-            EndTime = to,
-            NumValuesPerNode = (uint)_options.HistoryEventPageSize,
-            // The identical filter the live subscription uses. A second filter would be a
-            // second statement of the field order, and the order is the decoding contract.
-            Filter = Subscriptions.BuildInspectionFilter(),
-        };
-
-        var clock = Stopwatch.StartNew();
-        byte[]? continuationPoint = null;
-        var returned = 0;
-        var pages = 0;
-        var node = _space.S3NodeId;
-
-        try
-        {
-            do
-            {
-                var response = await _session.HistoryReadAsync(
-                    null,
-                    new ExtensionObject(details),
-                    TimestampsToReturn.Both,
-                    false,
-                    [new HistoryReadValueId { NodeId = node, ContinuationPoint = continuationPoint }],
-                    ct).ConfigureAwait(false);
-
-                var result = response.Results[0];
-                ThrowIfBad(result.StatusCode, node);
-
-                var data = (HistoryEvent)ExtensionObject.ToEncodeable(result.HistoryData);
-                foreach (var entry in data.Events)
-                {
-                    await _onRecord(Subscriptions.ToEventRecord(node.ToString(), entry.EventFields))
-                        .ConfigureAwait(false);
-                    returned++;
-                }
-
-                continuationPoint = result.ContinuationPoint;
-                pages++;
-            }
-            while (continuationPoint is { Length: > 0 } && !ct.IsCancellationRequested);
-        }
-        finally
-        {
-            if (continuationPoint is { Length: > 0 })
-            {
-                await ReleaseAsync(node, continuationPoint).ConfigureAwait(false);
-            }
-        }
-
-        ct.ThrowIfCancellationRequested();
-        return Checked(new WindowReport(from, to, "InspectionResult", returned, pages, clock.ElapsedMilliseconds));
+        // A window that legitimately spans several pages ends on a short one, so paging that
+        // works is not caught here.
+        return new PageOutcome(rows, pages, clock.ElapsedMilliseconds, lastPageRows >= pageSize);
     }
 
     /// <summary>
     /// The guard F1 exists for. A window returning the ceiling exactly is indistinguishable
     /// from one that was silently truncated, so it is refused rather than trusted — the
-    /// failure this whole design is shaped around is a confident short count, not slowness.
+    /// failure this design is shaped around is a confident short count, not slowness.
     /// </summary>
     private static WindowReport Checked(WindowReport window)
     {
@@ -259,8 +267,7 @@ public sealed class HistoryBackfill
     {
         if (StatusCode.IsBad(status))
         {
-            throw new ServiceResultException(
-                status.Code, $"HistoryRead on {node} returned {status}");
+            throw new ServiceResultException(status.Code, $"HistoryRead on {node} returned {status}");
         }
     }
 
