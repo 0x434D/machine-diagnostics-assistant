@@ -102,13 +102,18 @@ async def build_server(settings: Settings) -> tuple[Server, AddressSpace]:
     # network the client reached it over -- never the one name the boundary is built
     # around -- so a client handed that endpoint dials something no certificate covers.
     #
-    # Measured, and it changes nothing for any client measured so far: with this line
-    # removed, all six measurable R3 cells came back identical. asyncua's own internal
-    # server reads the request's EndpointUrl first and returns before it ever consults
-    # the source IP, and every asyncua client sends one. The line is kept because the
-    # row that decides it -- UA-.NETStandard from inside field-net -- is Task 7's and
-    # is still unmeasured, and because what it guards against is silent: a rewritten
-    # host produces a certificate error three layers away from its cause.
+    # Measured with this line removed, twice: every asyncua cell of the R3 matrix came
+    # back identical, and so did the one that actually decides it -- UA-.NETStandard from
+    # inside field-net, which establishes a session either way. So this changes nothing
+    # for either client in the system, and the reason is specific rather than lucky:
+    # InternalServer._mangle_endpoint_url reads the request's own EndpointUrl first and
+    # returns before it consults the source IP, and both clients send one.
+    #
+    # Kept as a deliberate guard, not as insurance against the unknown: a GetEndpoints
+    # request may legally omit EndpointUrl, and a client that does gets handed this
+    # container's IP on whichever network it arrived over -- a name no certificate covers,
+    # failing later and somewhere else. One line against a silent failure, with the
+    # measurement recorded in measurements/r3-notes.txt §2 either way.
     server.set_match_discovery_client_ip(False)
 
     idx = await server.register_namespace(NAMESPACE)
@@ -147,6 +152,11 @@ async def main() -> None:
     # filesystem is read-only and this database passes 100 MB, not because anything is
     # meant to survive a boot -- the diagnostics stack answers from its own Postgres.
     HISTORY_DB.unlink(missing_ok=True)
+    # The same argument, and the same volume. A status file a previous boot left behind
+    # reports phase "live" and that boot's ledger while this one is still generating; only
+    # written_wall gives it away, and simulator.status prints the file without comment.
+    # Absent is honest, stale is not.
+    status.STATUS_FILE.unlink(missing_ok=True)
     storage = await attach_historian(
         server,
         space,
@@ -170,31 +180,62 @@ async def main() -> None:
         # log timestamps -- the lines carry none of their own, since the container
         # runtime already stamps every one.
         started = time.monotonic()
-        history_end = await generate_history(
-            space,
-            clock,
-            settings,
-            InspectionClient(settings, http).produce,
-            ledger,
-            storage,
-        )
-        _log(
-            "catchup.done",
-            takt=ledger.takt,
-            part_count=ledger.part_count,
-            events=ledger.events,
-            images=ledger.images,
-            image_bytes=ledger.image_bytes,
-            history_end=history_end.isoformat(),
-            catchup_wall_seconds=round(time.monotonic() - started, 1),
-        )
-        # A TaskGroup, not a bare create_task: a status writer that started failing
-        # would otherwise raise into a task nobody awaits, and asyncio would report it
-        # as "exception was never retrieved" while the plant carried on looking healthy.
+
+        # A TaskGroup, not a bare create_task: a status writer that started failing would
+        # otherwise raise into a task nobody awaits, and asyncio would report it as
+        # "exception was never retrieved" while the plant carried on looking healthy.
+        #
+        # Opened before generation, not after it. Catch-up is the longest phase of a boot
+        # and the one the demo exists to watch, and simulator.status is the only way to
+        # see it (§4.5 keeps the clock off the wire); started afterwards, the publisher
+        # left `python -m simulator.status` answering "does not exist -- is the simulator
+        # running?" for two and a half minutes while it was running.
         async with asyncio.TaskGroup() as tasks:
             tasks.create_task(
                 status.publish(status.STATUS_FILE, clock, settings, ledger)
             )
+            history_end = await generate_history(
+                space,
+                clock,
+                settings,
+                InspectionClient(settings, http).produce,
+                ledger,
+                storage,
+            )
+            catchup_wall = time.monotonic() - started
+            _log(
+                "catchup.done",
+                takt=ledger.takt,
+                part_count=ledger.part_count,
+                events=ledger.events,
+                images=ledger.images,
+                image_bytes=ledger.image_bytes,
+                history_end=history_end.isoformat(),
+                catchup_wall_seconds=round(catchup_wall, 1),
+                # Simulated seconds generated per wall second -- what catch-up actually
+                # achieved, against the catchup_speed the clock was configured with.
+                achieved_multiple=round(
+                    clock.history_depth.total_seconds() / catchup_wall, 1
+                ),
+            )
+
+            # Generation finishes before the clock's own catch-up window closes, and
+            # run_live emits nothing until it does. Sleeping the exact remainder rather
+            # than polling the phase: the clock already knows when it flips, and the plan
+            # asks for booting -> catchup -> live to be legible in the log rather than a
+            # silence that reads the same as a hang.
+            remaining = (
+                clock.boot_wall + clock.catchup_duration - clock.wall
+            ).total_seconds()
+            if remaining > 0:
+                await asyncio.sleep(remaining)
+            _log(
+                "live.start",
+                simulated_now=clock.now().isoformat(),
+                seam_seconds=round((clock.now() - history_end).total_seconds(), 1),
+                takt_seconds=settings.takt_seconds,
+            )
+
             # A second inspection client with a distinguishing seed, mirroring
             # run_live's own `settings.seed ^ 1`: without it, changing the configured
             # history depth would change how many defect draws catch-up consumes and so

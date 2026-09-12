@@ -33,6 +33,11 @@ def test_the_snapshot_reports_the_phase_and_the_ledger_it_was_taken_at() -> None
     assert during_catchup["phase"] == Phase.CATCHUP.value
     assert once_live["phase"] == Phase.LIVE.value
     assert once_live["simulated_now"] == wall[0].isoformat()
+    # written_wall is the only field that tells a reader whether a snapshot is this
+    # boot's or the last one's, so it has to come from the injected clock -- a direct
+    # datetime.now() would make exactly this assertion impossible to write.
+    assert during_catchup["written_wall"] == boot.isoformat()
+    assert once_live["written_wall"] == wall[0].isoformat()
     assert during_catchup["ledger"] == {
         "takt": 7,
         "part_count": 7,

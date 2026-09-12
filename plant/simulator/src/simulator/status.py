@@ -19,7 +19,6 @@ import asyncio
 import json
 import sys
 from dataclasses import asdict
-from datetime import UTC, datetime
 from pathlib import Path
 
 from simulator.clock import SimulatedClock
@@ -37,10 +36,12 @@ def snapshot(
     """The plant's current phase, simulated time and row counts.
 
     `written_wall` is the real clock, not simulated time -- the ServerTimestamp analogue
-    of §4.2, for diagnostics only. Nothing in it is ever an input to analysis.
+    of §4.2, for diagnostics only. Nothing in it is ever an input to analysis. It is read
+    through the clock's injected wall_fn rather than datetime.now(), so a reader can tell
+    a live snapshot from one a previous boot left behind and a test can prove it.
     """
     return {
-        "written_wall": datetime.now(UTC).isoformat(),
+        "written_wall": clock.wall.isoformat(),
         "endpoint": settings.endpoint_url,
         "phase": clock.phase.value,
         "simulated_now": clock.now().isoformat(),

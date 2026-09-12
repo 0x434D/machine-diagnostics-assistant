@@ -3,7 +3,7 @@
 from pathlib import Path
 
 import pytest
-from asyncua import Client, ua
+from asyncua import Client, Server, ua
 from asyncua.crypto import security_policies
 from simulator.config import Settings
 from simulator.pki import PARTIES, Party, gen_party
@@ -24,11 +24,15 @@ STRANGER = Party(
 )
 
 # 127.0.0.1, not `line-simulator`, even though the real boundary only ever uses the
-# latter: the name resolves solely because `make preflight` asks for an /etc/hosts
-# row, and a unit test that silently depends on that passes here and fails on a CI
-# runner. The name itself is pinned against the certificate and the Compose service
-# in test_compose_invariants.py, where checking it costs no DNS.
-HOST = "opc.tcp://127.0.0.1"
+# latter: the name resolves on a developer machine and not on a CI runner, and a unit
+# test that silently depends on that is a test that passes here and fails there. The
+# name itself is pinned against the certificate and the Compose service in
+# test_compose_invariants.py, where checking it costs no DNS.
+#
+# Port 0, so the OS assigns one. Three sessions run `make check-python` on every commit
+# and a fixed port here is a collision waiting for the day two of them overlap; the port
+# asyncua actually bound is read back with `dial()` below.
+LISTEN = "opc.tcp://127.0.0.1:0/plant"
 
 
 @pytest.fixture(scope="module")
@@ -50,6 +54,17 @@ def stranger_pki(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return root
 
 
+def dial(server: Server) -> str:
+    """The URL a client must use to reach `server`, once it is started.
+
+    asyncua resolves a port-0 endpoint into BinaryServer.port when it binds; the
+    advertised endpoint still reads `:0`, which does not matter because the server
+    echoes back the netloc the client sent in GetEndpoints (see server.py).
+    """
+    assert server.bserver is not None, "the server has no port until it is started"
+    return f"opc.tcp://127.0.0.1:{server.bserver.port}/plant"
+
+
 def _certs(root: Path, name: str) -> tuple[str, str]:
     return (
         str(root / name / "certs" / f"{name}.der"),
@@ -61,7 +76,7 @@ def _certs(root: Path, name: str) -> tuple[str, str]:
 async def test_server_advertises_only_sign_no_unsecured_endpoint(pki: Path) -> None:
     """§4.6: SecurityMode Sign. §10.5 rules out SignAndEncrypt for M1. An open
     endpoint would make the boundary narrow but unauthenticated."""
-    settings = Settings(endpoint_url=f"{HOST}:48410/plant", pki_root=str(pki))
+    settings = Settings(endpoint_url=LISTEN, pki_root=str(pki))
     server, _ = await build_server(settings)
     async with server:
         endpoints = await server.get_endpoints()
@@ -79,11 +94,11 @@ async def test_an_untrusted_client_is_rejected(pki: Path, stranger_pki: Path) ->
     so the only thing wrong with the handshake is that nobody trusts it -- otherwise
     this passes on BadCertificateUriInvalid and proves nothing about the trust store.
     """
-    settings = Settings(endpoint_url=f"{HOST}:48411/plant", pki_root=str(pki))
+    settings = Settings(endpoint_url=LISTEN, pki_root=str(pki))
     server, _ = await build_server(settings)
     cert, key = _certs(stranger_pki, STRANGER.name)
     async with server:
-        client = Client(settings.endpoint_url)
+        client = Client(dial(server))
         client.application_uri = STRANGER.app_uri
         await client.set_security(
             security_policies.SecurityPolicyBasic256Sha256,
@@ -102,11 +117,11 @@ async def test_an_untrusted_client_is_rejected(pki: Path, stranger_pki: Path) ->
 async def test_the_trusted_gateway_certificate_connects_and_browses(pki: Path) -> None:
     """The gateway discovers the line by browsing, so a session that cannot browse is
     not a working boundary even when the handshake succeeded (§4.1)."""
-    settings = Settings(endpoint_url=f"{HOST}:48412/plant", pki_root=str(pki))
+    settings = Settings(endpoint_url=LISTEN, pki_root=str(pki))
     server, space = await build_server(settings)
     cert, key = _certs(pki, GATEWAY.name)
     async with server:
-        client = Client(settings.endpoint_url)
+        client = Client(dial(server))
         client.application_uri = GATEWAY.app_uri
         await client.set_security(
             security_policies.SecurityPolicyBasic256Sha256,
@@ -128,9 +143,9 @@ async def test_the_trusted_gateway_certificate_connects_and_browses(pki: Path) -
 async def test_an_unsecured_client_cannot_reach_the_address_space(pki: Path) -> None:
     """The complement of the endpoint listing above: no open endpoint means a client
     that offers no certificate at all gets no session, not merely a less-preferred one."""
-    settings = Settings(endpoint_url=f"{HOST}:48413/plant", pki_root=str(pki))
+    settings = Settings(endpoint_url=LISTEN, pki_root=str(pki))
     server, _ = await build_server(settings)
     async with server:
-        client = Client(settings.endpoint_url)
+        client = Client(dial(server))
         with pytest.raises(ua.UaError):
             await client.connect()

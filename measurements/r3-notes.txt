@@ -24,25 +24,32 @@ certificate covers both independently: `localhost` and `line-simulator` are DNS 
 127.0.0.1 is an IP SAN (simulator/pki.py, pinned by
 test_server_dns_sans_cover_every_name_a_client_may_dial).
 
-Consequence for §14: the /etc/hosts prerequisite in `make preflight` is no longer needed
-for the *host* client path. It is still needed for anything that insists on dialling the
-one canonical name from the host, and `make preflight` still enforces it. Removing that
-check is a decision for whoever owns §14, not for this task -- flagged, not taken.
+Consequence for §14, since taken: the /etc/hosts check is gone from `make preflight`.
+The host client path does not need it, and §14's "no manual steps" now holds without
+qualification. host-etc-hosts stays in the matrix as a row that may legitimately fail on
+a machine without the entry, which is why the verdict takes any host row rather than all
+of them.
 
 
-2. set_match_discovery_client_ip(False) is NOT necessary for any client measured
--------------------------------------------------------------------------------
-Measured by removing the call, rebuilding and re-running the whole matrix: all six
-measurable cells came back byte-identical, including asyncua-field-net/Sign, where the
-client's own IP and the IP the server sees genuinely differ.
+2. set_match_discovery_client_ip(False) is NOT necessary for either client
+--------------------------------------------------------------------------
+Measured twice by removing the call, rebuilding and re-testing.
 
-Same mechanism as above: the EndpointUrl branch in _mangle_endpoint_url short-circuits
-before the source-IP branch, and every asyncua client sends an EndpointUrl. The flag only
-matters for a client whose GetEndpoints omits it.
+  round 1, asyncua only     all six measurable cells byte-identical, including
+                            asyncua-field-net/Sign, where the client's own IP and the
+                            IP the server sees genuinely differ
+  round 2, with the gateway gateway-field-net/Sign -> Good, exit 0, session established,
+                            checkDomain on
 
-The call is kept in simulator/server.py. The row that would decide it -- UA-.NETStandard
-from inside field-net -- is Task 7's and is still unmeasured, and what the flag prevents
-is a certificate error raised three layers away from its cause.
+So it changes nothing for either client in the system. The mechanism is specific rather
+than lucky: the EndpointUrl branch in _mangle_endpoint_url short-circuits before the
+source-IP branch, and both asyncua and UA-.NETStandard send an EndpointUrl in GetEndpoints.
+
+The call is kept anyway, as a documented guard with a named trigger: a GetEndpoints
+request may legally omit EndpointUrl, and a client that does would be handed the server's
+container IP on whichever network it arrived over -- a name no certificate covers, failing
+later and somewhere else. That is a judgement call, not a measurement; both measurements
+are above, so removing it is a one-line decision for whoever disagrees.
 
 
 3. Restart survives with no re-trusting by hand
@@ -59,19 +66,40 @@ so the copy every peer's trust store already holds stays valid.
 
 4. Catch-up wall time, with the real inspection service in the loop
 -------------------------------------------------------------------
-  catchup_wall_seconds = 151.3 (first boot), 160.7 (second boot, same machine)
+Three boots of the same stack on the same machine:
 
-Both inside R1's 180 s budget, and both far above the ~9 s the same generation takes
-against a stub producer -- the difference is 19,800 renders plus 39,600 HTTP round trips.
-The margin is thinner than the stub suggested: at the configured 33 h depth the budget is
-~12 % away, not ~95 %.
+  boot 1   catchup_wall_seconds = 151.3   achieved_multiple = 785
+  boot 2   catchup_wall_seconds = 160.7   achieved_multiple = 739
+  boot 3   catchup_wall_seconds = 184.9   achieved_multiple = 642   <-- OVER BUDGET
 
-The clock's own catch-up window is 33 h / (700 - 1) = 170.0 s, so generation finishes
-before the phase flips, by 9 s on the first boot and 18 s on the second.
+R1 budgets catch-up at <= 180 s. Boot 3 crossed it. Nothing in the plant changed between
+boots 2 and 3; what changed is the machine, which was by then also building and running
+the gateway's containers. That is the finding, and it is not a flake: the work is 19,800
+renders plus 39,600 HTTP round trips, and it is CPU-bound, so the budget holds on an idle
+laptop and fails on a busy one.
+
+All three are far above the ~9 s the same generation takes against a stub producer, which
+is what the earlier measurement was taken with. Anyone sizing this from the stub is out by
+a factor of 17.
+
+The configured catchup_speed is 700, i.e. a clock window of 33 h / (700 - 1) = 170.0 s.
+Generation finished before that window on boots 1 and 2 (by 18.7 s and 9.3 s) and after it
+on boot 3. Whichever of the two is longer bounds the seam station_s3.run_live backfills:
+the clock's 170 s on boots 1-2, and generation's own 184.9 s on boot 3, where live.start
+recorded seam_seconds = 186.3.
+
+For whoever owns R1: record the measured range and the load dependence, not a single
+number. Raising catchup_speed does not help -- it shortens the clock's window, not
+generation -- so if 180 s has to hold under load, the lever is the depth or the per-part
+cost, not the multiple.
 
 
 5. The catch-up/live seam, read back over OPC UA
 ------------------------------------------------
+Measured twice, once at a 170 s seam (the clock's window) and once at 186.3 s (boot 3,
+where generation was the longer of the two). Identical result, which is the point of
+backfilling to a cursor rather than to a fixed duration.
+
 120 PartCount rows across the 12 simulated minutes spanning history_end (20:26:12) and
 the live handover, read from the host with the gateway's certificate:
 
@@ -82,3 +110,36 @@ One takt throughout. Before the fix in station_s3.run_live, the first live part 
 clock.now() rather than resuming at the instant generation stopped, which left a hole of
 exactly the catch-up window -- 170 s, ~28 parts, immediately after boot, in the freshest
 window the flagship question asks about.
+
+
+6. R3 fully closed -- row 1 is green
+------------------------------------
+After Task 7 built machine-agent/edge-gateway:dev, every cell is measured and none is
+pending:
+
+  gateway-field-net/Sign        ok   "session established machine-agent-gateway"
+  gateway-field-net/NoSecurity  --   BadSecurityModeRejected: requested SecurityMode None,
+                                     but opc.tcp://line-simulator:4840/plant offers only Sign
+  asyncua-field-net/Sign        ok   Good
+  asyncua-field-net/NoSecurity  --   No matching endpoints: SecurityPolicy#None
+  host-published-port/Sign      ok   Good
+  host-published-port/None      --   No matching endpoints: SecurityPolicy#None
+  host-etc-hosts/Sign           ok   Good
+  host-etc-hosts/None           --   No matching endpoints: SecurityPolicy#None
+
+The real UA-.NETStandard client, from inside field-net, with checkDomain on, against the
+one name and the one port. That is the claim the whole two-stack split exists to support.
+
+Two things had to be fixed before this row could mean anything, and both were bugs of the
+same shape -- a check that was supposed to prove something sitting outside the path that
+decides:
+
+  - run_r3.py's verdict named only asyncua-field-net/Sign as required, so a red gateway row
+    would have been reported PASS the moment it stopped being pending.
+  - gateway_cell ran docker without --user, so the gateway was refused its own .pfx
+    (UnauthorizedAccessException) and the row would have gone red for a permissions reason
+    with nothing to do with the boundary.
+
+Together they would have produced one confidently wrong artifact from two independent
+bugs. Both are fixed; the docker preamble is now one function so --user cannot go missing
+from one caller again.

@@ -58,6 +58,18 @@ class SimulatedClock:
         return self._cfg.catchup_speed
 
     @property
+    def wall(self) -> datetime:
+        """The real clock, never simulated time -- the ServerTimestamp analogue of §4.2,
+        for diagnostics only and never an input to analysis.
+
+        Public so that the one place with a legitimate need for it (simulator.status's
+        staleness stamp) reads the injected wall_fn rather than calling datetime.now()
+        itself, which would be untestable and would put a second, unfakeable clock in a
+        project whose whole time model is injected.
+        """
+        return self._wall()
+
+    @property
     def boot_wall(self) -> datetime:
         return self._boot
 

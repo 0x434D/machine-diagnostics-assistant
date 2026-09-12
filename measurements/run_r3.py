@@ -77,8 +77,17 @@ async def try_connect(url: str, secure: bool, pki: Path) -> dict[str, object]:
     return {"ok": True, "status": "Good"}
 
 
-def _docker_probe(image: str, secure: bool) -> dict[str, object]:
-    """Run this same file's `--probe` inside a container attached to field-net."""
+def _on_field_net(image: str, mounts: list[str], args: list[str]) -> dict[str, object]:
+    """One containerised cell: `image` attached to field-net, reported as a cell.
+
+    `--user` is not optional and is the reason this is one function rather than one per
+    image. pki-init writes each party's private key 0600, owned by the uid that owns the
+    bind-mounted pki/ (plant/.env.example, HOST_UID), so a container left on its image's
+    own uid is refused its own key: measured as UnauthorizedAccessException on
+    edge-gateway.pfx when the gateway row ran without it. That turns a cell red for a
+    reason that has nothing to do with the boundary, which is the worst kind of
+    measurement -- it looks like a finding.
+    """
     out = subprocess.run(
         [
             "docker",
@@ -88,18 +97,9 @@ def _docker_probe(image: str, secure: bool) -> dict[str, object]:
             "field-net",
             "--user",
             f"{os.getuid()}:{os.getgid()}",
-            "-v",
-            f"{REPO / 'pki'}:/pki:ro",
-            "-v",
-            f"{REPO / 'measurements'}:/measurements:ro",
+            *mounts,
             image,
-            "python",
-            "/measurements/run_r3.py",
-            "--probe",
-            ENDPOINT,
-            "--pki",
-            "/pki",
-            *(["--secure"] if secure else []),
+            *args,
         ],
         capture_output=True,
         text=True,
@@ -124,37 +124,19 @@ def _image_exists(image: str) -> bool:
 
 def gateway_cell(secure: bool) -> dict[str, object]:
     """Row 1: the real UA-.NETStandard client from inside field-net, which is the only
-    client that matters in production. Task 7 builds that image and its --connect-test
-    mode; until then this row is pending, not failing."""
+    client that matters in production. Pending, not failing, until Task 7's image and its
+    --connect-test mode exist -- and the verdict counts this row the moment it does."""
     if not _image_exists(GATEWAY_IMAGE):
         return {
             "ok": False,
             "pending": True,
             "status": f"{GATEWAY_IMAGE} not built -- Task 7 closes this row",
         }
-    out = subprocess.run(
-        [
-            "docker",
-            "run",
-            "--rm",
-            "--network",
-            "field-net",
-            "-v",
-            f"{REPO / 'pki'}:/pki:ro",
-            GATEWAY_IMAGE,
-            "--connect-test",
-            ENDPOINT,
-            "--security",
-            "Sign" if secure else "None",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    return _on_field_net(
+        GATEWAY_IMAGE,
+        ["-v", f"{REPO / 'pki'}:/pki:ro"],
+        ["--connect-test", ENDPOINT, "--security", "Sign" if secure else "None"],
     )
-    return {
-        "ok": out.returncode == 0,
-        "status": (out.stdout + out.stderr).strip()[-400:],
-    }
 
 
 def field_net_cell(secure: bool) -> dict[str, object]:
@@ -163,14 +145,34 @@ def field_net_cell(secure: bool) -> dict[str, object]:
     checkDomain and a three-RDN subject comparison that asyncua does not -- but it does
     settle the parts that are the server's: that the listener is reachable on field-net
     under the service name at all, and that discovery hands back a URL the session
-    accepts."""
+    accepts.
+
+    Re-enters this same file's --probe rather than carrying a second copy of the client
+    setup, which is why `measurements/` is mounted alongside `pki/`."""
     if not _image_exists(PLANT_IMAGE):
         return {
             "ok": False,
             "pending": True,
             "status": f"{PLANT_IMAGE} not built -- run docker compose build first",
         }
-    return _docker_probe(PLANT_IMAGE, secure)
+    return _on_field_net(
+        PLANT_IMAGE,
+        [
+            "-v",
+            f"{REPO / 'pki'}:/pki:ro",
+            "-v",
+            f"{REPO / 'measurements'}:/measurements:ro",
+        ],
+        [
+            "python",
+            "/measurements/run_r3.py",
+            "--probe",
+            ENDPOINT,
+            "--pki",
+            "/pki",
+            *(["--secure"] if secure else []),
+        ],
+    )
 
 
 async def run_matrix(pki: Path) -> dict[str, dict[str, object]]:
@@ -202,14 +204,30 @@ async def main() -> int:
 
     cells = await run_matrix(args.pki)
 
-    # R3 passes when the boundary works from where it has to work. A pending row is
-    # recorded as unmeasured and never counts towards the verdict in either direction --
-    # a row nobody ran is not a failure, and it is certainly not a pass.
+    # R3 passes when the boundary works from where it has to work, and "pending" is a
+    # statement about this run rather than about the row: a row nobody could run is not a
+    # failure, and the instant it becomes runnable it must count. Naming the field-net
+    # rows here and filtering on pending -- rather than leaving the gateway row out of the
+    # verdict -- is what stops this file reporting PASS on the day Task 7 builds the image
+    # and its one row comes back BadCertificateHostNameInvalid.
+    #
+    # `bool(required)` because an empty requirement list makes all() vacuously true: if no
+    # field-net client could be run at all, nothing about the boundary was measured and
+    # that is not a pass either.
     pending = [name for name, cell in cells.items() if cell.get("pending")]
-    required = ["asyncua-field-net/Sign"]
+    required = [
+        name
+        for name in ("gateway-field-net/Sign", "asyncua-field-net/Sign")
+        if not cells[name].get("pending")
+    ]
+    # Any one host path is enough. host-etc-hosts needs a `127.0.0.1 line-simulator` row
+    # that no longer is a prerequisite -- host-published-port carries the claim (see
+    # r3-notes.txt §1) -- so this must not be an all().
     host_sign = [name for name in cells if name.startswith("host-") and "Sign" in name]
-    passed = all(cells[name]["ok"] for name in required) and any(
-        cells[name]["ok"] for name in host_sign
+    passed = (
+        bool(required)
+        and all(cells[name]["ok"] for name in required)
+        and any(cells[name]["ok"] for name in host_sign)
     )
 
     document = {
