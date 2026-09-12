@@ -1,0 +1,24 @@
+R4 image-size measurement (Task 5, Step 10)
+
+Command:
+cd plant && uv run --frozen --package simulator python - <<'EOF'
+import statistics
+from simulator.render import render_part
+sizes = [len(render_part(f"A-{i:08d}", ["gap"], 640, 480, seed=20260912)) for i in range(500)]
+sizes.sort()
+print(f"img_p50={sizes[len(sizes)//2]} img_p99={sizes[int(len(sizes)*0.99)]} max={sizes[-1]}")
+EOF
+
+Result (500 parts, 640x480, defects=["gap"], seed=20260912):
+img_p50=1628 img_p99=1628 max=1628
+
+Note: all 500 renders are byte-identical at this size. The "gap" defect draws a fixed
+rectangle at a position derived only from width/height, not from the per-part RNG draw
+(the x/y coordinates render.py draws for gap are computed but unused by that branch), so
+part id has no effect on the pixels or the resulting PNG size for this defect class at a
+fixed resolution. This is the real, reproducible number for the brief's exact command
+(defects=["gap"], 640x480, seed=20260912), not a rounding artifact.
+
+A later task uses img_p99 (1628 bytes) as the base of R4's ceiling search (the brief names
+Task 14 for this; the Task 5 assignment names Task 9 -- flagged in the report as a numbering
+discrepancy to resolve, not silently picked one way).

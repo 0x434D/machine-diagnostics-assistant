@@ -586,6 +586,7 @@ dependencies = [
     { name = "asyncua" },
     { name = "cryptography" },
     { name = "httpx" },
+    { name = "pillow" },
     { name = "pydantic-settings" },
 ]
 
@@ -600,6 +601,7 @@ requires-dist = [
     { name = "asyncua", specifier = "==2.0.1" },
     { name = "cryptography", specifier = "==50.0.1" },
     { name = "httpx", specifier = "==0.28.1" },
+    { name = "pillow", specifier = "==12.3.0" },
     { name = "pydantic-settings", specifier = "==2.15.0" },
 ]
 

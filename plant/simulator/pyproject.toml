@@ -6,6 +6,11 @@ dependencies = [
     "asyncua==2.0.1",
     "pydantic-settings==2.15.0",
     "httpx==0.28.1",
+    # simulator.render duplicates inspection.render (§10.7 forbids the two workspace
+    # members depending on each other), so the simulator needs its own Pillow just as
+    # the inspection package already does. Same version, so the two copies stay
+    # trivially comparable.
+    "pillow==12.3.0",
     # simulator.pki imports cryptography.x509 directly for multi-SAN certificate
     # generation; asyncua only re-exports the helpers it needs, not the x509 API this
     # module builds SANs and key usage with. Pinned to the version already resolved
