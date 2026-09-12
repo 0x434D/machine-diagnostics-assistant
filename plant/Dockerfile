@@ -55,6 +55,13 @@ RUN apt-get update \
 COPY --from=build /opt/python /opt/python
 COPY --from=build /opt/venv  /opt/venv
 COPY --from=build --chown=10001:10001 /src /src
+# Docker seeds a fresh named volume's ownership and mode from the image directory it is
+# mounted over, and this one is mounted over by plant-history. Sticky-world-writable
+# rather than chown 10001, because the uid the container runs as is chosen at compose
+# time (plant/.env.example, HOST_UID) and the image cannot know it: the plant's services
+# must run as whoever owns the bind-mounted PKI. Nothing but this container's own
+# history database is ever written here, and no key material is.
+RUN install -d -m 1777 /data
 ENV PATH="/opt/venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1
 WORKDIR /src
