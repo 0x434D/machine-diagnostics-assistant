@@ -3,6 +3,10 @@
 Design spec: `docs/superpowers/specs/2026-09-12-machine-diagnostics-assistant-design.md`
 Engineering handbook: `docs/ENGINEERING.md` — read before touching tooling, CI or the database.
 
+Keep this file under 200 lines. Instruction files grow ~226% over their lifetime because
+appending is cheap and deleting requires verification — when you add a rule here, check whether
+an existing one is now dead, and whether a linter could enforce it instead.
+
 The spec is the source of truth. When code and spec disagree, say which one is wrong before
 changing either.
 
@@ -43,22 +47,22 @@ Each is stated as a prohibition because that is the form that measurably sticks.
   system's entire purpose is to not give quiet wrong answers. Three places have a real
   recovery: the gateway's OPC UA reconnect, its local queue when Postgres is unreachable,
   and the agent's tool loop. Everywhere else, let it propagate.
-- **Do not swallow cancellation.** `OperationCanceledException` and `asyncio.CancelledError`
+- Do not swallow cancellation: `OperationCanceledException` and `asyncio.CancelledError`
   mean shutdown. Re-raise.
 - **Do not add an interface, factory or base class with one implementation.** The spec names
   the abstractions this project needs. Others are speculation, and speculation ages badly.
-- **Do not copy a block of logic to a second place.** Two copies is where three comes from.
+- Do not copy a block of logic to a second place. Two copies is where three comes from.
 - **Do not add a dependency without justifying it in the commit message** — why the standard
   library or something already here won't do. Models hallucinate package names at a measured
   5–22% rate, so a new import is a thing to be deliberate about.
 - **Do not write a test that asserts how the code works.** If a refactor with no behaviour
   change breaks the test, the test was wrong.
-- **Do not use `Any` or `any` to make a type error go away.** Note `mypy --strict` does *not*
+- Do not use `Any` or `any` to make a type error go away. Note `mypy --strict` does *not*
   catch explicit `Any` on its own.
 
 ## Comments
 
-**Comment why, never what.** `# increment the counter` is noise. `# the sensor reports lanes
+Comment why, never what. `# increment the counter` is noise. `# the sensor reports lanes
 in reverse order on firmware below 2.1` is the reason the line exists and cannot be recovered
 from reading the code.
 
@@ -105,6 +109,19 @@ Violating one of these is quiet, and nothing in the file you are editing will te
 - **Ground truth never reaches the diagnostics stack.** If it does, every evaluation number in
   the project is worthless.
 - **Every number is configuration** — takt, speeds, thresholds, deadbands, budgets, seeds.
+
+## Subagents
+
+Three concurrent subagents is the ceiling without asking first. Say what you expect it to cost
+before going past it.
+
+**Tell every subagent not to spawn its own.** Fan-out compounds: three agents that each spawn
+six is twenty-one agents and a budget gone in twenty minutes, which has already happened once
+in this repo. Depth beyond one level is almost never worth it, because the top-level agent then
+has to wait on and reconcile work it cannot see.
+
+Prefer one well-scoped agent over three overlapping ones, and do the search yourself when you
+already know which file holds the answer.
 
 ## When unsure
 

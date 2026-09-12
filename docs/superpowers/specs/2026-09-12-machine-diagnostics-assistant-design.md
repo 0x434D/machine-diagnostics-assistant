@@ -1184,13 +1184,15 @@ rather than merely repeatable.
 - The Python version is pinned in `.python-version` and `requires-python`, and **uv
   provisions the interpreter itself** — the base image does not dictate it. Default 3.13;
   confirm `asyncua` supports it during M1 rather than assuming.
-- `uv.lock` is committed. Builds run `uv sync --frozen`, so a build that *would* change
-  the lockfile fails instead of silently drifting.
+- `uv.lock` is committed. Builds run **`uv sync --locked`**, which *fails* if the lockfile
+  would change. `--frozen` uses whatever is present without checking, so it belongs only in
+  the dependency-only Docker layer where the lockfile has been bind-mounted deliberately.
 - The uv binary is copied from its official pinned image, never fetched by a script at
   build time: `COPY --from=ghcr.io/astral-sh/uv:<pinned> /uv /uvx /bin/`.
 - Dockerfiles are layered for caching: copy `pyproject.toml` and `uv.lock`, run
-  `uv sync --frozen --no-install-project`, *then* copy source. Dependencies survive every
-  source edit. Container env: `UV_COMPILE_BYTECODE=1`, `UV_LINK_MODE=copy`.
+  `uv sync --frozen --no-install-workspace`, *then* copy source and `uv sync --locked`.
+  `--no-install-workspace` (not `--no-install-project`) skips every workspace member, so the
+  cached layer survives an edit to any of them. Container env: `UV_COMPILE_BYTECODE=1`, `UV_LINK_MODE=copy`.
 - Multi-stage: build with uv, run from a slim image carrying only the resolved
   environment.
 
@@ -1207,11 +1209,21 @@ than a Python exception:
 
 | | Pinned by | Locked by |
 |---|---|---|
-| Python | `.python-version`, `requires-python` | `uv.lock`, `uv sync --frozen` |
-| .NET | `global.json` | `packages.lock.json`, restore with `--locked-mode` |
+| Python | `.python-version`, `requires-python` | `uv.lock`, `uv sync --locked` |
+| .NET | `global.json` with `rollForward: disable`, `Directory.Packages.props` | `packages.lock.json`, restore with `--locked-mode` |
 | Node | `.nvmrc`, `engines`, pnpm via corepack | `pnpm-lock.yaml`, `--frozen-lockfile` |
 
 Every base image is pinned by digest, not by tag.
+
+Three .NET details that stop being optional once lock files are in play. `global.json` needs
+`"rollForward": "disable"` — SDK-implicit `PackageReference` items change between SDK
+versions, and a different SDK on another machine is the most common cause of a locked-mode
+restore that fails in CI but not locally. **Central Package Management**
+(`Directory.Packages.props`) and the lock file are complements, not alternatives: CPM records
+which version was asked for, the lock file records what restore actually resolved. And a
+repo-local `NuGet.config` must carry `<clear />` in both `packageSources` and
+`packageSourceMapping` — without it a machine- or user-level source silently joins the
+resolution set, which is a dependency-confusion hole.
 
 ### 10.8 Quality gates
 
@@ -1412,6 +1424,9 @@ Target: all of M1–M8.
 - Significance test choice (binomial exact vs. two-proportion z) and the minimum-sample
   gate — deferred to M3, needs the noise floor's real distribution
 - Exact catch-up speed, history depth and takt — set from the M1 measurement, not guessed
+- **Python 3.13 or 3.14.** 3.14 is the current stable release, so 3.13 is two minors behind.
+  3.13 is the conservative pick and stands, but it should be a decision rather than drift —
+  revisit once M1 confirms `asyncua` support.
 - Whether scenario 6 (optics fouling) survives review once confidence decay is visible in
   practice, given that it is stipulated rather than emergent
 - MCP specification revision to pin — decide at M4 against what clients actually support

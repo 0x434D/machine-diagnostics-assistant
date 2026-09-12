@@ -18,6 +18,12 @@ natural-language instructions were complied with **67.0%** of the time; the same
 enforced executably reached **88.3%**. So roughly one prose rule in three is violated, and the
 right instinct on reading a rule in `CLAUDE.md` is *"can this be a lint code instead?"*
 
+One number to distrust if you meet it: a widely-circulated claim of "25–40% prose compliance
+versus ~95% with hooks", usually attached to a quote about advisory rules being theatre. Both
+trace to a single gist citing an unpublished audit, and the quote does not appear anywhere its
+attributed author wrote. It appears to be fabricated and is propagating into search summaries as
+fact. The 67.0 / 88.3 figures above are the measured version of the same argument.
+
 The corollary matters just as much: **62% of instruction files contain "Lint Leakage"** —
 prose restating what a linter already enforces. It is the most common instruction-file defect
 measured, it costs context every session, and it dilutes the rules that genuinely cannot be
@@ -211,7 +217,12 @@ M:System.DateTime.get_UtcNow();use the injected IClock
 M:System.Threading.Tasks.Task.Wait();await it
 P:System.Threading.Tasks.Task`1.Result;await it
 M:System.Threading.Thread.Sleep(System.Int32);use Task.Delay with a CancellationToken
+M:Microsoft.EntityFrameworkCore.Infrastructure.DatabaseFacade.EnsureCreated();migrations own the schema
 ```
+
+The last line matters more than it looks. `EnsureCreated()` is the fastest thing to reach for
+in a Compose dev loop and it permanently poisons migrations — Microsoft's own guidance is that
+the only way back is to drop the database and recreate it from migrations.
 
 The first three enforce spec §4.2 — that all analysis uses `SourceTimestamp` and never the
 wall clock — mechanically, instead of relying on anyone remembering.
@@ -440,7 +451,11 @@ with host paths baked in.
 - **Healthchecks belong in compose, not the Dockerfile** — they are environment-specific and
   belong next to the `depends_on` that consumes them.
 - **Postgres on an `internal: true` network, port not published.** Use `docker compose exec` for
-  psql. A published 5432 on a laptop is how databases reach the internet.
+  psql. A published 5432 on a laptop is how databases reach the internet. If you must, bind to
+  loopback explicitly — `"127.0.0.1:5432:5432"`; the bare `5432:5432` form binds `0.0.0.0`.
+- **Do not rely on a host firewall.** Docker writes its own iptables NAT rules that bypass UFW's
+  INPUT chain, so a published port is reachable from the LAN even with `ufw deny` in place. The
+  defence is not publishing the port, not the firewall rule.
 - **Hardening, all of it realistic:** `read_only: true` with `tmpfs: [/tmp]`, `cap_drop: [ALL]`,
   `security_opt: ["no-new-privileges:true"]`, `user: "999:999"`. The gateway's SQLite queue is a
   named volume, which `read_only` does not affect.
@@ -452,7 +467,13 @@ with host paths baked in.
 - `profiles:` keeps the harness and the identity provider out of a default `compose up`.
 
 **OCI labels** — `org.opencontainers.image.source`, `.revision`, `.created`. One line each, and
-`.source` is what links a published image back to the repository.
+`.source` is what links a published image back to the repository. Worth knowing that .NET's SDK
+container publishing emits the full label set automatically, which a hand-written Dockerfile
+almost never does — match it by hand.
+
+**Set `SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)`.** Full bit-for-bit reproducibility is not
+worth chasing here, but this one line stops the image digest changing when nothing but the clock
+did — which is what otherwise makes Compose recreate containers for no reason.
 
 ---
 
@@ -491,6 +512,13 @@ gets `USAGE` on `read` and `SELECT` on its views — no `INSERT`, no `UPDATE`, n
 That converts "the analysis service must not write to ingest tables" from a code-review
 convention into **a permission error at runtime**. Roughly thirty lines of SQL, once, and it is
 the highest-value thing in this section.
+
+**One trap that fails silently and late.** `ALTER DEFAULT PRIVILEGES` only affects objects
+created by the role you name, and PostgreSQL does not inherit those defaults through role
+membership. If the migration runner connects as a deploy role while the grant was written
+`FOR ROLE gateway_owner`, every table added afterwards quietly misses its `SELECT` grant — and
+nothing surfaces until a reader hits a table added months earlier. Write the default privileges
+for whichever role the migration runner *actually connects as*, and assert it in a test.
 
 **The identity provider gets its own database**, not just its own schema. Same Postgres
 instance — so spec §10.5's "reusing the existing Postgres" still holds — but its DDL never
@@ -611,16 +639,24 @@ on checkout. Add **`zizmor`** (Actions security linter — catches template inje
 permissions, unpinned actions) and `actionlint`.
 
 **Supply chain:** Trivy on every built image, failing on HIGH and CRITICAL with fixes available.
-BuildKit SBOM and provenance attestations (`--sbom=true --provenance=true`).
-`actions/attest-build-provenance` — signed SLSA provenance is now about three lines of YAML with
-keyless signing, which moved it from advanced to no-excuse. And `uv export --format cyclonedx`
-gives a dependency SBOM straight from the lockfile.
+BuildKit SBOM and provenance attestations (`--sbom=true --provenance=true`) — but note BuildKit
+**only scans the final stage**, so a multi-stage build's SBOM omits everything installed in the
+builder. Widen it with `BUILDKIT_SBOM_SCAN_CONTEXT=true` and `BUILDKIT_SBOM_SCAN_STAGE=true`.
 
-**One reason this is not optional:** the EU Cyber Resilience Act's vulnerability-reporting
-obligations begin in September 2026, with full application in December 2027, and it makes SBOM
-production a legal expectation for products with digital elements placed on the EU market.
-**Verify** the exact dates and whether this product falls in scope — that is a legal question,
-not a tooling one, but it is why SBOM moved from advanced to baseline.
+Signed SLSA provenance is now roughly three lines of YAML with keyless signing, which moved it
+from advanced to no-excuse — use **`actions/attest`** rather than `actions/attest-build-provenance`,
+which is now just a wrapper and points new implementations at the former. GitHub's artifact
+attestations get you SLSA Build L2 on their own; L3 additionally requires reusable workflows.
+Do not start from `slsa-framework/slsa-github-generator`, which is no longer actively maintained.
+And `uv export --format cyclonedx` gives a dependency SBOM straight from the lockfile.
+
+**One reason this is not optional, and the date has passed.** The EU Cyber Resilience Act's
+vulnerability-reporting obligations **applied from 11 September 2026**; the main obligations
+follow on 11 December 2027. What it actually requires on SBOM is narrower than the hype: a
+machine-readable bill of materials covering *at least top-level dependencies*, in no mandated
+format, disclosed to authorities rather than published. Scope turns on placing a product on the
+EU market commercially. **Verify** whether this product falls in scope — that is a legal
+question, not a tooling one, but it is why SBOM moved from advanced to baseline.
 
 **No build orchestrator.** Nx, Turborepo, Bazel, Moon, Pants, Dagger and Earthly are all net
 negatives at eight services and one developer — and Earthly is sunsetting while Dagger has
@@ -685,6 +721,11 @@ What to look at first in a diff, in this order:
 5. **New `try/except`** — specific exception, specific recovery, or a swallowed failure?
 6. **Tests** — do they assert behaviour, or implementation? Would a pure refactor break them?
 7. **Comments** — do they say *why*, or restate the code? Is what they claim actually true?
+
+Worth knowing what no tool catches: a test with **zero assertions** is not detected by any rule
+in ruff's index or the pytest plugin set — it is about thirty lines of custom AST walk, and worth
+writing given how confidently a passing empty test reads. Nor is semantic duplication, over-
+mocking, comment accuracy, or whether the author understands their own code.
 
 Two of these can be partly mechanised and should be: **mutation testing on the diff** (not the
 whole repo) is the only real check on whether tests assert behaviour, and

@@ -36,9 +36,9 @@ Every task's requirements implicitly include this section. Values are copied ver
 
 **Toolchain (§10.7)**
 - Python version pinned in `.python-version` and `requires-python`; **uv provisions the interpreter**, the base image does not dictate it. Default 3.13.
-- `uv.lock` is committed. Builds run `uv sync --frozen`.
+- `uv.lock` is committed. Builds run `uv sync --locked`, which **fails** on drift. `--frozen` uses whatever is present without checking, so it belongs only in the dependency-only Docker layer where the lockfile is bind-mounted deliberately.
 - uv binary copied from its official pinned image: `COPY --from=ghcr.io/astral-sh/uv:<pinned> /uv /uvx /bin/`. Never fetched by a script at build time.
-- Dockerfile layering: copy `pyproject.toml` + `uv.lock`, run `uv sync --frozen --no-install-workspace`, *then* copy source.
+- Dockerfile layering: copy `pyproject.toml` + `uv.lock`, run `uv sync --frozen --no-install-workspace`, *then* copy source and `uv sync --locked`.
 - Container env: `UV_COMPILE_BYTECODE=1`, `UV_LINK_MODE=copy`.
 - Multi-stage: build with uv, run from a slim image carrying only the resolved environment.
 - **Two workspaces, one per stack** — `plant/` and `diagnostics/` each own a uv workspace. Never one at the repository root.
@@ -442,7 +442,7 @@ The layering here is copied by every Python service in every later milestone. Ge
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: two uv workspaces whose members build with `uv sync --frozen --package <name>`; a `Dockerfile` per stack taking `--build-arg PACKAGE=<member>`; `make` targets `preflight`, `fmt`, `lint`, `test`, `check`, `verify`, `lock-check`; the §10.8 quality-gate configuration that every later task's commit asserts.
+- Produces: two uv workspaces whose members build with `uv sync --locked --package <name>`; a `Dockerfile` per stack taking `--build-arg PACKAGE=<member>`; `make` targets `preflight`, `fmt`, `lint`, `test`, `check`, `verify`, `lock-check`; the §10.8 quality-gate configuration that every later task's commit asserts.
 
 - [ ] **Step 1: Write the failing toolchain test**
 
@@ -651,7 +651,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # 3. source last
 COPY . .
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --frozen --package "${PACKAGE}"
+    uv sync --locked --package "${PACKAGE}"
 
 FROM ${BASE} AS runtime
 COPY --from=build /opt/python /opt/python
