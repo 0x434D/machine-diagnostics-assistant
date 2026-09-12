@@ -243,8 +243,23 @@ The camera belongs to the station; the vision system is a separate box beside it
 - `SimulatedClassifier` resolves the truth through a **side channel** keyed by part id,
   inside `plant-net`, **never through the request**. A real model would ignore that
   channel and the signature would not change.
-- It produces plausible per-class confidence distributions plus configurable
-  **false-accept and false-reject rates**, so the confidence field carries information.
+- It produces plausible per-class confidences plus configurable **false-accept and
+  false-reject rates**, so the confidence field carries information.
+
+**The per-class scores are independent, not a distribution.** Each of the six defect classes
+carries its own score in [0, 1]; they do not sum to 1, and there is no seventh "good" class.
+A good part simply scores low on all six.
+
+This is forced by the scenarios rather than chosen. Scenario 6 is *"optics fouling →
+confidence decays across all classes"* — impossible under a softmax, where six values summing
+to 1 cannot all fall. Scenarios 4 and 5 need two classes on one part (`misalignment` +
+`scratch`, `missing_part` + `contamination`), and pattern DP-02 is keyed on a pair. Mutually
+exclusive classes cannot express any of that.
+
+The scalar `Confidence` on the event is confidence in the **OK/NOK verdict**, not in a class.
+A good part's verdict confidence is high while all six class scores are low; the earlier
+reading — mass spread over six defect classes — reported a good part as 27% confident and ~30%
+misaligned, which is the symptom of treating the vector as a distribution.
 
 Defect classes: `gap`, `crack`, `misalignment`, `missing_part`, `scratch`, `contamination`.
 
