@@ -1,8 +1,9 @@
 # syntax=docker/dockerfile:1
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.11.13@sha256:841c8e6fe30a8b07b4478d12d0c608cba6de66102d29d65d1cc423af86051563
-# Handbook §7 says trixie for Python. Bookworm is a deliberate hold, to be revisited as
-# one decision before more images inherit it.
-ARG BASE=debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
+# Handbook §7's trixie. The bookworm hold ended the first time `make scan-images` ran and put
+# a number on it: two HIGH pcre2 CVEs (CVE-2026-86145, CVE-2026-89161), fixed in Debian but not
+# in any bookworm-slim tag. Trixie builds unchanged and scans clean.
+ARG BASE=debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132
 
 FROM ${UV_IMAGE} AS uv
 

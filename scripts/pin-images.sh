@@ -6,7 +6,7 @@
 set -euo pipefail
 IMAGES=(
   # Base images (spec §10.7).
-  "debian:bookworm-slim"
+  "debian:trixie-slim"
   "postgres:17-bookworm"
   "node:22-bookworm-slim"
   "ghcr.io/astral-sh/uv:0.11.13"
