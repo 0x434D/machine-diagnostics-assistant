@@ -55,6 +55,13 @@ curves differ, which is why a stable peak is not by itself an answer.
 correlation carry the discrimination — where the scalars and the lot evidence disagree, the lot
 evidence wins.
 
+## The other end of the same axis
+
+`gap` is too little interference; `crack` is too much of it. Both are dimensional, both track
+the component lot, and both show in the force–distance curve. If `crack` is rising in the same
+window, treat them as one finding — a dimensional spread too wide in both directions — rather
+than as two investigations.
+
 ## What it is not
 
 - Not `misalignment`. `gap` is components not fully together; `misalignment` is components
