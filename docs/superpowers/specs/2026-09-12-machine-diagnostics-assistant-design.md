@@ -1213,6 +1213,49 @@ than a Python exception:
 
 Every base image is pinned by digest, not by tag.
 
+### 10.8 Quality gates
+
+Tests (§10.2) establish that the system does the right thing. These establish that the code
+is fit to be worked on — which matters more here than usual, because eight milestones across
+three languages is long enough for entropy to win if nothing pushes back.
+
+**`make check` is the single entry point**, green before every commit and identical to what
+CI runs. `make fmt` formats in place, `make lint` checks without changing, `make test` runs
+the suite, `make check` is lint plus test.
+
+| | Format & lint | Types | Tests |
+|---|---|---|---|
+| Python | `ruff format`, `ruff check` | `mypy --strict` | `pytest` |
+| C# | `dotnet format --verify-no-changes` | `Nullable=enable`, `TreatWarningsAsErrors=true`, `AnalysisMode=All` | `xunit` |
+| TypeScript | `biome check` | `tsc --noEmit`, `strict: true` | `vitest` |
+
+One tool per job per language, chosen for speed and for having no configuration argument:
+`ruff` replaces black, isort and flake8; `biome` replaces eslint and prettier. The C# column
+costs nothing at all — it is three properties in the csproj, and nullable reference types
+plus warnings-as-errors is the highest-value quality lever .NET offers.
+
+Rules:
+
+- **Warnings are errors.** A gate that can be ignored is not a gate.
+- **No blanket suppressions.** `# type: ignore`, `# noqa`, `biome-ignore` and
+  `#pragma warning disable` each require a specific rule code and a comment giving the
+  reason. Never file-wide, never bare.
+- **New code is typed.** No untyped signatures in Python, no `any` in TypeScript, nullable
+  reference types enabled in C#.
+- Formatting is never a review topic — the formatter decides.
+
+**Enforcement in three layers.** A pre-commit hook runs the fast subset (format and lint) so
+mistakes surface in seconds. `make check` is the full gate, and it is what a commit asserts
+passed. CI runs the identical target once a remote exists. `--no-verify` is never used.
+
+The commit convention follows from this: **a commit is evidence the gates passed** — the same
+principle as the authenticity proofs in §1, where the artifact carries its own proof.
+Conventional-commit prefixes, one commit per completed plan step, never one per file and
+never one per session.
+
+Frontend tooling is revisitable at M6, when the UI stops being a chat box and React-specific
+lint rules may argue for eslint over biome.
+
 ---
 
 ## 11. Technology choices
