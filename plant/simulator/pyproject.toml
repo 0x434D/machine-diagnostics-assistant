@@ -6,6 +6,11 @@ dependencies = [
     "asyncua==2.0.1",
     "pydantic-settings==2.15.0",
     "httpx==0.28.1",
+    # simulator.pki imports cryptography.x509 directly for multi-SAN certificate
+    # generation; asyncua only re-exports the helpers it needs, not the x509 API this
+    # module builds SANs and key usage with. Pinned to the version already resolved
+    # transitively via asyncua, so this adds no new version to the dependency graph.
+    "cryptography==50.0.1",
 ]
 
 [dependency-groups]
