@@ -46,6 +46,18 @@ Every task's requirements implicitly include this section. Values are copied ver
 - Node pinned by `.nvmrc` + `engines` + pnpm via corepack, locked by `pnpm-lock.yaml` + `--frozen-lockfile`.
 - **Every base image is pinned by digest, not by tag.**
 
+**Quality gates (§10.8)**
+- `make check` (= `lint` + `test`) must be green before every commit. `make fmt` formats in
+  place, `make lint` checks without changing.
+- Python: `ruff format`, `ruff check`, `mypy --strict`. C#: `dotnet format
+  --verify-no-changes`, plus `Nullable=enable`, `TreatWarningsAsErrors=true`,
+  `AnalysisMode=All`. TypeScript: `biome check`, `tsc --noEmit` with `strict`.
+- Warnings are errors. No blanket suppressions — every `# type: ignore`, `# noqa`,
+  `biome-ignore` or `#pragma warning disable` carries a specific rule code and a reason.
+- New code is typed: no untyped signatures in Python, no `any` in TypeScript.
+- **Every task ends with `make check` green, then its commit.** A commit asserts the gates
+  passed. Never `--no-verify`.
+
 **Configuration (§10.3)**
 - Each stack has its own `.env`. No secrets in the repository.
 - Everything with a number in it is configuration, not a constant buried in code: takt, catch-up speed, history depth, deadbands, page sizes, reject rate, seed.
@@ -425,11 +437,12 @@ The layering here is copied by every Python service in every later milestone. Ge
 - Create: `plant/pyproject.toml`, `plant/.python-version`, `plant/Dockerfile`, `plant/simulator/pyproject.toml`, `plant/inspection/pyproject.toml`
 - Create: `diagnostics/pyproject.toml`, `diagnostics/.python-version`, `diagnostics/Dockerfile`, `diagnostics/analysis/pyproject.toml`, `diagnostics/agent/pyproject.toml`
 - Create: `global.json`, `.nvmrc`, `.gitignore`, `Makefile`, `scripts/pin-images.sh`
+- Create: `ruff.toml`, `mypy.ini`, `Directory.Build.props`, `.pre-commit-config.yaml`
 - Test: `plant/simulator/tests/test_toolchain.py`
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: two uv workspaces whose members build with `uv sync --frozen --package <name>`; a `Dockerfile` per stack taking `--build-arg PACKAGE=<member>`; `make` targets `preflight`, `test`, `lock-check`.
+- Produces: two uv workspaces whose members build with `uv sync --frozen --package <name>`; a `Dockerfile` per stack taking `--build-arg PACKAGE=<member>`; `make` targets `preflight`, `fmt`, `lint`, `test`, `check`, `verify`, `lock-check`; the §10.8 quality-gate configuration that every later task's commit asserts.
 
 - [ ] **Step 1: Write the failing toolchain test**
 
@@ -712,7 +725,7 @@ node_modules/
 
 ```makefile
 SHELL := /bin/bash
-.PHONY: preflight lock-check test
+.PHONY: preflight lock-check fmt lint test check verify
 
 preflight:
 	@docker --version >/dev/null || { echo "docker missing"; exit 1; }
@@ -732,15 +745,59 @@ test: lock-check
 	cd diagnostics && uv run --frozen --package analysis pytest analysis/tests -q
 	cd diagnostics && uv run --frozen --package agent pytest agent/tests -q
 	cd diagnostics/gateway && dotnet test --locked-mode
+
+fmt:
+	cd plant && uv run ruff format . && uv run ruff check --fix .
+	cd diagnostics && uv run ruff format . && uv run ruff check --fix .
+	cd diagnostics/gateway && dotnet format
+
+lint: lock-check
+	cd plant && uv run ruff format --check . && uv run ruff check . && uv run mypy --strict .
+	cd diagnostics && uv run ruff format --check . && uv run ruff check . && uv run mypy --strict .
+	cd diagnostics/gateway && dotnet format --verify-no-changes && dotnet build --locked-mode
+
+check: lint test
+
+verify:
+	cd plant && uv run --frozen --package simulator pytest simulator/tests -q -m authenticity
 ```
 
 `uv lock --check` is the drift guard §10.7 asks for: it fails if the lockfile would change, rather than letting it move silently.
 
+**`check` is the gate; `verify` is separate, deliberately.** The authenticity proofs in
+Task 15 stop and restart containers — minutes per run, and flaky when Docker is under load.
+Putting them in the default gate would make every commit slow enough that people stop
+running it. They are marked `-m authenticity`, excluded from `make test`, and run by
+`make verify` and by CI. Task 15 must register that pytest marker.
+
+C# warnings-as-errors and nullable reference types go in a root `Directory.Build.props` so
+every project inherits them, rather than being repeated per csproj:
+
+```xml
+<Project>
+  <PropertyGroup>
+    <Nullable>enable</Nullable>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <AnalysisMode>All</AnalysisMode>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+  </PropertyGroup>
+</Project>
+```
+
+The pre-commit hook runs only the fast half — `ruff format --check`, `ruff check`,
+`dotnet format --verify-no-changes` — so mistakes surface in seconds. `make check` remains
+the full gate.
+
+TypeScript tooling (`biome`, `tsc --noEmit`, `vitest`) lands with the first frontend code in
+Task 14, wired into the same four targets.
+
 - [ ] **Step 8: Commit**
 
 ```bash
-git add plant diagnostics global.json .nvmrc .gitignore Makefile scripts/pin-images.sh
-git commit -m "build: uv workspaces per stack, pinned toolchain and image digests
+make check
+git add plant diagnostics global.json .nvmrc .gitignore Makefile scripts/pin-images.sh \
+        ruff.toml mypy.ini Directory.Build.props .pre-commit-config.yaml
+git commit -m "build: uv workspaces per stack, pinned toolchain, image digests and quality gates
 
 Confirms §10.7's open question: asyncua 2.0.1 declares requires-python >=3.10
 and runs on the pinned CPython 3.13."
