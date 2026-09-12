@@ -29,10 +29,12 @@ relationship between force and position, so components are left short of fully s
 1. **Gauge a pulled part.** Confirm the gap is real and get a magnitude.
 2. **Force trend across the window**, not the alarm instant. A drift walks; a step jumps.
    Only a walk supports this pattern.
-3. **Ordering in time.** The force should move *before* the defect rate does. If the defects
+3. **The curves for affected parts.** Shape changing after an unmoved contact point is this
+   pattern; a contact point that has moved is DP-05.
+4. **Ordering in time.** The force should move *before* the defect rate does. If the defects
    came first, this is not the pattern.
-4. **Joining distance** alongside the force — under a press drift, both move together.
-5. **Scope the affected parts.** Parts pressed off-nominal before any alarm fired already
+5. **Joining distance** alongside the force — under a press drift, both move together.
+6. **Scope the affected parts.** Parts pressed off-nominal before any alarm fired already
    shipped. That is the number someone has to act on.
 
 ## What would refute this — read this before concluding
@@ -49,11 +51,14 @@ Also refuting: defects correlating with a component lot rather than with the clo
 correlation beats time correlation (CORE-02), and a press does not know what lot it is
 pressing.
 
-## The recording limit
+## Use the curve
 
-The **force–distance curve** is what genuinely separates a press problem from a material one,
-and only two scalars per part are recorded (S2). Say so. A stable peak force is evidence
-against a press drift, not proof of its absence.
+The **force–distance curve** is the discriminating evidence (S2). Under this pattern the shape
+after contact changes while the contact point stays where it was — the press is doing something
+different with the same components. Under DP-05 the opposite holds.
+
+Check the curves before citing this pattern. If they are unavailable, say so and treat the
+stable-or-drifting peak force as a lean rather than a finding.
 
 ## Stating the evidence
 

@@ -41,11 +41,15 @@ reference before the population costs two minutes and routinely saves a shift.
 Confidence decaying across **all six** classes while the scrap rate stays flat. That is only
 possible because the six scores are independent — under a distribution they could not all fall
 — and it is the signature of the imaging degrading rather than of any defect increasing
-(DP-04). A-302 may be standing alongside.
+(DP-04).
+
+**Nothing will alarm to tell you.** The cell has no sensor watching its own illumination, so a
+light source dimming or fouling produces no warning at all — only sagging confidence, and only
+if someone looks. That is exactly why the master part comes first in this document.
 
 ## What it is not
 
 Not a verdict about material until the master part has cleared the imaging. That is the whole
 discipline of this class.
 
-See also: S3, A-302, `scratch`, DP-03, DP-04, CORE-01.
+See also: S3, `scratch`, DP-03, DP-04, CORE-01.

@@ -15,7 +15,7 @@ file without one.
 | `core/` | the always-loaded method and evidence rules | 2 |
 | `sops/` | one per investigation type | 6 |
 | `stations/` | what each station does, and its failure modes | 4 |
-| `alarms/` | one per alarm code, with documented checks | 12 |
+| `alarms/` | one per alarm code, with documented checks | 11 |
 | `defects/` | one per defect class | 6 |
 | `patterns/` | pattern → hypothesis → checks to run | 10 |
 

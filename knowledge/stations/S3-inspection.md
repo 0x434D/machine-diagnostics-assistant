@@ -51,9 +51,28 @@ If the reject image does not show the defect, the defect was not on the part.
 | Symptom | Check |
 |---|---|
 | confidence decaying across all classes, scrap rate flat | the imaging chain, not production — DP-04 |
+| rejects clustering in one region of the image | illumination across the field, not the parts |
 | rejects whose images show no defect | false rejects; run the master part |
 | a defect class rising with no correlate in carrier, lane or lot | imaging before production |
 | no results while parts flow | acquisition or the vision box, not a quality problem at all |
+
+## Illumination degrades silently
+
+**There is no alarm for this.** Detecting a dimming or drifting light source needs a sensor
+watching the illumination itself, and this cell does not have one. So the degradation arrives
+with no announcement at all, while inspection keeps producing verdicts.
+
+Two shapes, both silent:
+
+- **Gradual** — fouling, or emitters ageing. Confidence sags across all six classes over hours
+  or days while nothing in the data says why (DP-04).
+- **Abrupt** — an emitter fails outright. A step rather than a drift, and an LED array with a
+  dead emitter lights the field unevenly, so the damage may show up in one region of the image
+  rather than across the whole part.
+
+Because nothing announces either, **the known-good master part is the only detection there
+is.** That is not a preference for a convenient check; it is the absence of an alternative,
+and it is why every appearance-class investigation starts there (CORE-01).
 
 ## The station's own trap
 

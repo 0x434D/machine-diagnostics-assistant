@@ -13,8 +13,10 @@ applies_to:
 ## Pattern
 
 Verdict confidence falling across the whole inspected population, with **all six class scores
-drifting together**, while the scrap rate stays roughly flat. A-302 (illumination below
-reference) may be standing.
+drifting together**, while the scrap rate stays roughly flat.
+
+**Nothing alarms.** The cell has no sensor watching its own illumination, so this pattern has
+no announcement — the only thing that changed in the data is the confidence.
 
 **This shape is only possible because the six scores are independent.** Under a distribution
 that summed to one, six values could not all fall — one would have to rise. That they all fall
@@ -29,10 +31,12 @@ the optics and restore the illumination reference.
 
 ## Checks to run
 
-1. **Run the known-good master part.** The documented first move. A master that no longer
-   scores clean settles it: the imaging changed, not the production.
-2. **Illumination reference as a trend.** Gradual decline is fouling or ageing; a step is an
-   event — a lamp, a guard, a setting.
+1. **Run the known-good master part.** The documented first move, and here the *only* move
+   that settles anything: a master that no longer scores clean means the imaging changed, not
+   the production. There is no illumination signal to consult instead.
+2. **The shape of the decay.** Gradual is fouling or emitters ageing. A step is something that
+   failed — and an emitter failing lights the field unevenly, so check whether the affected
+   rejects cluster in one region of the image rather than across the part.
 3. **Confidence across the whole population**, not only rejects. Restricting to rejects hides
    the pattern, because rejects are selected on the very scores that are drifting.
 4. **Scrap rate over the same window.** Flat scrap with falling confidence is this pattern.
@@ -43,7 +47,8 @@ the optics and restore the illumination reference.
 ## What would refute this
 
 - **The master part still scoring clean.** Then the imaging is sound and the confidence
-  movement has another explanation.
+  movement has another explanation. This is the only refutation available, which is worth
+  saying plainly: with no illumination sensor, a clean master is the whole of the evidence.
 - **One or two classes moving rather than all six** → a real defect population, not the chain.
 - **Scrap rising with confidence falling** → not this pattern.
 
@@ -62,4 +67,4 @@ With a simulated classifier the confidence decay is stipulated rather than emerg
 diagnostic path is right; the signal is softer than it would be with a real model. Labelled
 here so nobody mistakes a clean result for a validated one.
 
-See also: S3, A-302, `contamination`, `scratch`, CORE-02, SOP-02.
+See also: S3, `contamination`, `scratch`, CORE-02, SOP-02.

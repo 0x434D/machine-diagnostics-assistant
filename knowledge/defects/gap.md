@@ -28,6 +28,7 @@ the shop floor are not the same problem and do not have the same cause.
 |---|---|---|
 | Joining force | drifts | stable |
 | Joining distance | moves with the force | moves while force holds |
+| Force–distance curve | shape changes after contact | **contact point moves**, shape holds |
 | Defects track | time | **the component lot** |
 | Alarm | A-207 likely | none — nothing is out of tolerance |
 
@@ -39,12 +40,20 @@ So the second check is: **did the joining force actually move?**
 Do not stop at the force trend looking normal and conclude "no cause found". A stable force
 during a `gap` rise is not an absence of evidence; it is the evidence.
 
-## The limit you must state
+## Use the curve, not just the two numbers
 
-Peak force and joining distance are two scalars. The **force–distance curve** is what actually
-separates a press problem from a material one, and the curve is not recorded (see S2). Lot
-correlation is the strongest discriminator available here, and where the scalars and the lot
-evidence disagree, the lot evidence wins.
+The **force–distance curve** for the affected parts is the evidence that actually separates
+these two causes (S2). A contact point that has moved while the shape after contact is
+unchanged points at component geometry — the press travelling further before meeting
+resistance is precisely what an undersized component looks like. A changed shape after contact
+points at the press.
+
+The peak force and the final distance are summaries of that curve. They can agree while the
+curves differ, which is why a stable peak is not by itself an answer.
+
+**If the curve is not available**, say so, use the scalars as the weaker proxy, and let lot
+correlation carry the discrimination — where the scalars and the lot evidence disagree, the lot
+evidence wins.
 
 ## What it is not
 

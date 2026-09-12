@@ -39,12 +39,17 @@ here.
    about material deserves a dimensional measurement.
 2. **Joining force across the window.** Stable force is the discriminator. State it explicitly
    as a finding rather than as an absence.
-3. **Joining distance.** Undersized components let the press travel further at an unchanged
-   peak force. Distance moving while force holds supports this pattern.
-4. **When the lot changed**, against when the defects started. The lot boundary should lead.
-5. **Defect rate by lot**, with significance — the affected lot against the others on that
+3. **The force–distance curve.** This is the discriminator (S2). Undersized components let the
+   press travel further before it meets resistance, so the **contact point moves** while the
+   shape after contact stays recognisable. That signature is this pattern; a changed shape
+   after an unmoved contact point is DP-01.
+4. **Joining distance**, as the scalar summary of the same thing: distance moving while peak
+   force holds supports this pattern. Use it when the curve is unavailable, and say that you
+   did.
+5. **When the lot changed**, against when the defects started. The lot boundary should lead.
+6. **Defect rate by lot**, with significance — the affected lot against the others on that
    lane.
-6. **Scope the containment.** Which assemblies contain this lot, how many were rejected, and
+7. **Scope the containment.** Which assemblies contain this lot, how many were rejected, and
    **how many shipped.** Include assemblies whose component serial was never read (A-103) as
    unknowns; they cannot be excluded.
 
@@ -57,8 +62,8 @@ here.
 
 ## Stating the evidence
 
-Defect rate within the lot versus outside it, with n and significance; the force trend with
-figures showing it did not move; the lot change time against the defect onset; and the
+Defect rate within the lot versus outside it, with n and significance; the curve signature — contact point moved, shape held — or the force
+trend with figures showing it did not move, whichever you actually had; the lot change time against the defect onset; and the
 containment counts. The sentence someone acts on is *"278 assemblies containing L-4471
 shipped and need checking"*, not "we think the lot is bad".
 

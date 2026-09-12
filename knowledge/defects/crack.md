@@ -13,31 +13,63 @@ you have the part in your hand.
 
 ## First check: where the crack sits
 
-**Location is the diagnosis.** Look at where on the component the crack runs, relative to
-where the press acts on it.
+**Location is the diagnosis.** Look at where on the component the crack runs.
 
-- **At the press interface** — where load is introduced — points to the joining operation:
-  overforce, or a part not properly supported while the load went through it.
-- **Away from the press interface** points upstream: the component arrived damaged, or was
-  damaged in handling before it was ever joined.
+But read the location against the part's **risk zones**, not against the machine.
 
-This single observation splits the investigation in two, which is why it comes before any
-data. Going to the force trend first tells you what the press did; it does not tell you
-whether the press is where the part broke.
+## Risk zones, and why they come first
 
-## Then, by branch
+In a pressing or forming operation, cracks appear where the **highest process forces coincide
+with the least material**. That combination is a property of the part and the operation, not
+of the day: it is the same place every time, and it can be determined **in advance by
+simulation** rather than discovered by finding cracked parts.
 
-**If at the press interface:**
-1. Peak force for that serial, against the tolerance band. The per-part record is
-   authoritative for that part; the time series is for the trend.
-2. Whether force is elevated across a run or was elevated once.
-3. Seating — a part not properly supported cracks under an otherwise normal load, and the
-   force record will look innocent.
+This is clearest in deep drawing, where the zones of peak strain over thinned material are
+computed before a tool is ever built — but the principle carries to any press operation. The
+part has places where it is going to crack first, and they are knowable.
 
-**If away from the press interface:**
-1. What the affected parts share — lot, lane.
-2. Whether the crack is consistent in location and orientation across parts. Consistency
-   points to a mechanism; scatter points to handling.
+Two consequences, and both matter more than the fault they diagnose:
+
+1. **The inspection can be aimed.** Knowing the risk zones means looking at them deliberately
+   rather than hoping a crack is large enough to catch attention anywhere on the part.
+2. **Location becomes evidence rather than description.** A crack *in* a risk zone and a crack
+   *outside* every risk zone are different findings with different causes.
+
+## Reading the location
+
+**In a known risk zone** — the process ran to the edge of what the material tolerates there.
+That is a genuine ambiguity and the data resolves it:
+
+- **Force above nominal** → the process pushed harder than the zone tolerates. Check the peak
+  force for that serial against the band, then whether it is elevated across a run or was
+  elevated once.
+- **Force normal** → then the material gave way at a normal load, which points at the
+  material: thickness, or properties. Check what the affected parts share — lot above all.
+- **Force normal and the part was not properly supported** → load went through the part along
+  a path it was never meant to take. The force record will look entirely innocent, which is
+  what makes this one easy to miss.
+
+**Outside every risk zone** — this is not the forming process doing what forming processes do.
+Look upstream and sideways: the component arrived damaged, or it was damaged in handling, or
+it was mislocated so that load arrived somewhere it should never have been.
+
+## Then, either way
+
+1. **Consistency across parts.** Same location, same orientation, part after part, means a
+   mechanism. Scatter means handling.
+2. **What the affected parts share** — lot, lane, carrier — with significance, not by eye.
+3. **Scope the containment** if a lot is implicated. A fractured component is not a defect
+   somebody wants to find in the field.
+
+## Missing input
+
+**The risk-zone map for this part is not in this knowledge base.** Without it, "in a risk
+zone" cannot be evaluated and this document degrades to "look at the crack and see whether the
+location repeats" — which is weaker, and should be stated as weaker rather than papered over.
+
+Filling it means one document per part geometry naming its risk zones, from the process
+simulation that already exists wherever the tooling was designed properly. That is a concrete
+addition, and it is exactly the kind of thing this knowledge base is shaped to accept.
 
 ## What it is not
 
@@ -49,4 +81,4 @@ the distinction is not clear from the image, it is clear from the part.
 The repair — what to adjust, what to replace — is not documented here. This document gets a
 maintainer to the right half of the machine; the procedure belongs to whoever owns it.
 
-See also: S2, A-207, `scratch`, SOP-02.
+See also: S2, A-207, A-201, `scratch`, SOP-02, SOP-04.

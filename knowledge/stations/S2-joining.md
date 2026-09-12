@@ -18,23 +18,28 @@ Per part, at the moment it is pressed: **peak joining force and joining distance
 against that serial.** That per-part record is authoritative for that part. The time series
 exists too, and is for trends — not for deciding what happened to an individual assembly.
 
-## The two numbers, and what they cannot tell you
+## The curve is the evidence; the two numbers are its summary
 
-Peak force and joining distance are two scalars sampled from what is really a **force–distance
-curve**, and the curve shape is what actually separates a press problem from a material
-problem. Two presses can reach the same peak at the same final distance by entirely different
-routes — one meeting a correctly-sized component late, one meeting an undersized component
-early and coasting.
+Per part, S2 records the **force–distance curve** — how the load built as the press travelled —
+together with the peak force and the final distance.
 
-This system stores the scalars, not the curve. That is a real limit and it must be stated
-rather than worked around:
+Reach for the curve, because **the curve is what separates a press problem from a material
+problem** and the two scalars are not. Two presses can reach the same peak at the same final
+position by entirely different routes, and the route is the diagnosis:
 
-> The peak force is stable across the window, which is evidence against a press drift but not
-> proof — the force–distance curve is what distinguishes the two, and it is not recorded.
+- **Where the force begins to rise** is about the components. The press meets resistance when
+  it makes contact, so a contact point that has moved says the incoming geometry changed —
+  undersized components let the press travel further before the load builds at all.
+- **How the load develops after contact** is about the process. Slope, peak, and where the
+  peak falls relative to contact describe what the press did with what it was given.
 
-Use the scalars as the weaker proxy they are, and let **lot correlation** carry the
-discrimination when it is available (DP-05). Where the scalars and the lot evidence disagree,
-the lot evidence is stronger.
+A material problem therefore shifts *when* resistance appears while leaving the shape after
+contact recognisable. A press drift changes the shape while contact stays where it was.
+
+**If the curve is not available** for the window in question — say so, and fall back to peak
+force and final distance as the weaker proxy they are. A stable peak force is then evidence
+against a press drift rather than proof of its absence, and **lot correlation carries the
+discrimination** (DP-05). Never present the scalars as if they had settled it.
 
 ## States here
 
