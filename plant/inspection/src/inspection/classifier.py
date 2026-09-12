@@ -32,7 +32,14 @@ class PartContext:
 class InspectionResult:
     disposition: str  # "good" | "reject"
     defect_class: str | None
+    # Confidence in the OK/NOK verdict above, NOT in `defect_class` -- §3.4 (amended):
+    # a good part is confidently OK while every entry in `confidences` scores low.
     confidence: float
+    # Independent per-class scores in [0, 1], not a distribution: they do not sum to
+    # 1, and there is no seventh "good" class. Forced by §3.5's scenarios -- optics
+    # fouling needs every class's score able to fall together (impossible if six
+    # values must sum to 1), and two scenarios need two classes scoring high on one
+    # part, which mutually exclusive classes cannot express.
     confidences: dict[str, float]
     model_version: str = MODEL_VERSION
 
@@ -71,18 +78,21 @@ class SimulatedClassifier:
         defects = self._truth.lookup(ctx.part_id)
         rng = random.Random(f"{self._seed}:{ctx.part_id}:{len(image)}")
 
-        # A plausible distribution: mass concentrated on the true class, the rest
-        # spread with noise, so the confidence field carries information.
-        weights = {c: rng.uniform(0.01, 0.08) for c in DEFECT_CLASSES}
+        # Independent per-class scores (§3.4, amended): a low baseline for every
+        # class, boosted for whichever ones are actually declared truth -- no
+        # normalisation, so a part with two declared defects can score high on both
+        # at once (§3.5 scenarios 4 and 5), and the six never have to sum to 1.
+        scores = {c: rng.uniform(0.01, 0.08) for c in DEFECT_CLASSES}
+        for defect in defects:
+            scores[defect] = rng.uniform(0.55, 0.95)
+
         if not defects:
-            total = sum(weights.values())
-            confidences = {c: w / total for c, w in weights.items()}
-            return InspectionResult(
-                "good", None, max(confidences.values()), confidences
-            )
+            # Confidently OK: nothing scored high, so 1 - the loudest false alarm
+            # is the verdict's own confidence, not any one class's.
+            return InspectionResult("good", None, 1.0 - max(scores.values()), scores)
 
         top = defects[0]
-        weights[top] = rng.uniform(0.55, 0.95)
-        total = sum(weights.values())
-        confidences = {c: w / total for c, w in weights.items()}
-        return InspectionResult("reject", top, confidences[top], confidences)
+        # Confidently NOK: the verdict's confidence is the strongest signal seen,
+        # whichever class it came from -- not `scores[top]` specifically, since a
+        # second declared defect could plausibly score higher than the first.
+        return InspectionResult("reject", top, max(scores.values()), scores)

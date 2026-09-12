@@ -74,8 +74,20 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # inspection — M1's reject rate is a measurement knob for R4, not §3.5's
     # 1.5 % noise floor, which arrives with the noise model in M2.
     reject_rate: float = 0.05
-    image_width: int = 640
-    image_height: int = 480
+    # R4 measurement (measurements/r4-image-sizes.txt): at compress_level=1 with the
+    # sensor noise below, 320x240 clears OPC UA's MaxBufferSize (65,535 B) with margin
+    # while staying inside the ~170 s catch-up wall; 640x480 does not (either PNG
+    # optimize=True or compress_level=1 blew the wall-time budget at that resolution).
+    image_width: int = 320
+    image_height: int = 240
+    # PNG zlib level, 0-9. 1 (fastest) rather than optimize=True: optimize is where
+    # catch-up's wall time went, and it buys nothing against the sensor noise below,
+    # which is already incompressible. See measurements/r4-image-sizes.txt.
+    image_compress_level: int = 1
+    # The classifier's own /inspect response now carries the authoritative
+    # model_version (PartOutcome.model_version) -- this is no longer threaded through
+    # station_s3._emit_part. Kept as the value a non-HTTP stub producer can fall back
+    # to, and as documentation of the deployment's expected model version.
     model_version: str = "simulated-1"
 
     # boundary

@@ -1,24 +1,74 @@
-R4 image-size measurement (Task 5, Step 10)
+R4 image-size measurement (Task 5, Step 10 -- re-measured after review round 1, R-H7)
 
-Command:
+Round-1 defect: this file's first version rendered 500 x ["gap"] at the pre-R-H7
+resolution and PNG settings; "gap" (and "missing_part") drew a fixed rectangle
+independent of part_id, so all 500 renders were byte-identical -- one image measured
+500 times, not a distribution.
+
+R-H7 changes applied before this remeasurement:
+  - Default resolution 640x480 -> 320x240 (simulator.config.Settings.image_width/height).
+  - PNG compress_level=1 (new Settings.image_compress_level), not optimize=True.
+  - Deterministic seeded sensor noise added to the render (simulator.render.render_part /
+    inspection.render.render_part), keyed `f"{seed}:{part_id}:noise"` -- a separate RNG
+    stream from the one that positions defects, so noise and defect geometry never share
+    a knob.
+  - `gap` now positions its bar at the RNG's x (was fixed at the seam's midpoint);
+    `missing_part` now covers a band around the RNG's y (was the whole second
+    component, always). Both were degenerate by construction before this; noise alone
+    would have masked that without removing it.
+
+Command (mirrors InspectionClient.produce's own defect-selection key exactly, so this
+measures what actually gets rendered for a reject in production):
+
 cd plant && uv run --frozen --package simulator python - <<'EOF'
-import statistics
+import random
+from simulator.config import Settings
+from simulator.inspection_client import DEFECT_CLASSES
 from simulator.render import render_part
-sizes = [len(render_part(f"A-{i:08d}", ["gap"], 640, 480, seed=20260912)) for i in range(500)]
+
+settings = Settings()
+sizes = []
+for i in range(500):
+    part_id = f"A-{i:08d}"
+    rng = random.Random(f"{settings.seed}:{part_id}:defect")
+    defect = rng.choice(DEFECT_CLASSES)
+    sizes.append(len(render_part(
+        part_id, [defect], settings.image_width, settings.image_height,
+        settings.seed, settings.image_compress_level,
+    )))
 sizes.sort()
-print(f"img_p50={sizes[len(sizes)//2]} img_p99={sizes[int(len(sizes)*0.99)]} max={sizes[-1]}")
+p50 = sizes[len(sizes) // 2]
+p99 = sizes[int(len(sizes) * 0.99)]
+mx = sizes[-1]
+print(f"img_p50={p50} img_p99={p99} max={mx} distinct={len(set(sizes))} n={len(sizes)}")
 EOF
 
-Result (500 parts, 640x480, defects=["gap"], seed=20260912):
-img_p50=1628 img_p99=1628 max=1628
+Result (500 parts, one randomly-chosen defect class per part across all six, 320x240,
+compress_level=1, seed=20260912):
 
-Note: all 500 renders are byte-identical at this size. The "gap" defect draws a fixed
-rectangle at a position derived only from width/height, not from the per-part RNG draw
-(the x/y coordinates render.py draws for gap are computed but unused by that branch), so
-part id has no effect on the pixels or the resulting PNG size for this defect class at a
-fixed resolution. This is the real, reproducible number for the brief's exact command
-(defects=["gap"], 640x480, seed=20260912), not a rounding artifact.
+img_p50=110056 img_p99=110419 max=110590 distinct=370 n=500
 
-A later task uses img_p99 (1628 bytes) as the base of R4's ceiling search (the brief names
-Task 14 for this; the Task 5 assignment names Task 9 -- flagged in the report as a numbering
-discrepancy to resolve, not silently picked one way).
+370 distinct sizes out of 500 -- genuine variety, not one value measured 500 times.
+
+Limits (§4.4 / the OPC UA image field):
+  - MaxBufferSize = 65,535 B: CROSSED. Every one of the 500 renders (min far above
+    65,535) exceeds a single OPC UA buffer, so chunking -- the transport mechanism
+    §12 row 4 exists to probe -- is genuinely exercised, not merely provisioned for.
+  - MaxByteStringLength = 4,194,304 B (4 MiB): NOT crossed. img_p99 (110,419 B) is
+    ~38x below this ceiling, so at this configuration the ceiling search a later task
+    runs against img_p99 starts from real headroom, not from a value already near it.
+
+Byte-identity check (§3.6), both previously-degenerate classes, spot-checked directly
+against simulator.render.render_part:
+  - render_part("A-00000001", ["gap"], 320, 240, seed=20260912, compress_level=1)
+    called twice: byte-identical (109978 bytes both times).
+  - Same call for part_id "A-00000002": differs from "A-00000001"'s (109780 bytes).
+  - Same pair of checks for ["missing_part"]: byte-identical for a repeated call
+    (109522 bytes), differs across part_id (109313 bytes for "A-00000002").
+  Noise is seeded from `f"{seed}:{part_id}:noise"`, so it does not disturb
+  determinism for a fixed (part_id, defects, size, seed) -- it only removes the
+  cross-part_id degeneracy the round-1 measurement exposed.
+
+A later task uses img_p99 (110,419 bytes at this configuration) as the base of R4's
+ceiling search (the brief names Task 14 for this; the Task 5 assignment names Task 9 --
+flagged as a numbering discrepancy to resolve, not silently picked one way).

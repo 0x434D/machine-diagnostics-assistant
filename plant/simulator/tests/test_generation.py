@@ -17,6 +17,7 @@ async def _stub_produce(part_id: str, _ts: datetime) -> PartOutcome:
         defect_class="gap" if reject else None,
         confidence=0.91,
         image=b"\x89PNG" + b"\x00" * 4096 if reject else None,
+        model_version="stub-1",
     )
 
 

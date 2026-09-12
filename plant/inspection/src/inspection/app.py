@@ -8,43 +8,25 @@ out of the `/inspect` request body so truth never crosses that boundary (§4.5).
 from __future__ import annotations
 
 import base64
-import os
 
 from fastapi import FastAPI
-from pydantic import BaseModel
 
 from inspection.classifier import (
     DEFECT_CLASSES,
+    Classifier,
     PartContext,
     SimulatedClassifier,
     TruthChannel,
 )
+from inspection.config import Settings
+from inspection.schemas import InspectIn, InspectOut, TruthIn
 
 app = FastAPI(title="inspection-service")
 _truth = TruthChannel()
-_classifier = SimulatedClassifier(
-    _truth, seed=int(os.environ.get("PLANT_SEED", "20260912"))
-)
-
-
-class TruthIn(BaseModel):
-    defects: list[str]
-
-
-class InspectIn(BaseModel):
-    """Note what is absent: nothing about the true defect state (§3.4, §4.5)."""
-
-    part_id: str
-    image_b64: str
-    carrier_id: int
-
-
-class InspectOut(BaseModel):
-    disposition: str
-    defect_class: str | None
-    confidence: float
-    confidences: dict[str, float]
-    model_version: str
+# Annotated against the Protocol, not left to infer the concrete class: §3.4's seam
+# (a real ModelClassifier drops in unchanged) is only load-bearing if something
+# actually checks a substitute still satisfies `Classifier`.
+_classifier: Classifier = SimulatedClassifier(_truth, seed=Settings().seed)
 
 
 @app.post("/truth/{part_id}")

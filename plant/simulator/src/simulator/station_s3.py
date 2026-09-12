@@ -23,6 +23,11 @@ class PartOutcome:
     defect_class: str | None
     confidence: float
     image: bytes | None  # §3.4: only rejects carry their image
+    # The classifier's own advertised version -- not settings.model_version, which
+    # only ever describes the simulator's *expected* model. Once a real
+    # ModelClassifier replaces SimulatedClassifier, this field is what still
+    # correctly attributes the verdict.
+    model_version: str
 
 
 ProduceFn = Callable[[str, datetime], Awaitable[PartOutcome]]
@@ -81,7 +86,6 @@ async def _emit_part(
     index: int,
     sim_ts: datetime,
     takt: float,
-    model_version: str,
     outcome: PartOutcome,
     ledger: Ledger,
 ) -> None:
@@ -127,7 +131,7 @@ async def _emit_part(
     ev.Disposition = outcome.disposition
     ev.DefectClass = outcome.defect_class or ""
     ev.Confidence = outcome.confidence
-    ev.ModelVersion = model_version
+    ev.ModelVersion = outcome.model_version
     ev.Image = outcome.image or b""
     await space.event_gen.trigger(time_attr=sim_ts, message=f"inspection {serial}")
     ledger.events += 1
@@ -270,7 +274,6 @@ async def generate_history(
             i,
             sim_ts,
             interval,
-            settings.model_version,
             await produce(serial_for(i), sim_ts),
             ledger,
         )
@@ -323,7 +326,6 @@ async def run_live(
                 index,
                 sim_ts,
                 interval,
-                settings.model_version,
                 await produce(serial_for(index), sim_ts),
                 ledger,
             )
