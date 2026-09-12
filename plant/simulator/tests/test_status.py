@@ -1,5 +1,6 @@
-"""§4.5 keeps the clock and the ledger off the OPC UA wire, so this is the only way
-anyone -- an operator, or Task 11's reconciler -- can see either."""
+"""The ledger never crosses the OPC UA wire (§4.5); Clock.SimulatedTime/Phase/Speed
+now do (§4.1), but this file remains the only way to see either without an OPC UA
+client, which is what these tests pin."""
 
 import asyncio
 import json

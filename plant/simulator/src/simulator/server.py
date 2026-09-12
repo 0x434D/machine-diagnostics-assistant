@@ -20,7 +20,7 @@ from asyncua.crypto.truststore import TrustStore
 from asyncua.crypto.validator import CertificateValidator, CertificateValidatorOptions
 
 from simulator import status
-from simulator.address_space import AddressSpace, build_address_space
+from simulator.address_space import AddressSpace, build_address_space, publish_clock
 from simulator.clock import SimulatedClock
 from simulator.config import ClockConfig, Settings
 from simulator.historian import Ledger, attach_historian
@@ -187,12 +187,20 @@ async def main() -> None:
         #
         # Opened before generation, not after it. Catch-up is the longest phase of a boot
         # and the one the demo exists to watch, and simulator.status is the only way to
-        # see it (§4.5 keeps the clock off the wire); started afterwards, the publisher
+        # see it without an OPC UA client at hand (Clock.Phase is on the wire per §4.1,
+        # but nothing at a shell prompt speaks OPC UA); started afterwards, the publisher
         # left `python -m simulator.status` answering "does not exist -- is the simulator
         # running?" for two and a half minutes while it was running.
         async with asyncio.TaskGroup() as tasks:
             tasks.create_task(
                 status.publish(status.STATUS_FILE, clock, settings, ledger)
+            )
+            # Same cadence as the status writer above, started alongside it rather
+            # than on a second timer -- see address_space.publish_clock. This is
+            # what lets §4.3's handshake (watch State -> read Clock.Phase -> ...)
+            # actually see catch-up in progress rather than a stale first value.
+            tasks.create_task(
+                publish_clock(space, clock, settings.status_interval_seconds)
             )
             history_end = await generate_history(
                 space,

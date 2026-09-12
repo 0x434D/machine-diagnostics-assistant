@@ -1,15 +1,17 @@
 """What the plant is doing, for a human and for Task 11's reconciler.
 
-There is nothing to curl: the plant's only port speaks OPC UA (§2.1), and the address
-space deliberately carries no clock or ledger nodes -- neither is plant data, and §4.5
-keeps everything that is not plant data off the wire. So this is read the way an
-operator reaches a container that exposes nothing:
+Clock.SimulatedTime/Phase/Speed are on the OPC UA wire deliberately (§4.1) -- the
+gateway's own startup handshake reads Clock.Phase there (§4.3). The ledger (the row
+counts this process tracks) never is: it is not plant data, and §4.5 keeps everything
+that is not plant data off the wire. There is no OPC UA client at a shell prompt, so
+this is read the way an operator reaches a container with nothing else to ask:
 
     docker compose -f plant/compose.yml exec line-simulator python -m simulator.status
 
-That is a *separate process* from the server, with no access to its clock or its ledger,
-which is why the server publishes both to a file on the history volume and this reads
-it back. The file carries the wall-clock instant it was written so staleness is visible
+That is a *separate process* from the server, with no access to its ledger, which is
+why the server publishes it to a file on the history volume (alongside a plain-text
+copy of the clock, so both are visible without an OPC UA client) and this reads it
+back. The file carries the wall-clock instant it was written so staleness is visible
 rather than assumed; it is refreshed every `status_interval_seconds`.
 """
 
