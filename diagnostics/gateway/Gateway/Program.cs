@@ -64,6 +64,16 @@ var ingest = Task.Run(
             await queue.EnqueueAsync(record).ConfigureAwait(false);
         }
 
+        // §4.1: stations are browsed, not configured, before anything writes rows that
+        // reference them.
+        var topology = await TopologyDiscovery.DiscoverAsync(session, stopping).ConfigureAwait(false);
+        if (!string.IsNullOrWhiteSpace(options.PostgresConnectionString))
+        {
+            await TopologyDiscovery
+                .UpsertAsync(options.PostgresConnectionString, topology, stopping)
+                .ConfigureAwait(false);
+        }
+
         // Drains while backfill runs, or 18 h of history would sit in the local queue waiting
         // for a subscription that has not started yet.
         var draining = drain is null ? Task.CompletedTask : drain.RunAsync(stopping);

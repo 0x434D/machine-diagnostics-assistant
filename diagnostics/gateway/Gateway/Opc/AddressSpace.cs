@@ -20,6 +20,21 @@ public sealed record AddressSpace(NodeId S3NodeId, NodeId TaktNodeId, NodeId Par
 
     private static readonly string[] S3Path = ["Line", "Stations", "S3_Inspection"];
 
+    /// <summary>Resolves a browse path under Objects, looking the namespace up by URI.</summary>
+    internal static async Task<NodeId> TranslateAsync(
+        ISession session, string[] browseNames, CancellationToken ct) =>
+        await TranslateAsync(session, NamespaceIndex(session), browseNames, ct).ConfigureAwait(false);
+
+    private static ushort NamespaceIndex(ISession session)
+    {
+        var index = session.NamespaceUris.GetIndex(PlantNamespaceUri);
+        return index < 0
+            ? throw new ServiceResultException(
+                StatusCodes.BadNotFound,
+                $"the server does not publish namespace {PlantNamespaceUri}")
+            : (ushort)index;
+    }
+
     public static async Task<AddressSpace> ResolveAsync(ISession session, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(session);
@@ -41,7 +56,7 @@ public sealed record AddressSpace(NodeId S3NodeId, NodeId TaktNodeId, NodeId Par
                 .ConfigureAwait(false));
     }
 
-    private static async Task<NodeId> TranslateAsync(
+    internal static async Task<NodeId> TranslateAsync(
         ISession session, ushort ns, string[] browseNames, CancellationToken ct)
     {
         var path = new BrowsePath { StartingNode = ObjectIds.ObjectsFolder };
