@@ -269,9 +269,18 @@ single permitted channel rather than requiring a second one.
 
 ### 3.4a Per-part process values
 
-When S2 presses a part, its peak joining force and joining distance are recorded
-**against that serial**, at that moment — not reconstructed later by joining the time
-series on "when was this part at S2".
+When S2 presses a part, its **force–distance curve** is recorded **against that serial**,
+at that moment — with the peak force and the final joining distance as summaries of it —
+not reconstructed later by joining the time series on "when was this part at S2".
+
+**The curve rather than the two scalars, because the two scalars cannot separate a press
+problem from a material problem.** Two presses reach the same peak at the same final
+position by entirely different routes, and the route is the diagnosis: *where* the force
+begins to rise is about the incoming components — an undersized component lets the press
+travel further before it meets resistance — while *how* the load develops after contact is
+about the press. Peak and distance can agree while the curves differ, which is exactly the
+case §3.5 scenario 7 turns on. Sampled across the stroke this is a few dozen values per
+part, which at this volume is nothing.
 
 Reconstruction is tempting because the data is already there. It is also what real MES
 systems deliberately avoid: the association is known exactly at the instant of
@@ -362,7 +371,8 @@ Objects/
                     → ComponentReadEvent   (component serial, lane, lot)
                     → AssemblyCreatedEvent (assembly serial, 2 component serials, carrier)
       S2_Joining    State · StateReason · TaktTime · JoiningForcePeak · JoiningDistance · PartCount
-                    → PartProcessedEvent   (assembly serial, peak force, distance)
+                    → PartProcessedEvent   (assembly serial, force–distance curve,
+                                           peak force, distance)
       S3_Inspection State · StateReason · TaktTime · PartCount      → emits inspection events
       S4_Outfeed    State · StateReason · TaktTime · OutfeedFill · GoodCount · RejectCount
                     → PartCompletedEvent   (assembly serial, disposition, reason)
