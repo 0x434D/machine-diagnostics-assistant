@@ -2299,7 +2299,7 @@ git commit -m "feat(inspection): separate vision service with a truth side chann
 - Consumes: Tasks 2–5.
 - Produces: `async build_server(settings) -> tuple[Server, AddressSpace]`; a running endpoint at `opc.tcp://line-simulator:4840/plant` accepting `Basic256Sha256_Sign` with mutual trust; `run_r3.py` emitting the matrix as JSON.
 
-- [ ] **Step 1: Write the failing boundary test**
+- [x] **Step 1: Write the failing boundary test**
 
 ```python
 # plant/simulator/tests/test_boundary.py
@@ -2371,12 +2371,12 @@ async def test_the_trusted_gateway_certificate_connects_and_browses() -> None:
 
 Generate the stranger fixture once with `simulator.pki.gen_party` into `tests/fixtures/` using a third `Party` that is never published to `pki/trusted/`.
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_boundary.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'simulator.server'`.
 
-- [ ] **Step 3: Write the server**
+- [x] **Step 3: Write the server**
 
 ```python
 # plant/simulator/src/simulator/server.py
@@ -2500,12 +2500,12 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-- [ ] **Step 4: Run the boundary test to verify it passes**
+- [x] **Step 4: Run the boundary test to verify it passes**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_boundary.py -v`
 Expected: PASS, 3 tests.
 
-- [ ] **Step 5: Write the plant compose file**
+- [x] **Step 5: Write the plant compose file**
 
 ```yaml
 # plant/compose.yml
@@ -2568,7 +2568,7 @@ networks:
     external: true                 # exactly two containers join this, ever
 ```
 
-- [ ] **Step 6: Write the R3 matrix runner**
+- [x] **Step 6: Write the R3 matrix runner**
 
 ```python
 # measurements/run_r3.py
@@ -2657,7 +2657,7 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-- [ ] **Step 7: Bring the plant up and run rows 2 and 3**
+- [x] **Step 7: Bring the plant up and run rows 2 and 3**
 
 ```bash
 make preflight
@@ -2672,7 +2672,7 @@ Record every cell. Row 1 will fail until Task 7 builds the gateway image; that i
 
 **If it fails with `BadCertificateHostNameInvalid`:** the DNS SAN list is short. Task 2's `test_server_dns_sans_cover_every_name_a_client_may_dial` should have caught it; add the missing name there first, then regenerate.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add plant/compose.yml plant/.env.example plant/simulator/src/simulator/server.py plant/simulator/tests/test_boundary.py measurements/run_r3.py
