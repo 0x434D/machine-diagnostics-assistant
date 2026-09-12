@@ -1,0 +1,38 @@
+F1/F2 reproduction on the pinned interpreter (Task 10, Step 1)
+
+The pre-flight findings were taken on Python 3.14. Task 10's design — bounded windows plus
+a reconciled count per window — rests entirely on them, so they were re-run on the pinned
+3.13 before anything was built against them.
+
+Command:
+  cd plant && uv run --frozen --package simulator python ../measurements/probe_history.py
+
+Result (python 3.13.13):
+
+  written=  3000 page=  500 -> returned=  3006  duplicates
+  written= 10800 page= 1000 -> returned= 10000  TRUNCATED
+  written= 12000 page= 1000 -> returned= 10000  TRUNCATED
+
+F1 — CONFIRMED, exactly. read_raw_history returns at most 10,000 values, independent of the
+storage page size, and does so with no exception and no bad StatusCode. The ceiling is the
+same at 10,800 and at 12,000 written, so it is a ceiling rather than a proportion.
+
+  Why it matters here rather than in general: 18 h at a 6 s takt is 10,800 values per
+  signal. The default history depth is therefore just past the ceiling, so an unbounded
+  traversal loses ~800 values per signal on a fresh boot and reports success. That is
+  silent miscounting, which is what the risk table relocates this risk to — not latency.
+
+  Consequence: the gateway never issues an unbounded traversal. It issues bounded time
+  windows and reconciles a count per window (backfill_windows, §5.2).
+
+F2 — CONFIRMED, with a one-row difference from pre-flight. 3,000 written returned 3,006
+here against 3,007 on 3.14. The mechanism is unchanged: the continuation point is the
+SourceTimestamp of the first row of the next page and the next query re-includes it, because
+BETWEEN is inclusive. The exact count of duplicates is not load-bearing — that they occur on
+every page boundary is.
+
+  Consequence: §4.4's upsert on (station_id, signal, source_ts) is not an edge-case defence
+  against backfill overlapping live data. It fires on every page boundary of every backfill.
+  Task 9 built it; Task 10 proves it absorbs them.
+
+Neither finding changed on the pinned interpreter, so the design stands as planned.
