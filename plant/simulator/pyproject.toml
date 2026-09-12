@@ -19,7 +19,18 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = ["pytest==9.1.1", "pytest-asyncio==1.4.0"]
+# pyyaml is test-only: test_compose_invariants.py parses the Compose files to check
+# the two invariants they are the first artefacts in the repo to make checkable.
+# There is no YAML reader in the standard library, and matching strings instead is
+# exactly the vacuous check this project keeps finding -- a commented-out `field-net`
+# would satisfy a grep. `docker compose config` would parse it properly but would put
+# a container runtime inside `make check`, which the handbook keeps out of the gate.
+dev = [
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "pyyaml==6.0.3",
+    "types-pyyaml==6.0.12.20260906",
+]
 
 [build-system]
 requires = ["hatchling"]
