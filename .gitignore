@@ -1,0 +1,24 @@
+# Secrets — never commit. Also covered by the gitleaks pre-commit hook (docs/ENGINEERING.md §6).
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+
+# Build and dependency output
+.venv/
+__pycache__/
+*.pyc
+node_modules/
+dist/
+bin/
+obj/
+
+# Tool caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# Local Claude Code overrides (settings.json itself IS committed — it carries the gates)
+.claude/settings.local.json
