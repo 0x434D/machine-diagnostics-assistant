@@ -4,6 +4,9 @@
 !.env.example
 *.pem
 *.key
+*.pfx
+pki/*/key.pem
+pki/*/*.pfx
 secrets/
 
 # Build and dependency output

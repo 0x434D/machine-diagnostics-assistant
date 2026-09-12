@@ -1,0 +1,7 @@
+# Virtual workspace root: the plant stack owns its own lockfile so that a dependency bump
+# in the diagnostics stack can never move a version underneath the simulator (spec §10.7).
+[tool.uv.workspace]
+members = ["simulator", "inspection"]
+
+[dependency-groups]
+dev = ["ruff==0.16.7", "mypy==2.3.1"]
