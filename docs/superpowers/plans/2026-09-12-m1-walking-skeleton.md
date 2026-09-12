@@ -1342,6 +1342,12 @@ git commit -m "feat(simulator): simulated clock, and the history depth a night-s
 
 ## Task 4: The address space, the historian and catch-up generation
 
+> **Not complete.** Ticked in error from commit messages alone, then unticked. In fix
+> round 2 with six open items — a tautological event-field-order test, and a silent hang in
+> `_next_takt` where `takt_jitter_sigma=0` spins a non-yielding resample loop and wedges the
+> event loop with no error or log. What is solid: production-depth reconciliation, verified
+> at 19,801/19,801/19,800 rows over 33 h in 8.9 s, peak queue depth 500, zero drops.
+
 **Files:**
 - Create: `plant/simulator/src/simulator/address_space.py`, `events.py`, `historian.py`, `station_s3.py`
 - Test: `plant/simulator/tests/test_address_space.py`, `plant/simulator/tests/test_generation.py`
@@ -1357,7 +1363,7 @@ git commit -m "feat(simulator): simulated clock, and the history depth a night-s
   - `Ledger` with `.takt`, `.part_count`, `.events`, `.images` counters
   - `async generate(space, clock, settings, produce, ledger) -> None`
 
-- [x] **Step 1: Write the failing address-space test**
+- [ ] **Step 1: Write the failing address-space test**
 
 ```python
 # plant/simulator/tests/test_address_space.py
@@ -1418,12 +1424,12 @@ async def test_event_type_carries_an_image_field() -> None:
     } <= props
 ```
 
-- [x] **Step 2: Run it to verify it fails**
+- [ ] **Step 2: Run it to verify it fails**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_address_space.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'simulator.address_space'`.
 
-- [x] **Step 3: Build the address space**
+- [ ] **Step 3: Build the address space**
 
 ```python
 # plant/simulator/src/simulator/address_space.py
@@ -1492,12 +1498,12 @@ async def build_address_space(server: Server, idx: int) -> AddressSpace:
     )
 ```
 
-- [x] **Step 4: Run the address-space test to verify it passes**
+- [ ] **Step 4: Run the address-space test to verify it passes**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_address_space.py -v`
 Expected: PASS, 3 tests.
 
-- [x] **Step 5: Write the failing generation test**
+- [ ] **Step 5: Write the failing generation test**
 
 ```python
 # plant/simulator/tests/test_generation.py
@@ -1575,12 +1581,12 @@ async def test_source_timestamps_are_simulated_not_wall_clock(tmp_path) -> None:
     )
 ```
 
-- [x] **Step 6: Run it to verify it fails**
+- [ ] **Step 6: Run it to verify it fails**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_generation.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'simulator.historian'`.
 
-- [x] **Step 7: Write the historian wiring**
+- [ ] **Step 7: Write the historian wiring**
 
 ```python
 # plant/simulator/src/simulator/historian.py
@@ -1630,7 +1636,7 @@ async def attach_historian(
     return storage
 ```
 
-- [x] **Step 8: Write the station loop**
+- [ ] **Step 8: Write the station loop**
 
 ```python
 # plant/simulator/src/simulator/station_s3.py
@@ -1758,12 +1764,12 @@ async def run_live(
         await asyncio.sleep(settings.takt_seconds)
 ```
 
-- [x] **Step 9: Run the generation tests to verify they pass**
+- [ ] **Step 9: Run the generation tests to verify they pass**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_generation.py -v`
 Expected: PASS, 2 tests.
 
-- [x] **Step 10: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
 git add plant/simulator/src/simulator plant/simulator/tests

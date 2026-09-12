@@ -61,7 +61,14 @@ async def test_custom_event_fields_decode_first_and_in_declared_order() -> None:
     properties back -- reordering it would silently mis-assign every column
     Tasks 8 and 10 decode by position. get_properties() also returns
     BaseEventType's own inherited fields (13 of them); this only pins that our six
-    lead, in the order EVENT_FIELDS declares."""
+    lead, in the order EVENT_FIELDS declares.
+
+    Asserted against a literal name list, not [name for name, _ in EVENT_FIELDS]:
+    comparing the server's order against a list *derived from EVENT_FIELDS itself*
+    is tautological -- swap two entries in EVENT_FIELDS and both sides move
+    together, so the assertion still passes. A literal here is the only way a
+    reorder of EVENT_FIELDS actually fails this test.
+    """
     server = new_server()
     await server.init()
     idx = await server.register_namespace("http://machine-agent/plant")
@@ -71,4 +78,11 @@ async def test_custom_event_fields_decode_first_and_in_declared_order() -> None:
         (await p.read_browse_name()).Name
         for p in await space.event_type.get_properties()
     ]
-    assert names[: len(EVENT_FIELDS)] == [name for name, _ in EVENT_FIELDS]
+    assert names[: len(EVENT_FIELDS)] == [
+        "AssemblySerial",
+        "Disposition",
+        "DefectClass",
+        "Confidence",
+        "ModelVersion",
+        "Image",
+    ]

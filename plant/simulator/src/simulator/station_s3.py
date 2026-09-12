@@ -32,6 +32,18 @@ def serial_for(index: int) -> str:
     return f"A-{index:08d}"
 
 
+_MAX_TAKT_RESAMPLES = 100
+"""Bounds _next_takt's resample loop. A well-formed positive sigma finds a value
+distinct from the previous one on the first or second draw essentially always;
+this exists so a degenerate configuration -- takt_jitter_sigma=0, the obvious way
+someone turns jitter off, or anything else that makes every draw collide with the
+previous value -- fails loudly and immediately instead of spinning forever inside
+a non-yielding while loop in an async function, wedging the whole event loop with
+no error, timeout, or log. That is the same hang-on-bad-input shape the previous
+review round flagged on _await_historian_settle, recreated here in its
+replacement; this closes it the same way, with a bound."""
+
+
 def _next_takt(
     rng: random.Random, nominal: float, sigma: float, previous: float | None
 ) -> float:
@@ -48,11 +60,20 @@ def _next_takt(
     makes the historian's row count equal the ledger's by construction, rather than
     by the odds of two float64 Gaussian draws colliding (vanishingly small, but
     R1 asserts exact equality, not "usually").
+
+    Raises ValueError if _MAX_TAKT_RESAMPLES consecutive draws all equal `previous`
+    -- see that constant's comment for why this is a bound, not a retry-forever.
     """
-    value = nominal + rng.gauss(0.0, sigma)
-    while value == previous:
+    for _ in range(_MAX_TAKT_RESAMPLES):
         value = nominal + rng.gauss(0.0, sigma)
-    return value
+        if value != previous:
+            return value
+    raise ValueError(
+        f"takt_jitter_sigma={sigma!r} produced {_MAX_TAKT_RESAMPLES} consecutive "
+        f"draws equal to the previous takt ({previous!r}); a sigma of 0 (or too "
+        "small to move a float64 draw away from nominal) makes every draw equal "
+        "nominal, which can never satisfy the resample guard"
+    )
 
 
 async def _emit_part(
@@ -218,10 +239,17 @@ async def generate_history(
     may run the whole depth in one uninterrupted burst.
 
     TaktTime's value is jittered (_next_takt) and SourceTimestamp advances by that
-    same jittered interval, cumulatively, rather than a fixed i * takt grid: the
-    value written for a part is the interval that will elapse until the next one,
-    so the two stay self-consistent. The row count stays exact regardless, since the
-    loop is range(total).
+    same jittered interval, cumulatively, rather than a fixed i * takt grid, so the
+    written value and the timestamp gap it produces always agree. The row count
+    stays exact regardless, since the loop is range(total).
+
+    The convention is deliberately forward-looking: the value written for part i is
+    the interval that will elapse before part i+1, not the interval since part
+    i-1. A query asking "what was the takt at instant T" should look at the next
+    row after T, not the row at or before it -- the reverse (backward-looking, the
+    cycle that just completed) is equally self-consistent, it just needs a special
+    case for the very first part, which has no prior cycle to report. Either is a
+    valid choice; this is the one this project made.
 
     Do not page the storage in-process to verify: HistorySQLite returns a
     timezone-naive continuation point and comparing it against an aware datetime
@@ -267,9 +295,22 @@ async def run_live(
     not a continuation of generate_history's stream) so that changing the configured
     history depth -- which changes how many draws catch-up consumes -- can never
     shift what run_live produces for the same seed.
+
+    Seeds the resample guard from TaktTime's current value in the address space --
+    whatever generate_history last wrote, or the priming row if it never ran --
+    rather than None: without this, the first live part could collide with the
+    last catch-up part's value (both drawn independently), the one place the
+    "distinct from the previous value, by construction" guarantee would not
+    actually hold across the catch-up/live seam.
+
+    Sleeps the interval it just wrote, not a fixed settings.takt_seconds: TaktTime
+    is a claim about how long the cycle takes, and waiting a different amount than
+    it reports would be exactly the kind of quiet, faked measurement this project
+    does not allow. settings.takt_seconds is used only to poll while still waiting
+    out Phase.CATCHUP, when no cycle is being timed yet.
     """
     rng = random.Random(settings.seed ^ 1)
-    previous_takt: float | None = None
+    previous_takt: float | None = float(await space.takt.read_value())
     index = start_index
     while True:
         if clock.phase is Phase.LIVE:
@@ -288,4 +329,6 @@ async def run_live(
             )
             previous_takt = interval
             index += 1
-        await asyncio.sleep(settings.takt_seconds)
+            await asyncio.sleep(interval)
+        else:
+            await asyncio.sleep(settings.takt_seconds)

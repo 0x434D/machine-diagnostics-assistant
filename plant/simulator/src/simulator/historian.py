@@ -30,10 +30,10 @@ class Ledger:
 
 
 _EVENT_HISTORY_BUG_KEY = (ua.NodeId(ua.Int32(ua.ObjectIds.Server)),)
-"""The exact KeyError asyncio.Event.from_event_fields' reconstruction (see below)
-always raises from inside HistorySQLite.save_event's fire-and-forget task -- used
-to filter only that one confirmed, understood exception out of the default
-per-task logging, below."""
+"""The exact KeyError asyncua.common.events.Event.from_event_fields' reconstruction
+(see below) always raises from inside HistorySQLite.save_event's fire-and-forget
+task -- used to filter only that one confirmed, understood exception out of the
+default per-task logging, below."""
 
 
 def _quiet_known_event_history_bug(
@@ -86,6 +86,18 @@ async def attach_historian(
     # -- outside every window generate_history will ever backfill -- fixes the
     # timestamp and lets the ledger count it truthfully (below), rather than
     # excluding a row that is, after this, a real and correctly timestamped one.
+    # Both SourceTimestamp= below carry a `# type: ignore[arg-type]`: DataValue
+    # types the field ua.DateTime, a datetime subclass asyncua's own runtime never
+    # actually constructs. Building a real ua.DateTime instead of this suppression
+    # is not a stricter-but-equivalent fix: sqlite3's parameter binder matches by
+    # exact type, not by subclass (Python 3.12 deprecated the old implicit adapter
+    # that covered subclasses too), so a bound ua.DateTime raises "Error binding
+    # parameter: type 'DateTime' is not supported" inside
+    # HistorySQLite.save_node_value's own try/except and is silently logged, not
+    # raised -- the row goes missing with no visible error. A plain datetime is
+    # what the storage layer actually needs (confirmed by running it, not
+    # guessed); station_s3._emit_part carries the same suppression for the same
+    # reason on every part's writes.
     priming_value = ua.DataValue(
         ua.Variant(0.0, ua.VariantType.Double),
         SourceTimestamp=priming_source_timestamp,  # type: ignore[arg-type]
