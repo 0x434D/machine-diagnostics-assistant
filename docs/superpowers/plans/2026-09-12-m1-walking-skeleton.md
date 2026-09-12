@@ -1796,7 +1796,7 @@ git commit -m "feat(simulator): S3 address space, historian and catch-up generat
   - HTTP: `POST /truth/{part_id}` (side channel) and `POST /inspect` (the real interface)
   - `InspectionClient(base_url).produce(part_id, sim_ts) -> PartOutcome`, satisfying `ProduceFn`
 
-- [ ] **Step 1: Write the failing inspection test**
+- [x] **Step 1: Write the failing inspection test**
 
 ```python
 # plant/inspection/tests/test_inspection.py
@@ -1884,12 +1884,12 @@ def test_confidences_are_a_distribution_over_all_classes() -> None:
     assert max(conf, key=conf.get) == "scratch"
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `cd plant && uv run --frozen --package inspection pytest inspection/tests -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'inspection.app'`.
 
-- [ ] **Step 3: Write the renderer**
+- [x] **Step 3: Write the renderer**
 
 ```python
 # plant/inspection/src/inspection/render.py
@@ -1953,7 +1953,7 @@ def render_part(
     return buf.getvalue()
 ```
 
-- [ ] **Step 4: Write the classifier behind a swappable interface**
+- [x] **Step 4: Write the classifier behind a swappable interface**
 
 ```python
 # plant/inspection/src/inspection/classifier.py
@@ -2039,7 +2039,7 @@ class SimulatedClassifier:
         return InspectionResult("reject", top, confidences[top], confidences)
 ```
 
-- [ ] **Step 5: Write the service**
+- [x] **Step 5: Write the service**
 
 ```python
 # plant/inspection/src/inspection/app.py
@@ -2102,12 +2102,12 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 ```
 
-- [ ] **Step 6: Run the inspection tests to verify they pass**
+- [x] **Step 6: Run the inspection tests to verify they pass**
 
 Run: `cd plant && uv run --frozen --package inspection pytest inspection/tests -v`
 Expected: PASS, 5 tests.
 
-- [ ] **Step 7: Wire the simulator to the service**
+- [x] **Step 7: Wire the simulator to the service**
 
 ```python
 # plant/simulator/src/simulator/inspection_client.py
@@ -2179,7 +2179,7 @@ class InspectionClient:
 
 The renderer lives in the `inspection` package but the *simulator* renders (§3.4: "the simulator renders the image"). Because the two are separate uv workspace members that must not depend on each other, copy `render.py` into `plant/simulator/src/simulator/render.py` and import it from there; the inspection service keeps its own copy for its tests. Duplicating ~40 lines is the correct cost of the workspace split, exactly as §10.7 argues for the duplicated lockfiles. Replace the import above with `from simulator.render import render_part`.
 
-- [ ] **Step 8: Write the failing wiring test**
+- [x] **Step 8: Write the failing wiring test**
 
 ```python
 # plant/simulator/tests/test_inspection_client.py
@@ -2255,12 +2255,12 @@ async def test_truth_never_appears_in_the_inspect_request() -> None:
         assert b"truth" not in body
 ```
 
-- [ ] **Step 9: Run both suites to verify they pass**
+- [x] **Step 9: Run both suites to verify they pass**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests -q && uv run --frozen --package inspection pytest inspection/tests -q`
 Expected: PASS.
 
-- [ ] **Step 10: Record R4's first number**
+- [x] **Step 10: Record R4's first number**
 
 Run the renderer over 500 part ids at the configured resolution and record `img_p50` and `img_p99`:
 
@@ -2276,7 +2276,7 @@ EOF
 
 Write the result into `measurements/r4-image-sizes.txt`. Task 14 uses `img_p99` as the base of the ceiling search.
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add plant/inspection plant/simulator/src/simulator/render.py plant/simulator/src/simulator/inspection_client.py plant/simulator/tests measurements
