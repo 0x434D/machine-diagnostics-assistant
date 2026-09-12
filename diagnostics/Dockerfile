@@ -42,7 +42,14 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 FROM ${BASE} AS runtime
 # The runtime stage is a fresh base, so it carries no CA bundle of its own; without one every
 # outbound TLS call from a service in this image fails certificate verification.
+#
+# `upgrade` is here because the base image lags the archive: Debian publishes a patched
+# package before it rebuilds trixie-slim around it, so re-pinning the digest cannot close the
+# window and the scanner is right to fail. It does make this layer depend on build date — but
+# the `install` below already did, since no version is pinned. The digest pin covers the base
+# layer; this layer never was reproducible.
 RUN apt-get update \
+ && apt-get upgrade -y \
  && apt-get install -y --no-install-recommends ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /opt/python /opt/python

@@ -40,3 +40,20 @@ jobs:
         with:
           global-json-file: global.json
       - run: make audit-dotnet
+
+  # Moved off the PR gate for the same reason as nuget-audit above: the scan's verdict is a
+  # function of Trivy's database refresh, not of the diff, so on a pull request it fails for
+  # things no commit in it caused. Here a red run means the images need patching.
+  image-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            plant/uv.lock
+            diagnostics/uv.lock
+      - run: make scan-images

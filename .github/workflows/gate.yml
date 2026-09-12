@@ -187,8 +187,13 @@ jobs:
           cache-dependency-glob: |
             plant/uv.lock
             diagnostics/uv.lock
+      # `make scan-images` is deliberately NOT here. Its verdict depends on when Trivy's
+      # vulnerability database last refreshed, so a CVE published by a third party fails a PR
+      # about something else — the identical failure Directory.Build.props already carves
+      # NU19xx out of warnings-as-errors to avoid. It runs in weekly.yml instead, where a
+      # failure means "go patch something" rather than "your PR is stuck". `make sbom` stays:
+      # it is a function of the lockfiles and the image, so it is deterministic.
       - run: make sbom
-      - run: make scan-images
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         # Keep the SBOM even when the scan fails — a failing scan is exactly when someone
         # wants to read the bill of materials.

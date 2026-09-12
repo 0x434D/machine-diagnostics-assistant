@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-.PHONY: preflight lock-check fmt lint test check verify ci \
+.PHONY: preflight lock-check fmt lint test check verify ci ci-scheduled \
         lint-python test-python check-python \
         lint-dotnet test-dotnet check-dotnet audit-dotnet \
         lint-frontend test-frontend check-frontend \
@@ -229,4 +229,9 @@ audit-dotnet:
 
 # The whole pull-request pipeline in one command. This is the answer to "do I need a remote to
 # run CI": no. gate.yml calls exactly these targets and nothing else.
-ci: lint-commits lint-actions check sbom scan-images
+ci: lint-commits lint-actions check sbom
+
+# What weekly.yml runs. Split from `ci` so that `ci` keeps meaning "what the pull-request
+# gate runs" — the claim CLAUDE.md makes. These are the time-dependent checks: their
+# verdict moves when a third party publishes, not when this repository changes.
+ci-scheduled: secrets-scan audit-dotnet scan-images

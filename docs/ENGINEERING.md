@@ -638,7 +638,20 @@ version comment; `permissions: contents: read` at workflow level; `persist-crede
 on checkout. Add **`zizmor`** (Actions security linter — catches template injection, over-broad
 permissions, unpinned actions) and `actionlint`.
 
-**Supply chain:** Trivy on every built image, failing on HIGH and CRITICAL with fixes available.
+**Supply chain:** Trivy on every built image, failing on HIGH and CRITICAL with fixes
+available — but **on a schedule, not on the pull-request gate.** A scan's verdict is a
+function of when its vulnerability database last refreshed, so on a PR it fails for things no
+commit in that PR caused, and the fix is often somebody else's release. This is the identical
+argument that carves NU19xx out of warnings-as-errors, and it deserves the identical answer.
+SBOM generation stays on the gate, because it is a function of the lockfiles and the image
+and is therefore deterministic. `make ci` is what the gate runs; `make ci-scheduled` is what
+weekly runs.
+
+One consequence worth stating: a base image can lag its own archive. Debian publishes a
+patched package before it rebuilds the image around it, so re-pinning the digest does not
+close the window and `apt-get upgrade` in the runtime stage does. That makes the apt layer
+depend on build date — which it already did, since the `install` alongside it pins no
+versions. The digest pin covers the base layer; that layer was never reproducible.
 BuildKit SBOM and provenance attestations (`--sbom=true --provenance=true`) — but note BuildKit
 **only scans the final stage**, so a multi-stage build's SBOM omits everything installed in the
 builder. Widen it with `BUILDKIT_SBOM_SCAN_CONTEXT=true` and `BUILDKIT_SBOM_SCAN_STAGE=true`.
