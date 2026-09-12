@@ -227,8 +227,15 @@ async def generate_history(
     produce: ProduceFn,
     ledger: Ledger,
     storage: HistorySQLite,
-) -> None:
-    """Catch-up: build the configured depth of history in process (§3.2).
+) -> datetime:
+    """Catch-up: build the configured depth of history in process (§3.2), returning the
+    simulated instant the last generated part's cycle ends at.
+
+    That return value is where live production must resume for the simulated timeline
+    to be continuous; `run_live`'s `start_ts` is what consumes it. Deriving it from
+    `clock.history_start + clock.history_depth` instead would be wrong by the
+    cumulative takt jitter (~7 s over a 33 h depth), which is the whole reason this is
+    returned rather than recomputed.
 
     Reads the historian back through `storage` before returning and raises if it
     disagrees with the ledger (see _reconcile_with_historian) -- so a caller that
@@ -282,6 +289,7 @@ async def generate_history(
         if (i + 1) % settings.catchup_batch_size == 0:
             await asyncio.sleep(settings.catchup_batch_pause_seconds)
     await _reconcile_with_historian(space, storage, ledger)
+    return running_ts
 
 
 async def run_live(
@@ -291,8 +299,10 @@ async def run_live(
     produce: ProduceFn,
     ledger: Ledger,
     start_index: int,
+    start_ts: datetime,
 ) -> None:
-    """Live: one part per takt at exactly 1.0 (§3.2).
+    """Live: one part per takt at exactly 1.0 (§3.2), resuming the simulated timeline
+    at `start_ts` -- what `generate_history` returned.
 
     Uses its own RNG stream (settings.seed XORed against a distinguishing constant,
     not a continuation of generate_history's stream) so that changing the configured
@@ -306,31 +316,43 @@ async def run_live(
     "distinct from the previous value, by construction" guarantee would not
     actually hold across the catch-up/live seam.
 
-    Sleeps the interval it just wrote, not a fixed settings.takt_seconds: TaktTime
-    is a claim about how long the cycle takes, and waiting a different amount than
-    it reports would be exactly the kind of quiet, faked measurement this project
-    does not allow. settings.takt_seconds is used only to poll while still waiting
-    out Phase.CATCHUP, when no cycle is being timed yet.
+    Advances its own simulated cursor by the interval it just wrote and then sleeps
+    until that instant actually arrives, rather than stamping each part with
+    clock.now() and sleeping the interval. The two agree once simulated time has
+    caught up with the wall clock, and they differ by exactly the defect this closes:
+    generate_history fills the timeline up to the clock's boot instant in far less
+    wall time than the run takes to reach Phase.LIVE, so a first live part stamped
+    clock.now() would leave the whole interval between the two -- every second of
+    catch-up wall time, tens of parts at the configured takt -- as a hole in the
+    simulated timeline that no layer above can see. With a cursor the sleep is simply
+    zero until the backlog is emitted, so the seam closes at generation speed and the
+    pacing returns to 1.0 by itself -- and once it has, the sleep *is* the interval
+    just written, so TaktTime stays a true claim about how long the cycle took rather
+    than a number nothing waits out. The backlog is bounded by whichever of the
+    catch-up wall and the generation wall is longer (170 s and 151 s measured at the
+    configured defaults, so ~28 parts), far below the 10,000-entry notification queue
+    cap generate_history has to pace against.
     """
     rng = random.Random(settings.seed ^ 1)
     previous_takt: float | None = float(await space.takt.read_value())
     index = start_index
+    cursor = start_ts
     while True:
-        if clock.phase is Phase.LIVE:
-            sim_ts = clock.now()
-            interval = _next_takt(
-                rng, settings.takt_seconds, settings.takt_jitter_sigma, previous_takt
-            )
-            await _emit_part(
-                space,
-                index,
-                sim_ts,
-                interval,
-                await produce(serial_for(index), sim_ts),
-                ledger,
-            )
-            previous_takt = interval
-            index += 1
-            await asyncio.sleep(interval)
-        else:
+        if clock.phase is not Phase.LIVE:
             await asyncio.sleep(settings.takt_seconds)
+            continue
+        interval = _next_takt(
+            rng, settings.takt_seconds, settings.takt_jitter_sigma, previous_takt
+        )
+        await _emit_part(
+            space,
+            index,
+            cursor,
+            interval,
+            await produce(serial_for(index), cursor),
+            ledger,
+        )
+        previous_takt = interval
+        cursor = cursor + timedelta(seconds=interval)
+        index += 1
+        await asyncio.sleep(max(0.0, (cursor - clock.now()).total_seconds()))

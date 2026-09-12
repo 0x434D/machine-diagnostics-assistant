@@ -1,4 +1,6 @@
+import asyncio
 from datetime import UTC, datetime, timedelta
+from itertools import pairwise
 from pathlib import Path
 
 import pytest
@@ -7,7 +9,12 @@ from simulator.address_space import build_address_space
 from simulator.clock import SimulatedClock
 from simulator.config import ClockConfig, Settings
 from simulator.historian import Ledger, attach_historian
-from simulator.station_s3 import PartOutcome, _historian_row_counts, generate_history
+from simulator.station_s3 import (
+    PartOutcome,
+    _historian_row_counts,
+    generate_history,
+    run_live,
+)
 
 
 async def _stub_produce(part_id: str, _ts: datetime) -> PartOutcome:
@@ -148,3 +155,88 @@ async def test_source_timestamps_are_simulated_not_wall_clock(tmp_path: Path) ->
     if oldest.tzinfo is None:
         oldest = oldest.replace(tzinfo=UTC)
     assert oldest < datetime.now(UTC) - timedelta(minutes=50)
+
+
+@pytest.mark.asyncio
+async def test_live_production_resumes_where_catch_up_stopped(tmp_path: Path) -> None:
+    """The catch-up/live seam: no gap in the simulated timeline between the last
+    generated part and the first live one.
+
+    generate_history fills the whole configured depth in far less wall time than the
+    clock needs to reach Phase.LIVE (~9 s against ~170 s at the production defaults),
+    and the two are independent -- the generator never reads clock.now(). A first live
+    part stamped clock.now() therefore lands a whole catch-up wall's worth of
+    simulated time after history ends, and every part that should have filled that
+    interval is simply never produced. Nothing above the simulator can see that: the
+    history is internally consistent, just missing tens of parts in the minutes
+    immediately after boot -- the freshest window the flagship question asks about.
+
+    The wall clock is injected and jumped straight past catch-up so the seam this
+    exercises is ten minutes wide with no ten minutes of waiting.
+    """
+    settings = Settings(history_depth_hours=60.0 / 3600.0, takt_seconds=6.0)
+    depth = timedelta(seconds=60)
+    seam = timedelta(seconds=600)
+
+    stamps: list[datetime] = []
+
+    async def _recording_produce(part_id: str, ts: datetime) -> PartOutcome:
+        stamps.append(ts)
+        return await _stub_produce(part_id, ts)
+
+    server = new_server()
+    await server.init()
+    idx = await server.register_namespace("http://machine-agent/plant")
+    space = await build_address_space(server, idx)
+
+    boot = datetime.now(UTC)
+    wall = [boot]
+    clock = SimulatedClock(
+        ClockConfig(history_depth=depth, catchup_speed=settings.catchup_speed),
+        wall_fn=lambda: wall[0],
+    )
+    ledger = Ledger()
+    storage = await attach_historian(
+        server,
+        space,
+        tmp_path / "h.db",
+        settings.history_page_size,
+        clock.history_start - timedelta(seconds=settings.takt_seconds),
+        ledger,
+    )
+
+    async with server:
+        history_end = await generate_history(
+            space, clock, settings, _recording_produce, ledger, storage
+        )
+        generated = len(stamps)
+        wall[0] = boot + seam
+
+        live = asyncio.create_task(
+            run_live(
+                space,
+                clock,
+                settings,
+                _recording_produce,
+                ledger,
+                start_index=ledger.events,
+                start_ts=history_end,
+            )
+        )
+        try:
+            # Well inside the seam: once the cursor passes the wall clock,
+            # run_live paces at 1.0 and every further part costs a real takt.
+            # Bounded so a regression fails here instead of hanging the suite.
+            async with asyncio.timeout(30):
+                while len(stamps) < generated + 50:
+                    await asyncio.sleep(0.01)
+        finally:
+            live.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await live
+
+    gaps = [(later - earlier).total_seconds() for earlier, later in pairwise(stamps)]
+    assert min(gaps) > 0, "the simulated timeline must never run backwards"
+    # One takt plus the jitter's own room. The defect this guards against produces a
+    # single gap of `seam` (600 s) at the crossover, two orders of magnitude out.
+    assert max(gaps) < settings.takt_seconds * 2
