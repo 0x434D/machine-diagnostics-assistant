@@ -1,0 +1,84 @@
+R3 notes (Task 6) -- the observations the matrix itself cannot hold
+
+The cell-by-cell result is measurements/r3-matrix.json, produced by measurements/run_r3.py.
+Everything below was measured by hand against the same running stack and is recorded here
+because it is what the next task needs and the runner has nowhere to put it.
+
+Stack under measurement
+  docker compose -f plant/compose.yml up -d --build
+  plant/compose.yml at 4840:4840 bound to 127.0.0.1, endpoint
+  opc.tcp://line-simulator:4840/plant, SecurityMode Sign only.
+
+
+1. opc.tcp://localhost:4840/plant WORKS
+--------------------------------------
+host-published-port/Sign came back Good. The host does not need the
+`127.0.0.1 line-simulator` row in /etc/hosts to reach the plant; `localhost` is enough.
+
+Why, confirmed against asyncua 2.0.1's own source rather than inferred from the result:
+InternalServer._mangle_endpoint_url rewrites the host of every advertised endpoint to the
+netloc of the EndpointUrl the client sent in its GetEndpoints request, and returns before
+it consults anything else. So the server advertises back whatever name the client dialled,
+the client's session validation compares that against itself, and both names pass. The
+certificate covers both independently: `localhost` and `line-simulator` are DNS SANs and
+127.0.0.1 is an IP SAN (simulator/pki.py, pinned by
+test_server_dns_sans_cover_every_name_a_client_may_dial).
+
+Consequence for §14: the /etc/hosts prerequisite in `make preflight` is no longer needed
+for the *host* client path. It is still needed for anything that insists on dialling the
+one canonical name from the host, and `make preflight` still enforces it. Removing that
+check is a decision for whoever owns §14, not for this task -- flagged, not taken.
+
+
+2. set_match_discovery_client_ip(False) is NOT necessary for any client measured
+-------------------------------------------------------------------------------
+Measured by removing the call, rebuilding and re-running the whole matrix: all six
+measurable cells came back byte-identical, including asyncua-field-net/Sign, where the
+client's own IP and the IP the server sees genuinely differ.
+
+Same mechanism as above: the EndpointUrl branch in _mangle_endpoint_url short-circuits
+before the source-IP branch, and every asyncua client sends an EndpointUrl. The flag only
+matters for a client whose GetEndpoints omits it.
+
+The call is kept in simulator/server.py. The row that would decide it -- UA-.NETStandard
+from inside field-net -- is Task 7's and is still unmeasured, and what the flag prevents
+is a certificate error raised three layers away from its cause.
+
+
+3. Restart survives with no re-trusting by hand
+-----------------------------------------------
+  sha256sum pki/*/certs/*.der pki/trusted/certs/*.der
+  docker compose -f plant/compose.yml down && up -d
+  sha256sum (again) -> identical, all four files
+  run_r3.py -> the same three Sign cells Good
+
+pki-init runs on every `up` and is idempotent (simulator/pki.py, pinned by
+test_regeneration_is_idempotent): an established key and certificate are left untouched,
+so the copy every peer's trust store already holds stays valid.
+
+
+4. Catch-up wall time, with the real inspection service in the loop
+-------------------------------------------------------------------
+  catchup_wall_seconds = 151.3 (first boot), 160.7 (second boot, same machine)
+
+Both inside R1's 180 s budget, and both far above the ~9 s the same generation takes
+against a stub producer -- the difference is 19,800 renders plus 39,600 HTTP round trips.
+The margin is thinner than the stub suggested: at the configured 33 h depth the budget is
+~12 % away, not ~95 %.
+
+The clock's own catch-up window is 33 h / (700 - 1) = 170.0 s, so generation finishes
+before the phase flips, by 9 s on the first boot and 18 s on the second.
+
+
+5. The catch-up/live seam, read back over OPC UA
+------------------------------------------------
+120 PartCount rows across the 12 simulated minutes spanning history_end (20:26:12) and
+the live handover, read from the host with the gateway's certificate:
+
+  oldest 20:17:24.983  newest 20:29:19.489
+  max gap 6.135 s      min gap 5.863 s
+
+One takt throughout. Before the fix in station_s3.run_live, the first live part carried
+clock.now() rather than resuming at the instant generation stopped, which left a hole of
+exactly the catch-up window -- 170 s, ~28 parts, immediately after boot, in the freshest
+window the flagship question asks about.

@@ -1,0 +1,43 @@
+{
+  "verdict": "PASS",
+  "pending": [
+    "gateway-field-net/NoSecurity",
+    "gateway-field-net/Sign"
+  ],
+  "cells": {
+    "gateway-field-net/NoSecurity": {
+      "ok": false,
+      "pending": true,
+      "status": "machine-agent/edge-gateway:dev not built -- Task 7 closes this row"
+    },
+    "asyncua-field-net/NoSecurity": {
+      "ok": false,
+      "status": "UaError: No matching endpoints: 1, http://opcfoundation.org/UA/SecurityPolicy#None"
+    },
+    "host-published-port/NoSecurity": {
+      "ok": false,
+      "status": "UaError: No matching endpoints: 1, http://opcfoundation.org/UA/SecurityPolicy#None"
+    },
+    "host-etc-hosts/NoSecurity": {
+      "ok": false,
+      "status": "UaError: No matching endpoints: 1, http://opcfoundation.org/UA/SecurityPolicy#None"
+    },
+    "gateway-field-net/Sign": {
+      "ok": false,
+      "pending": true,
+      "status": "machine-agent/edge-gateway:dev not built -- Task 7 closes this row"
+    },
+    "asyncua-field-net/Sign": {
+      "ok": true,
+      "status": "Good\ncertificate does not contain the hostname in DNSNames f9a3be253845. Some applications will check this.\nRequested session timeout to be 3600000ms, got 600000ms instead"
+    },
+    "host-published-port/Sign": {
+      "ok": true,
+      "status": "Good"
+    },
+    "host-etc-hosts/Sign": {
+      "ok": true,
+      "status": "Good"
+    }
+  }
+}
