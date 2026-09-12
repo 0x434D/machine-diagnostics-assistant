@@ -90,6 +90,17 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # to, and as documentation of the deployment's expected model version.
     model_version: str = "simulated-1"
 
+    # Budget for one /truth + /inspect round trip. httpx's own default is 5 s, which
+    # catch-up's own batching can exceed on a loaded laptop; a request that outlives
+    # this is a real failure and must surface as one, so it is a number to tune rather
+    # than a timeout to remove.
+    inspection_timeout_seconds: float = 30.0
+
+    # How often simulator.status rewrites its snapshot. Below one takt, so `exec
+    # python -m simulator.status` is never more than one part behind the ledger it
+    # reports.
+    status_interval_seconds: float = 5.0
+
     # boundary
     endpoint_url: str = "opc.tcp://line-simulator:4840/plant"
     application_uri: str = "urn:machine-agent:plant:line-simulator"
