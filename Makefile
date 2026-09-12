@@ -95,12 +95,28 @@ define build-image
 	  --output type=oci,tar=false,dest=$(BUILD_DIR)/images/$(2)
 endef
 
+# The /etc/hosts check this used to carry is gone. It existed because the host was
+# assumed to need `127.0.0.1 line-simulator` to reach the plant; R3 measured that
+# opc.tcp://localhost:4840/plant works — asyncua advertises back whatever netloc the
+# client dialled, and the certificate covers localhost and 127.0.0.1 as independently as
+# it covers line-simulator (measurements/r3-notes.txt §1). §14's "no manual steps" now
+# holds with no qualification, which is worth more than the one matrix row that still
+# prefers the entry.
 preflight:
 	@docker --version >/dev/null || { echo "docker missing"; exit 1; }
 	@docker network inspect field-net >/dev/null 2>&1 || docker network create field-net
-	@grep -qE '^[[:space:]]*127\.0\.0\.1[[:space:]]+line-simulator' /etc/hosts \
-	  || { echo "MISSING host entry. Add this line to /etc/hosts:"; \
-	       echo "    127.0.0.1 line-simulator"; exit 1; }
+# pki/ is a host bind mount and pki-init writes private keys 0600, so the uid the plant's
+# containers run as must be the uid that owns it. Left to the ${HOST_UID:-1000} default on
+# a machine whose user is not 1000, the failure is EACCES on /pki from a container that
+# exited seconds ago — self-diagnosing here is worth five lines.
+	@uid=$$(id -u); \
+	 want=$$(sed -n 's/^HOST_UID=//p' plant/.env 2>/dev/null | tail -1); \
+	 want=$${want:-1000}; \
+	 [ "$$uid" = "$$want" ] || { \
+	   echo "HOST_UID mismatch: the plant stack would run as $$want, you are $$uid."; \
+	   echo "pki-init would fail with EACCES on /pki. Fix with:"; \
+	   echo "    printf 'HOST_UID=%s\nHOST_GID=%s\n' $$(id -u) $$(id -g) >> plant/.env"; \
+	   exit 1; }
 	@echo "preflight ok"
 
 # The drift guard spec §10.7 asks for: fails if the lockfile would change, rather than
