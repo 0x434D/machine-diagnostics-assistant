@@ -14,9 +14,10 @@
          re-enabled in a scheduled audit job instead (docs/ENGINEERING.md §2). -->
     <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1900;NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
     <EnableNETAnalyzers>true</EnableNETAnalyzers>
-    <!-- Not AnalysisMode=All: that turns on ~200 rules including "null-check every parameter"
-         and "localise your literals" — a day of suppressions for no defect caught. A compound
-         AnalysisLevel also wins over AnalysisMode, so setting both would be dead config. -->
+    <!-- Spec §10.8's quality-gate table asks for AnalysisMode=All. The spec is wrong here:
+         All turns on ~200 rules including "null-check every parameter" and "localise your
+         literals" — a day of suppressions for no defect caught. A compound AnalysisLevel also
+         wins over AnalysisMode, so setting both would be dead config on top of that. -->
     <AnalysisLevel>latest-Recommended</AnalysisLevel>
     <AnalysisModeSecurity>All</AnalysisModeSecurity>
     <AnalysisModeReliability>All</AnalysisModeReliability>

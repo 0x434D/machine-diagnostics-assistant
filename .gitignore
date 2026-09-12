@@ -5,8 +5,10 @@
 *.pem
 *.key
 *.pfx
-pki/*/key.pem
-pki/*/*.pfx
+# pki/ holds only what pki-init generates: a certificate without its key is useless and a
+# committed keypair is a secret in the repository. Ignore the tree, keep the directory.
+pki/*
+!pki/.gitkeep
 secrets/
 
 # Build and dependency output

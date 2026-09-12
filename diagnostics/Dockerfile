@@ -1,5 +1,7 @@
 # syntax=docker/dockerfile:1
 ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.11.13@sha256:841c8e6fe30a8b07b4478d12d0c608cba6de66102d29d65d1cc423af86051563
+# Handbook §7 says trixie for Python. Bookworm is a deliberate hold, to be revisited as
+# one decision before more images inherit it.
 ARG BASE=debian:bookworm-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171
 
 FROM ${UV_IMAGE} AS uv

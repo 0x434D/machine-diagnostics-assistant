@@ -34,3 +34,9 @@ extend-select = [
 
 # ERA001 (commented-out code) is deliberately NOT enabled: it has documented false positives
 # on prose that resembles code, so it stays a review point instead of a gate.
+
+[lint.flake8-bandit]
+# ruff scopes S110/S112 to `Exception` and `BaseException` by default, which is exactly the
+# case BLE001 already catches, so out of the box the pair adds nothing. The swallow that
+# actually gets written is `except ValueError: continue` — widen them to any handler.
+check-typed-exception = true
