@@ -6,11 +6,16 @@
 The split at step 2 is the load-bearing one: a model reads "last hour" out of a sentence,
 and code computes what it means. Date arithmetic across shift boundaries and DST is what
 models are unreliable at and code is exact at.
+
+`stream` is the pipeline; `run` drains it. There is one copy of the steps, and the
+progress a reader sees is emitted from the line that does the work rather than narrated
+alongside it — a progress line that can disagree with what ran is worse than none.
 """
 
 from __future__ import annotations
 
 import re
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
@@ -39,6 +44,13 @@ class Window:
     end: datetime
 
 
+@dataclass(frozen=True)
+class Progress:
+    """One step of §7.2's visible reasoning, emitted as it happens."""
+
+    message: str
+
+
 def resolve_window(phrase: str, now: datetime) -> Window:
     """Code does the calendar maths, never the model (§6.1 step 2).
 
@@ -62,7 +74,7 @@ def select_provider(settings: Settings) -> Provider:
     return ScriptedProvider()
 
 
-async def run(
+async def stream(
     question: str,
     session_id: str,
     *,
@@ -70,7 +82,8 @@ async def run(
     analysis: AnalysisClient | None = None,
     provider: Provider | None = None,
     now: datetime | None = None,
-) -> Answer:
+) -> AsyncIterator[Progress | Answer]:
+    """Yields a `Progress` per step and exactly one `Answer`, last."""
     del session_id  # M1 keeps no session state; §5.2's tables arrive with the UI
     settings = settings or Settings()
     analysis = analysis or AnalysisClient(settings.analysis_url)
@@ -78,6 +91,7 @@ async def run(
     now = now or datetime.now(UTC)
 
     window = resolve_window(question, now)
+    yield Progress(f"resolving the window: {window.start:%H:%M}–{window.end:%H:%M} UTC")
     messages: list[dict[str, object]] = [{"role": "user", "content": question}]
     called: list[str] = []
     stats: dict[str, object] | None = None
@@ -86,20 +100,24 @@ async def run(
         reply = await provider.call(SYSTEM, messages, TOOL_DEFINITIONS)
 
         if reply.final is not None:
-            return await _compose(
+            yield Progress("verifying every citation against the database")
+            yield await _compose(
                 reply.final, stats, window, called, provider, analysis, question
             )
+            return
 
         for call in reply.tool_calls:
             if call.name != "inspection_stats":
                 continue
+            yield Progress(f"calling {call.name}")
             stats = await analysis.inspection_stats(window.start, window.end)
             called.append(call.name)
             messages.append({"role": "tool", "name": call.name, "content": str(stats)})
+            yield Progress("checking coverage over the window")
 
     # §6.8: budget exhaustion produces a partial answer that says what it could not finish,
     # never a silently truncated one.
-    return Answer(
+    yield Answer(
         findings=[],
         answer_markdown="I ran out of tool budget before reaching an answer.",
         method=Method(
@@ -109,6 +127,33 @@ async def run(
         ),
         caveats=["The tool budget was exhausted; this answer is incomplete."],
     )
+
+
+async def run(
+    question: str,
+    session_id: str,
+    *,
+    settings: Settings | None = None,
+    analysis: AnalysisClient | None = None,
+    provider: Provider | None = None,
+    now: datetime | None = None,
+) -> Answer:
+    """`stream` without the progress, for callers that only want the answer."""
+    answer: Answer | None = None
+    async for item in stream(
+        question,
+        session_id,
+        settings=settings,
+        analysis=analysis,
+        provider=provider,
+        now=now,
+    ):
+        if isinstance(item, Answer):
+            answer = item
+
+    if answer is None:
+        raise RuntimeError("the pipeline ended without an answer")
+    return answer
 
 
 async def _compose(

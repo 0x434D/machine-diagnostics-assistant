@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from agent.answer import Answer
 from agent.config import Settings
-from agent.pipeline import resolve_window, run
+from agent.pipeline import Progress, resolve_window, run, stream
 from agent.providers_scripted import DISCLOSURE, ScriptedProvider
 from agent.tools import AnalysisClient
 
@@ -119,3 +120,27 @@ async def test_a_scripted_answer_says_it_was_not_produced_by_a_model(
     assert answer.method.provider == "scripted"
     assert DISCLOSURE in answer.caveats
     assert "scripted provider" in answer.answer_markdown
+
+
+async def test_the_pipeline_reports_each_step_before_the_answer(
+    fake_analysis: FakeAnalysis,
+) -> None:
+    """§7.2: the reasoning is shown, not hidden behind a spinner. Every tool the pipeline
+    ran is named on the wire while it runs, and the answer is the last thing to arrive."""
+    items = [
+        item
+        async for item in stream(
+            "how many rejects in the last hour?",
+            "s1",
+            settings=Settings(),
+            analysis=_client(fake_analysis),
+            provider=ScriptedProvider(),
+            now=NOW,
+        )
+    ]
+
+    assert isinstance(items[-1], Answer), "the answer is not the last item"
+    progress = [item.message for item in items if isinstance(item, Progress)]
+    assert len(items) == len(progress) + 1, "more than one answer was streamed"
+    assert any("inspection_stats" in line for line in progress)
+    assert any("citation" in line for line in progress)
