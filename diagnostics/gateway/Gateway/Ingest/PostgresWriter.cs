@@ -48,6 +48,35 @@ public sealed class PostgresWriter
         return value is DateTime stored ? stored : null;
     }
 
+    /// <summary>
+    /// R1's reconciliation ledger: what the gateway believes it pulled, per window. Recorded
+    /// from the backfill's own report rather than recomputed, so the two cannot disagree.
+    /// </summary>
+    public async Task RecordBackfillWindowAsync(
+        DateTime from, DateTime to, string stream, int rowsReturned, int pages, int durationMs,
+        CancellationToken ct = default)
+    {
+        await using var connection = new NpgsqlConnection(_connectionString);
+        await connection.OpenAsync(ct).ConfigureAwait(false);
+        await using var command = new NpgsqlCommand(
+            """
+            INSERT INTO backfill_windows
+              (from_ts, to_ts, stream, rows_returned, rows_written, pages, duration_ms)
+            VALUES ($1, $2, $3, $4, 0, $5, $6)
+            ON CONFLICT (from_ts, to_ts, stream) DO UPDATE
+              SET rows_returned = EXCLUDED.rows_returned,
+                  pages = EXCLUDED.pages,
+                  duration_ms = EXCLUDED.duration_ms
+            """, connection);
+        command.Parameters.AddWithValue(from);
+        command.Parameters.AddWithValue(to);
+        command.Parameters.AddWithValue(stream);
+        command.Parameters.AddWithValue(rowsReturned);
+        command.Parameters.AddWithValue(pages);
+        command.Parameters.AddWithValue(durationMs);
+        await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
     /// <returns>Rows affected across every table this batch touched.</returns>
     public async Task<int> WriteBatchAsync(
         IReadOnlyList<IngestRecord> batch, CancellationToken ct = default)

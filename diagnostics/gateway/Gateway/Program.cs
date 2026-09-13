@@ -112,7 +112,19 @@ var ingest = Task.Run(
             ?? to - options.HistoryDepth;
         historyAvailableFrom = from;
         state = "backfilling";
-        await backfill.RunAsync(from, to, stopping).ConfigureAwait(false);
+        var report = await backfill.RunAsync(from, to, stopping).ConfigureAwait(false);
+
+        // R1's ledger. Written from the backfill's own report rather than recomputed, so the
+        // two cannot disagree about what was pulled.
+        if (writer is not null)
+        {
+            foreach (var window in report.Windows)
+            {
+                await writer.RecordBackfillWindowAsync(
+                    window.From, window.To, window.Stream, window.RowsReturned, window.Pages,
+                    (int)window.DurationMs, stopping).ConfigureAwait(false);
+            }
+        }
 
         subscriptions = new Subscriptions(options, EnqueueAsync);
         await subscriptions.StartAsync(session, space, stopping).ConfigureAwait(false);

@@ -115,6 +115,47 @@ public sealed class PostgresWriterTests : IAsyncLifetime
             "the station id sequence advanced per record");
     }
 
+    [Fact]
+    public async Task ReconciliationCountsWhatTheBackfillSaidItPulledAgainstWhatIsStored()
+    {
+        // R1: the ledger records what HistoryRead handed over; the stored count is what
+        // survived the upsert. The difference is F2's page-boundary duplicates, absorbed.
+        var window = Instant.AddHours(-1);
+        await _writer.WriteBatchAsync([SampleDataChange("TaktTime", window.AddMinutes(1), 6.0)]);
+        await _writer.WriteBatchAsync([SampleDataChange("TaktTime", window.AddMinutes(2), 6.1)]);
+
+        // Three returned, two stored: the third was the duplicate a page boundary re-included.
+        await _writer.RecordBackfillWindowAsync(
+            window, Instant, "TaktTime", rowsReturned: 3, pages: 2, durationMs: 10);
+
+        var result = await new Reconciler(_postgres.GetConnectionString())
+            .CheckAsync(window, Instant);
+        var takt = result.Streams.Single(s => s.Stream == "TaktTime");
+
+        Assert.Equal(3, takt.RowsReturned);
+        Assert.Equal(2, takt.RowsStored);
+        Assert.Equal(1, takt.DuplicatesAbsorbed);
+        Assert.True(result.Reconciled);
+    }
+
+    [Fact]
+    public async Task StoringMoreThanWasPulledIsNotReconciled()
+    {
+        // The direction that means the ledger is wrong rather than the historian chatty: rows
+        // exist that no backfill reported returning, so the record of what was pulled is not
+        // a record of anything.
+        var window = Instant.AddHours(-1);
+        await _writer.WriteBatchAsync([SampleDataChange("TaktTime", window.AddMinutes(1), 6.0)]);
+        await _writer.WriteBatchAsync([SampleDataChange("TaktTime", window.AddMinutes(2), 6.1)]);
+        await _writer.RecordBackfillWindowAsync(
+            window, Instant, "TaktTime", rowsReturned: 1, pages: 1, durationMs: 10);
+
+        var result = await new Reconciler(_postgres.GetConnectionString())
+            .CheckAsync(window, Instant);
+
+        Assert.False(result.Reconciled);
+    }
+
     private static IngestRecord SampleDataChange(string signal, DateTime ts, double value) => new(
         Kind: "datachange", NodeId: "ns=2;i=7", SourceTs: ts, ServerTs: ts, StatusCode: 0,
         PayloadJson: $$"""{"Station":"S3","Signal":"{{signal}}","Value":{{value}}}""",
