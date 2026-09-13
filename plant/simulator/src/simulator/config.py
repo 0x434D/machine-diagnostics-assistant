@@ -61,6 +61,32 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # station_s3._next_takt.
     takt_jitter_sigma: float = 0.05
 
+    # §3.1's three line defaults. Buffer capacity is the one that matters: it sets how
+    # long propagation takes to become visible, and Task 12's authenticity proof
+    # measures exactly the delay it produces (5 x 6 s ~= 30 s from S2 stopping to S3
+    # starving). Changing it changes that proof's expected value, which is why the
+    # proof derives the number rather than hardcoding 30.
+    carrier_count: int = 12
+    buffer_capacity: int = 5
+
+    # §3.1: the stations do NOT share one takt. S3 is the slowest and paces the line
+    # at the 6 s every other number is quoted against; S1 and S2 run faster so their
+    # buffers fill, and S4 matches S3 so B3_4 stays near empty without S4 starving on
+    # every single cycle.
+    #
+    # A balanced line would make buffer capacity bound nothing -- every buffer would
+    # oscillate between empty and one, because each station consumes exactly as fast
+    # as the one above produces. The bottleneck is what gives a buffer a level to
+    # hold, and the level is what makes propagation delayed rather than immediate.
+    #
+    # Starting values, confirmed by Task 12's measurement rather than assumed.
+    station_takt_seconds: dict[str, float] = {
+        "S1": 5.70,
+        "S2": 5.85,
+        "S3": 6.00,
+        "S4": 6.00,
+    }
+
     # catch-up pacing -- asyncua's own per-monitored-item notification queue caps at
     # 10,000 and silently discards the oldest entry past that, so generate_history
     # must give the ~10 ms publish loop a chance to drain before any one stream's
