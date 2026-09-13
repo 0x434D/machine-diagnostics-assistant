@@ -1,0 +1,85 @@
+/* Minimal on purpose (§15): the frontend design language is deferred until after M4,
+   because a layout cannot be designed for content whose shape has not been seen. This is
+   enough to read an answer and no more. */
+:root {
+  color-scheme: light dark;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  line-height: 1.5;
+}
+
+body {
+  margin: 0 auto;
+  max-width: 44rem;
+  padding: 2rem 1rem;
+}
+
+header p {
+  color: GrayText;
+}
+
+form {
+  display: grid;
+  gap: 0.5rem;
+}
+
+textarea {
+  font: inherit;
+  padding: 0.5rem;
+}
+
+button {
+  font: inherit;
+  justify-self: start;
+  padding: 0.4rem 1rem;
+}
+
+.progress {
+  color: GrayText;
+  font-variant-numeric: tabular-nums;
+}
+
+.error {
+  border-left: 3px solid crimson;
+  padding-left: 0.75rem;
+}
+
+.answer {
+  border-top: 1px solid GrayText;
+  margin-top: 1.5rem;
+}
+
+.citation__chip {
+  border: 1px solid GrayText;
+  border-radius: 1rem;
+  font-size: 0.85em;
+  padding: 0.1rem 0.6rem;
+}
+
+.evidence {
+  border: 1px solid GrayText;
+  display: block;
+  margin: 0.5rem 0;
+  padding: 0.75rem;
+}
+
+.evidence dl,
+.trace dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 0.1rem 1rem;
+  margin: 0;
+}
+
+.evidence dt,
+.trace dt {
+  color: GrayText;
+}
+
+.evidence img {
+  max-width: 100%;
+  margin-top: 0.75rem;
+}
+
+.trace {
+  margin: 1rem 0;
+}

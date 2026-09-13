@@ -1,0 +1,42 @@
+# Start from ruff 0.16's defaults and subtract. The default set is 414 rules as of 0.16.7,
+# so the old "curate a select list" advice is obsolete (docs/ENGINEERING.md §2).
+#
+# Nothing is subtracted. In particular BLE001, S110, S112, TRY203, F401, F841 and RUF100 are
+# on by default and must stay so: error masking is the best-evidenced defect in AI-written
+# code, and in a diagnostics system a swallowed error is a silent wrong answer.
+
+target-version = "py313"
+
+[lint]
+extend-select = [
+    # Error masking — the part of that set the 0.16 defaults do not already cover.
+    "TRY300", # return in try instead of else
+    "TRY400", # logging.error where logging.exception belongs
+
+    # TODO hygiene. A TODO with no author and no link is a TODO nobody owns.
+    "TD002",
+    "TD003",
+    "TD005",
+    "FIX002",
+
+    # Dead code. F401 and F841 are already default.
+    "ARG001",
+    "ARG002",
+    "ARG003",
+    "ARG004",
+    "ARG005",
+
+    # Suppressions must name a rule code — this is what makes CLAUDE.md's suppression rule
+    # enforced rather than exhorted. RUF100 (unused suppression) is already default.
+    "PGH003", # blanket `type: ignore`
+    "PGH004", # blanket `noqa`
+]
+
+# ERA001 (commented-out code) is deliberately NOT enabled: it has documented false positives
+# on prose that resembles code, so it stays a review point instead of a gate.
+
+[lint.flake8-bandit]
+# ruff scopes S110/S112 to `Exception` and `BaseException` by default, which is exactly the
+# case BLE001 already catches, so out of the box the pair adds nothing. The swallow that
+# actually gets written is `except ValueError: continue` — widen them to any handler.
+check-typed-exception = true

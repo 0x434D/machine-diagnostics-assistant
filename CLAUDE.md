@@ -16,7 +16,10 @@ changing either.
 make check    lint + types + tests. The gate. Green before every commit.
 make fmt      format in place
 make verify   authenticity proofs — stops containers, minutes long, not part of check
+make ci       everything the pipeline runs, locally. Needs no remote.
 ```
+
+CI calls the same targets and nothing else, so a green `make ci` is a green pipeline.
 
 Single Python test: `cd plant && uv run --package simulator pytest simulator/tests/test_x.py::test_y`
 Single C# test: `cd diagnostics/gateway && dotnet test --filter FullyQualifiedName~TestName`

@@ -51,9 +51,9 @@ Every task's requirements implicitly include this section. Values are copied ver
   place, `make lint` checks without changing.
 - Python: `ruff format`, `ruff check`, `mypy --strict`. C#: `dotnet format
   --verify-no-changes`, plus `Nullable=enable`, `TreatWarningsAsErrors=true`,
-  `AnalysisMode=All`. TypeScript: `biome check`, `tsc --noEmit` with `strict`.
+  `AnalysisMode=All`. TypeScript: `oxlint check`, `tsc --noEmit` with `strict`.
 - Warnings are errors. No blanket suppressions — every `# type: ignore`, `# noqa`,
-  `biome-ignore` or `#pragma warning disable` carries a specific rule code and a reason.
+  `oxlint-ignore` or `#pragma warning disable` carries a specific rule code and a reason.
 - New code is typed: no untyped signatures in Python, no `any` in TypeScript.
 - **Every task ends with `make check` green, then its commit.** A commit asserts the gates
   passed. Never `--no-verify`.
@@ -444,7 +444,7 @@ The layering here is copied by every Python service in every later milestone. Ge
 - Consumes: nothing.
 - Produces: two uv workspaces whose members build with `uv sync --locked --package <name>`; a `Dockerfile` per stack taking `--build-arg PACKAGE=<member>`; `make` targets `preflight`, `fmt`, `lint`, `test`, `check`, `verify`, `lock-check`; the §10.8 quality-gate configuration that every later task's commit asserts.
 
-- [ ] **Step 1: Write the failing toolchain test**
+- [x] **Step 1: Write the failing toolchain test**
 
 This is the spec's own open question from §10.7 ("confirm `asyncua` supports it during M1 rather than assuming"), turned into a test.
 
@@ -480,17 +480,19 @@ def test_workspace_members_pin_the_same_python() -> None:
 def test_plant_workspace_does_not_reach_into_diagnostics() -> None:
     """§10.7: two workspaces, one per stack. A shared root lockfile would make
     §10.1's 'the two stacks share no code' false at build time."""
-    assert not (ROOT.parent / "uv.lock").exists(), "no lockfile may exist at the repository root"
+    assert not (ROOT.parent / "uv.lock").exists(), (
+        "no lockfile may exist at the repository root"
+    )
     assert (ROOT / "uv.lock").exists()
     assert (ROOT.parent / "diagnostics" / "uv.lock").exists()
 ```
 
-- [ ] **Step 2: Run it to watch it fail**
+- [x] **Step 2: Run it to watch it fail**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_toolchain.py -v`
 Expected: FAIL — the workspace does not exist yet.
 
-- [ ] **Step 3: Create both workspace roots**
+- [x] **Step 3: Create both workspace roots**
 
 ```toml
 # plant/pyproject.toml
@@ -606,12 +608,12 @@ mkdir -p plant/simulator/tests plant/inspection/tests \
 (cd diagnostics && uv lock)
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_toolchain.py -v`
 Expected: PASS, 4 tests. `uv python install` will fetch CPython 3.13 on first run — that is uv provisioning the interpreter, which is §10.7's point.
 
-- [ ] **Step 5: Write the shared Dockerfile**
+- [x] **Step 5: Write the shared Dockerfile**
 
 One per stack, parameterised by workspace member. The interpreter comes from uv, not from the base image, so the base is bare Debian.
 
@@ -666,7 +668,7 @@ USER app
 
 `UV_PROJECT_ENVIRONMENT=/opt/venv` keeps the environment outside `/src`, so step 3's `COPY . .` cannot clobber it. `UV_PYTHON_PREFERENCE=only-managed` forbids falling back to a system interpreter, which is what makes "the base image does not dictate it" true rather than aspirational.
 
-- [ ] **Step 6: Pin the other two toolchains and write the digest script**
+- [x] **Step 6: Pin the other two toolchains and write the digest script**
 
 ```json
 // global.json
@@ -721,7 +723,7 @@ node_modules/
 !*.env.example
 ```
 
-- [ ] **Step 7: Write the Makefile skeleton**
+- [x] **Step 7: Write the Makefile skeleton**
 
 ```makefile
 SHELL := /bin/bash
@@ -788,10 +790,10 @@ The pre-commit hook runs only the fast half — `ruff format --check`, `ruff che
 `dotnet format --verify-no-changes` — so mistakes surface in seconds. `make check` remains
 the full gate.
 
-TypeScript tooling (`biome`, `tsc --noEmit`, `vitest`) lands with the first frontend code in
+TypeScript tooling (`oxlint`, `tsc --noEmit`, `vitest`) lands with the first frontend code in
 Task 14, wired into the same four targets.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 make check
@@ -817,7 +819,7 @@ Pure crypto, testable on its own. Task 6 makes the connection work; this task ma
 - Consumes: Task 1's toolchain.
 - Produces: `pki/<party>/key.pem`, `pki/<party>/cert.der`, `pki/edge-gateway/cert.pfx`, and `pki/trusted/<party>.der` for both parties. `gen_party(party, app_uri, dns_names, ip_addresses, role, out_root) -> None`, idempotent.
 
-- [ ] **Step 1: Write the failing certificate test**
+- [x] **Step 1: Write the failing certificate test**
 
 ```python
 # plant/simulator/tests/test_certificates.py
@@ -847,37 +849,49 @@ def _cert(root: Path, name: str) -> x509.Certificate:
 
 def test_server_uri_san_equals_application_uri(pki: Path) -> None:
     """asyncua raises BadCertificateUriInvalid unless ApplicationUri is a URI SAN."""
-    san = _cert(pki, "line-simulator").extensions.get_extension_for_class(
-        x509.SubjectAlternativeName
-    ).value
+    san = (
+        _cert(pki, "line-simulator")
+        .extensions.get_extension_for_class(x509.SubjectAlternativeName)
+        .value
+    )
     assert san.get_values_for_type(x509.UniformResourceIdentifier) == [SERVER_URI]
 
 
 def test_server_dns_sans_cover_every_name_a_client_may_dial(pki: Path) -> None:
     """The DNS SAN must cover the host component of the endpoint URL, or .NET's
     checkDomain fails as BadCertificateHostNameInvalid. Three clients, three names."""
-    san = _cert(pki, "line-simulator").extensions.get_extension_for_class(
-        x509.SubjectAlternativeName
-    ).value
+    san = (
+        _cert(pki, "line-simulator")
+        .extensions.get_extension_for_class(x509.SubjectAlternativeName)
+        .value
+    )
     assert set(san.get_values_for_type(x509.DNSName)) == {"line-simulator", "localhost"}
     assert ipaddress.ip_address("127.0.0.1") in san.get_values_for_type(x509.IPAddress)
 
 
 def test_roles_are_distinct(pki: Path) -> None:
     """asyncua checks EXT_KEY_USAGE against the peer's expected role."""
-    server = _cert(pki, "line-simulator").extensions.get_extension_for_class(
-        x509.ExtendedKeyUsage
-    ).value
-    client = _cert(pki, "edge-gateway").extensions.get_extension_for_class(
-        x509.ExtendedKeyUsage
-    ).value
+    server = (
+        _cert(pki, "line-simulator")
+        .extensions.get_extension_for_class(x509.ExtendedKeyUsage)
+        .value
+    )
+    client = (
+        _cert(pki, "edge-gateway")
+        .extensions.get_extension_for_class(x509.ExtendedKeyUsage)
+        .value
+    )
     assert ExtendedKeyUsageOID.SERVER_AUTH in server
     assert ExtendedKeyUsageOID.CLIENT_AUTH in client
 
 
 def test_key_usage_satisfies_asyncua_validator(pki: Path) -> None:
     """CertificateValidatorOptions.KEY_USAGE requires all four of these."""
-    ku = _cert(pki, "line-simulator").extensions.get_extension_for_class(x509.KeyUsage).value
+    ku = (
+        _cert(pki, "line-simulator")
+        .extensions.get_extension_for_class(x509.KeyUsage)
+        .value
+    )
     assert ku.digital_signature and ku.content_commitment
     assert ku.key_encipherment and ku.data_encipherment
 
@@ -899,12 +913,12 @@ def test_regeneration_is_idempotent(pki: Path) -> None:
     assert (pki / "line-simulator" / "cert.der").read_bytes() == before
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_certificates.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'simulator.pki'`.
 
-- [ ] **Step 3: Write the generator**
+- [x] **Step 3: Write the generator**
 
 ```python
 # plant/simulator/src/simulator/pki.py
@@ -955,7 +969,11 @@ PARTIES: dict[str, Party] = {
         dns_names=("line-simulator", "localhost"),
         ip_addresses=("127.0.0.1",),
         server_auth=True,
-        subject={"commonName": "line-simulator", "organizationName": "machine-agent", "countryName": "DE"},
+        subject={
+            "commonName": "line-simulator",
+            "organizationName": "machine-agent",
+            "countryName": "DE",
+        },
     ),
     "edge-gateway": Party(
         name="edge-gateway",
@@ -963,7 +981,11 @@ PARTIES: dict[str, Party] = {
         dns_names=("edge-gateway",),
         client_auth=True,
         want_pfx=True,
-        subject={"commonName": "edge-gateway", "organizationName": "machine-agent", "countryName": "DE"},
+        subject={
+            "commonName": "edge-gateway",
+            "organizationName": "machine-agent",
+            "countryName": "DE",
+        },
     ),
 }
 
@@ -1017,7 +1039,9 @@ def gen_party(party: Party, out_root: Path) -> None:
                 )
             )
 
-    (trusted / f"{party.name}.der").write_bytes(cert.public_bytes(encoding=Encoding.DER))
+    (trusted / f"{party.name}.der").write_bytes(
+        cert.public_bytes(encoding=Encoding.DER)
+    )
 
 
 def main() -> None:
@@ -1035,12 +1059,12 @@ if __name__ == "__main__":
 
 Both stacks run the same module. Each generates both parties' public material if missing, which is what lets either stack be brought up first.
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_certificates.py -v`
 Expected: PASS, 7 tests.
 
-- [ ] **Step 5: Generate once and inspect by eye**
+- [x] **Step 5: Generate once and inspect by eye**
 
 ```bash
 cd plant && uv run --frozen --package simulator python -m simulator.pki ../pki
@@ -1048,7 +1072,7 @@ openssl x509 -in ../pki/line-simulator/cert.der -inform DER -noout -text | grep 
 ```
 Expected: `URI:urn:machine-agent:plant:line-simulator, DNS:line-simulator, DNS:localhost, IP Address:127.0.0.1`
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add scripts plant/simulator/src/simulator/pki.py plant/simulator/tests/test_certificates.py
@@ -1067,7 +1091,7 @@ git commit -m "feat(pki): multi-SAN application instance certificates with pre-s
 - Consumes: Task 1.
 - Produces: `Phase` (`BOOTING`/`CATCHUP`/`LIVE`), `SimulatedClock(cfg, wall_fn)` with `.now() -> datetime` (UTC-aware), `.phase -> Phase`, `.catchup_duration -> timedelta`; `required_history_depth(at_local) -> timedelta`; `Settings` carrying every §10.3 number.
 
-- [ ] **Step 1: Write the failing clock test**
+- [x] **Step 1: Write the failing clock test**
 
 The third test is the one that matters — it checks the spec's own claim about why 18 h was chosen.
 
@@ -1105,13 +1129,13 @@ def test_phases_run_in_order_and_live_speed_is_exactly_one() -> None:
     assert clock.phase is Phase.CATCHUP
     assert clock.now() == boot - timedelta(hours=18)
 
-    wall[0] = boot + timedelta(seconds=54)          # halfway
+    wall[0] = boot + timedelta(seconds=54)  # halfway
     assert clock.phase is Phase.CATCHUP
     assert clock.now() < wall[0]
 
-    wall[0] = boot + timedelta(seconds=200)         # past catch-up
+    wall[0] = boot + timedelta(seconds=200)  # past catch-up
     assert clock.phase is Phase.LIVE
-    assert clock.now() == wall[0]                   # exactly 1.0, not approximately
+    assert clock.now() == wall[0]  # exactly 1.0, not approximately
 
     wall[0] = boot + timedelta(seconds=260)
     assert clock.now() == wall[0]
@@ -1146,12 +1170,12 @@ def test_the_default_depth_covers_every_boot_time_in_the_year() -> None:
     assert worst <= ClockConfig.DEFAULT_HISTORY_DEPTH
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_clock.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'simulator.clock'`.
 
-- [ ] **Step 3: Write the config**
+- [x] **Step 3: Write the config**
 
 ```python
 # plant/simulator/src/simulator/config.py
@@ -1201,7 +1225,7 @@ class Settings(BaseSettings):
     inspection_url: str = "http://inspection-service:8100"
 ```
 
-- [ ] **Step 4: Write the clock**
+- [x] **Step 4: Write the clock**
 
 ```python
 # plant/simulator/src/simulator/clock.py
@@ -1239,7 +1263,9 @@ class SimulatedClock:
     after history_depth / (speed - 1).
     """
 
-    def __init__(self, cfg: ClockConfig, wall_fn: Callable[[], datetime] = _utc_now) -> None:
+    def __init__(
+        self, cfg: ClockConfig, wall_fn: Callable[[], datetime] = _utc_now
+    ) -> None:
         if cfg.catchup_speed <= 1.0:
             raise ValueError("catchup_speed must exceed 1.0 or history never closes")
         self._cfg = cfg
@@ -1260,7 +1286,11 @@ class SimulatedClock:
 
     @property
     def phase(self) -> Phase:
-        return Phase.CATCHUP if self._wall() < self._boot + self.catchup_duration else Phase.LIVE
+        return (
+            Phase.CATCHUP
+            if self._wall() < self._boot + self.catchup_duration
+            else Phase.LIVE
+        )
 
     def now(self) -> datetime:
         wall = self._wall()
@@ -1293,12 +1323,12 @@ def required_history_depth(at_local: datetime) -> timedelta:
     return at_local.astimezone(timezone.utc) - start.astimezone(timezone.utc)
 ```
 
-- [ ] **Step 5: Run the test to verify it passes**
+- [x] **Step 5: Run the test to verify it passes**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_clock.py -v`
 Expected: PASS, 5 tests. Record the value `test_the_default_depth_covers_every_boot_time_in_the_year` computes — it is one of the numbers Task 17 writes into §3.2.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add plant/simulator/src/simulator/clock.py plant/simulator/src/simulator/config.py plant/simulator/tests/test_clock.py
@@ -1311,6 +1341,12 @@ git commit -m "feat(simulator): simulated clock, and the history depth a night-s
 ---
 
 ## Task 4: The address space, the historian and catch-up generation
+
+> **Complete.** Closed after two review rounds. Production-depth reconciliation verified
+> at 19,801/19,801/19,800 rows over 33 h in 8.9 s, peak notification-queue depth 500,
+> zero drops. Two defects found here were not in the plan: asyncua's *write*-path 10,000
+> ceiling (which refutes pre-flight F4) and a constant TaktTime collapsing the stream to
+> 2 rows. Both are recorded for Task 17.
 
 **Files:**
 - Create: `plant/simulator/src/simulator/address_space.py`, `events.py`, `historian.py`, `station_s3.py`
@@ -1327,7 +1363,7 @@ git commit -m "feat(simulator): simulated clock, and the history depth a night-s
   - `Ledger` with `.takt`, `.part_count`, `.events`, `.images` counters
   - `async generate(space, clock, settings, produce, ledger) -> None`
 
-- [ ] **Step 1: Write the failing address-space test**
+- [x] **Step 1: Write the failing address-space test**
 
 ```python
 # plant/simulator/tests/test_address_space.py
@@ -1375,16 +1411,25 @@ async def test_event_type_carries_an_image_field() -> None:
     idx = await server.register_namespace("http://machine-agent/plant")
     space = await build_address_space(server, idx)
 
-    props = {(await p.read_browse_name()).Name for p in await space.event_type.get_properties()}
-    assert {"AssemblySerial", "Disposition", "DefectClass", "Confidence", "Image"} <= props
+    props = {
+        (await p.read_browse_name()).Name
+        for p in await space.event_type.get_properties()
+    }
+    assert {
+        "AssemblySerial",
+        "Disposition",
+        "DefectClass",
+        "Confidence",
+        "Image",
+    } <= props
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_address_space.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'simulator.address_space'`.
 
-- [ ] **Step 3: Build the address space**
+- [x] **Step 3: Build the address space**
 
 ```python
 # plant/simulator/src/simulator/address_space.py
@@ -1448,15 +1493,17 @@ async def build_address_space(server: Server, idx: int) -> AddressSpace:
     # or event history is silently created with no columns.
     event_gen = await server.get_event_generator(event_type, s3)
 
-    return AddressSpace(idx, line, stations, s3, takt, part_count, event_type, event_gen)
+    return AddressSpace(
+        idx, line, stations, s3, takt, part_count, event_type, event_gen
+    )
 ```
 
-- [ ] **Step 4: Run the address-space test to verify it passes**
+- [x] **Step 4: Run the address-space test to verify it passes**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_address_space.py -v`
 Expected: PASS, 3 tests.
 
-- [ ] **Step 5: Write the failing generation test**
+- [x] **Step 5: Write the failing generation test**
 
 ```python
 # plant/simulator/tests/test_generation.py
@@ -1502,7 +1549,9 @@ async def test_catchup_writes_every_expected_row(tmp_path) -> None:
     assert ledger.takt == expected
     assert ledger.part_count == expected
     assert ledger.events == expected
-    assert ledger.images == sum(1 for i in range(expected) if f"A-{i:08d}".endswith("7"))
+    assert ledger.images == sum(
+        1 for i in range(expected) if f"A-{i:08d}".endswith("7")
+    )
 
 
 @pytest.mark.asyncio
@@ -1527,15 +1576,17 @@ async def test_source_timestamps_are_simulated_not_wall_clock(tmp_path) -> None:
 
     assert rows, "history is empty"
     oldest = min(r.SourceTimestamp for r in rows)
-    assert oldest < datetime.now(timezone.utc).replace(tzinfo=timezone.utc) - timedelta(minutes=50)
+    assert oldest < datetime.now(timezone.utc).replace(tzinfo=timezone.utc) - timedelta(
+        minutes=50
+    )
 ```
 
-- [ ] **Step 6: Run it to verify it fails**
+- [x] **Step 6: Run it to verify it fails**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_generation.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'simulator.historian'`.
 
-- [ ] **Step 7: Write the historian wiring**
+- [x] **Step 7: Write the historian wiring**
 
 ```python
 # plant/simulator/src/simulator/historian.py
@@ -1578,12 +1629,14 @@ async def attach_historian(
     # rows where SourceTimestamp < now() - period using the REAL wall clock, while
     # our SourceTimestamps are simulated and up to history_depth in the past. Any
     # period shorter than the history depth erases history as it is written.
-    await server.historize_node_data_change([space.takt, space.part_count], period=None, count=0)
+    await server.historize_node_data_change(
+        [space.takt, space.part_count], period=None, count=0
+    )
     await server.historize_node_event(space.s3, period=None, count=0)
     return storage
 ```
 
-- [ ] **Step 8: Write the station loop**
+- [x] **Step 8: Write the station loop**
 
 ```python
 # plant/simulator/src/simulator/station_s3.py
@@ -1608,10 +1661,10 @@ MODEL_VERSION = "simulated-1"
 
 @dataclass(frozen=True)
 class PartOutcome:
-    disposition: str               # "good" | "reject"
+    disposition: str  # "good" | "reject"
     defect_class: str | None
     confidence: float
-    image: bytes | None            # §3.4: only rejects carry their image
+    image: bytes | None  # §3.4: only rejects carry their image
 
 
 ProduceFn = Callable[[str, datetime], Awaitable[PartOutcome]]
@@ -1622,8 +1675,12 @@ def serial_for(index: int) -> str:
 
 
 async def _emit_part(
-    space: AddressSpace, index: int, sim_ts: datetime, takt: float,
-    outcome: PartOutcome, ledger: Ledger,
+    space: AddressSpace,
+    index: int,
+    sim_ts: datetime,
+    takt: float,
+    outcome: PartOutcome,
+    ledger: Ledger,
 ) -> None:
     serial = serial_for(index)
 
@@ -1635,7 +1692,9 @@ async def _emit_part(
     )
     ledger.takt += 1
     await space.part_count.write_value(
-        ua.DataValue(ua.Variant(index + 1, ua.VariantType.UInt32), SourceTimestamp=sim_ts)
+        ua.DataValue(
+            ua.Variant(index + 1, ua.VariantType.UInt32), SourceTimestamp=sim_ts
+        )
     )
     ledger.part_count += 1
 
@@ -1655,8 +1714,11 @@ async def _emit_part(
 
 
 async def generate_history(
-    space: AddressSpace, clock: SimulatedClock, settings: Settings,
-    produce: ProduceFn, ledger: Ledger,
+    space: AddressSpace,
+    clock: SimulatedClock,
+    settings: Settings,
+    produce: ProduceFn,
+    ledger: Ledger,
 ) -> None:
     """Catch-up: build the configured depth of history in process (§3.2).
 
@@ -1672,12 +1734,18 @@ async def generate_history(
     total = int(clock._cfg.history_depth.total_seconds() // takt)
     for i in range(total):
         sim_ts = clock.history_start + timedelta(seconds=i * takt)
-        await _emit_part(space, i, sim_ts, takt, await produce(serial_for(i), sim_ts), ledger)
+        await _emit_part(
+            space, i, sim_ts, takt, await produce(serial_for(i), sim_ts), ledger
+        )
 
 
 async def run_live(
-    space: AddressSpace, clock: SimulatedClock, settings: Settings,
-    produce: ProduceFn, ledger: Ledger, start_index: int,
+    space: AddressSpace,
+    clock: SimulatedClock,
+    settings: Settings,
+    produce: ProduceFn,
+    ledger: Ledger,
+    start_index: int,
 ) -> None:
     """Live: one part per takt at exactly 1.0 (§3.2)."""
     index = start_index
@@ -1685,19 +1753,23 @@ async def run_live(
         if clock.phase is Phase.LIVE:
             sim_ts = clock.now()
             await _emit_part(
-                space, index, sim_ts, settings.takt_seconds,
-                await produce(serial_for(index), sim_ts), ledger,
+                space,
+                index,
+                sim_ts,
+                settings.takt_seconds,
+                await produce(serial_for(index), sim_ts),
+                ledger,
             )
             index += 1
         await asyncio.sleep(settings.takt_seconds)
 ```
 
-- [ ] **Step 9: Run the generation tests to verify they pass**
+- [x] **Step 9: Run the generation tests to verify they pass**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_generation.py -v`
 Expected: PASS, 2 tests.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add plant/simulator/src/simulator plant/simulator/tests
@@ -1724,7 +1796,7 @@ git commit -m "feat(simulator): S3 address space, historian and catch-up generat
   - HTTP: `POST /truth/{part_id}` (side channel) and `POST /inspect` (the real interface)
   - `InspectionClient(base_url).produce(part_id, sim_ts) -> PartOutcome`, satisfying `ProduceFn`
 
-- [ ] **Step 1: Write the failing inspection test**
+- [x] **Step 1: Write the failing inspection test**
 
 ```python
 # plant/inspection/tests/test_inspection.py
@@ -1741,7 +1813,12 @@ client = TestClient(app)
 
 def test_defect_classes_match_the_spec() -> None:
     assert DEFECT_CLASSES == [
-        "gap", "crack", "misalignment", "missing_part", "scratch", "contamination",
+        "gap",
+        "crack",
+        "misalignment",
+        "missing_part",
+        "scratch",
+        "contamination",
     ]
 
 
@@ -1763,6 +1840,7 @@ def test_inspect_request_carries_no_ground_truth() -> None:
     assert "truth" not in json.dumps(sent)
 
     import base64
+
     sent["image_b64"] = base64.b64encode(image).decode()
     result = client.post("/inspect", json=sent).json()
     assert result["disposition"] == "reject"
@@ -1771,10 +1849,15 @@ def test_inspect_request_carries_no_ground_truth() -> None:
 
 def test_a_part_with_no_truth_entry_passes() -> None:
     import base64
+
     image = render_part("A-00000002", [], 64, 64, seed=1)
     result = client.post(
         "/inspect",
-        json={"part_id": "A-00000002", "image_b64": base64.b64encode(image).decode(), "carrier_id": 1},
+        json={
+            "part_id": "A-00000002",
+            "image_b64": base64.b64encode(image).decode(),
+            "carrier_id": 1,
+        },
     ).json()
     assert result["disposition"] == "good"
 
@@ -1783,11 +1866,16 @@ def test_confidences_are_a_distribution_over_all_classes() -> None:
     """§3.4: plausible per-class confidence distributions, so the confidence field
     carries information."""
     import base64
+
     client.post("/truth/A-00000003", json={"defects": ["scratch"]})
     image = render_part("A-00000003", ["scratch"], 64, 64, seed=1)
     result = client.post(
         "/inspect",
-        json={"part_id": "A-00000003", "image_b64": base64.b64encode(image).decode(), "carrier_id": 1},
+        json={
+            "part_id": "A-00000003",
+            "image_b64": base64.b64encode(image).decode(),
+            "carrier_id": 1,
+        },
     ).json()
 
     conf = result["confidences"]
@@ -1796,12 +1884,12 @@ def test_confidences_are_a_distribution_over_all_classes() -> None:
     assert max(conf, key=conf.get) == "scratch"
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `cd plant && uv run --frozen --package inspection pytest inspection/tests -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'inspection.app'`.
 
-- [ ] **Step 3: Write the renderer**
+- [x] **Step 3: Write the renderer**
 
 ```python
 # plant/inspection/src/inspection/render.py
@@ -1845,11 +1933,17 @@ def render_part(
         x = rng.randint(width // 4, 3 * width // 4)
         y = rng.randint(height // 3, 2 * height // 3)
         if defect == "scratch":
-            draw.line([x, y, x + rng.randint(20, 60), y + rng.randint(-8, 8)], fill=ink, width=2)
+            draw.line(
+                [x, y, x + rng.randint(20, 60), y + rng.randint(-8, 8)],
+                fill=ink,
+                width=2,
+            )
         elif defect == "gap":
             draw.rectangle([mid - 3, height // 4, mid + 3, 3 * height // 4], fill=ink)
         elif defect == "missing_part":
-            draw.rectangle([mid, height // 4, mid + width // 3, 3 * height // 4], fill=ink)
+            draw.rectangle(
+                [mid, height // 4, mid + width // 3, 3 * height // 4], fill=ink
+            )
         else:
             r = rng.randint(6, 18)
             draw.ellipse([x - r, y - r, x + r, y + r], fill=ink)
@@ -1859,7 +1953,7 @@ def render_part(
     return buf.getvalue()
 ```
 
-- [ ] **Step 4: Write the classifier behind a swappable interface**
+- [x] **Step 4: Write the classifier behind a swappable interface**
 
 ```python
 # plant/inspection/src/inspection/classifier.py
@@ -1877,7 +1971,12 @@ from dataclasses import dataclass, field
 from typing import Protocol
 
 DEFECT_CLASSES = [
-    "gap", "crack", "misalignment", "missing_part", "scratch", "contamination",
+    "gap",
+    "crack",
+    "misalignment",
+    "missing_part",
+    "scratch",
+    "contamination",
 ]
 MODEL_VERSION = "simulated-1"
 
@@ -1890,7 +1989,7 @@ class PartContext:
 
 @dataclass(frozen=True)
 class InspectionResult:
-    disposition: str                    # "good" | "reject"
+    disposition: str  # "good" | "reject"
     defect_class: str | None
     confidence: float
     confidences: dict[str, float]
@@ -1934,11 +2033,13 @@ class SimulatedClassifier:
         confidences = {c: w / total for c, w in weights.items()}
 
         if not defects:
-            return InspectionResult("good", None, max(confidences.values()), confidences)
+            return InspectionResult(
+                "good", None, max(confidences.values()), confidences
+            )
         return InspectionResult("reject", top, confidences[top], confidences)
 ```
 
-- [ ] **Step 5: Write the service**
+- [x] **Step 5: Write the service**
 
 ```python
 # plant/inspection/src/inspection/app.py
@@ -1951,12 +2052,17 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from inspection.classifier import (
-    DEFECT_CLASSES, PartContext, SimulatedClassifier, TruthChannel,
+    DEFECT_CLASSES,
+    PartContext,
+    SimulatedClassifier,
+    TruthChannel,
 )
 
 app = FastAPI(title="inspection-service")
 _truth = TruthChannel()
-_classifier = SimulatedClassifier(_truth, seed=int(os.environ.get("PLANT_SEED", "20260912")))
+_classifier = SimulatedClassifier(
+    _truth, seed=int(os.environ.get("PLANT_SEED", "20260912"))
+)
 
 
 class TruthIn(BaseModel):
@@ -1996,12 +2102,12 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 ```
 
-- [ ] **Step 6: Run the inspection tests to verify they pass**
+- [x] **Step 6: Run the inspection tests to verify they pass**
 
 Run: `cd plant && uv run --frozen --package inspection pytest inspection/tests -v`
 Expected: PASS, 5 tests.
 
-- [ ] **Step 7: Wire the simulator to the service**
+- [x] **Step 7: Wire the simulator to the service**
 
 ```python
 # plant/simulator/src/simulator/inspection_client.py
@@ -2019,7 +2125,12 @@ from simulator.config import Settings
 from simulator.station_s3 import PartOutcome
 
 DEFECT_CLASSES = [
-    "gap", "crack", "misalignment", "missing_part", "scratch", "contamination",
+    "gap",
+    "crack",
+    "misalignment",
+    "missing_part",
+    "scratch",
+    "contamination",
 ]
 
 
@@ -2042,7 +2153,9 @@ class InspectionClient:
         )
 
         # Truth goes down the side channel, keyed by part id.
-        await self._http.post(f"{self._s.inspection_url}/truth/{part_id}", json={"defects": defects})
+        await self._http.post(
+            f"{self._s.inspection_url}/truth/{part_id}", json={"defects": defects}
+        )
 
         # The request itself carries only what a camera would hand over.
         response = await self._http.post(
@@ -2066,7 +2179,7 @@ class InspectionClient:
 
 The renderer lives in the `inspection` package but the *simulator* renders (§3.4: "the simulator renders the image"). Because the two are separate uv workspace members that must not depend on each other, copy `render.py` into `plant/simulator/src/simulator/render.py` and import it from there; the inspection service keeps its own copy for its tests. Duplicating ~40 lines is the correct cost of the workspace split, exactly as §10.7 argues for the duplicated lockfiles. Replace the import above with `from simulator.render import render_part`.
 
-- [ ] **Step 8: Write the failing wiring test**
+- [x] **Step 8: Write the failing wiring test**
 
 ```python
 # plant/simulator/tests/test_inspection_client.py
@@ -2089,16 +2202,22 @@ async def test_only_rejects_carry_an_image() -> None:
         if "/truth/" in str(request.url):
             return httpx.Response(200, json={"status": "ok"})
         reject = b"A-00000007" in request.content
-        return httpx.Response(200, json={
-            "disposition": "reject" if reject else "good",
-            "defect_class": "gap" if reject else None,
-            "confidence": 0.88,
-            "confidences": {}, "model_version": "simulated-1",
-        })
+        return httpx.Response(
+            200,
+            json={
+                "disposition": "reject" if reject else "good",
+                "defect_class": "gap" if reject else None,
+                "confidence": 0.88,
+                "confidences": {},
+                "model_version": "simulated-1",
+            },
+        )
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as http:
-        client = InspectionClient(Settings(reject_rate=1.0, image_width=64, image_height=64), http)
+        client = InspectionClient(
+            Settings(reject_rate=1.0, image_width=64, image_height=64), http
+        )
         rejected = await client.produce("A-00000007", None)
         good = await client.produce("A-00000008", None)
 
@@ -2113,14 +2232,22 @@ async def test_truth_never_appears_in_the_inspect_request() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         if "/inspect" in str(request.url):
             bodies.append(request.content)
-            return httpx.Response(200, json={
-                "disposition": "good", "defect_class": None, "confidence": 0.9,
-                "confidences": {}, "model_version": "simulated-1",
-            })
+            return httpx.Response(
+                200,
+                json={
+                    "disposition": "good",
+                    "defect_class": None,
+                    "confidence": 0.9,
+                    "confidences": {},
+                    "model_version": "simulated-1",
+                },
+            )
         return httpx.Response(200, json={"status": "ok"})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
-        await InspectionClient(Settings(reject_rate=1.0, image_width=64, image_height=64), http).produce("A-1", None)
+        await InspectionClient(
+            Settings(reject_rate=1.0, image_width=64, image_height=64), http
+        ).produce("A-1", None)
 
     assert bodies
     for body in bodies:
@@ -2128,12 +2255,12 @@ async def test_truth_never_appears_in_the_inspect_request() -> None:
         assert b"truth" not in body
 ```
 
-- [ ] **Step 9: Run both suites to verify they pass**
+- [x] **Step 9: Run both suites to verify they pass**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests -q && uv run --frozen --package inspection pytest inspection/tests -q`
 Expected: PASS.
 
-- [ ] **Step 10: Record R4's first number**
+- [x] **Step 10: Record R4's first number**
 
 Run the renderer over 500 part ids at the configured resolution and record `img_p50` and `img_p99`:
 
@@ -2149,7 +2276,7 @@ EOF
 
 Write the result into `measurements/r4-image-sizes.txt`. Task 14 uses `img_p99` as the base of the ceiling search.
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add plant/inspection plant/simulator/src/simulator/render.py plant/simulator/src/simulator/inspection_client.py plant/simulator/tests measurements
@@ -2172,7 +2299,7 @@ git commit -m "feat(inspection): separate vision service with a truth side chann
 - Consumes: Tasks 2–5.
 - Produces: `async build_server(settings) -> tuple[Server, AddressSpace]`; a running endpoint at `opc.tcp://line-simulator:4840/plant` accepting `Basic256Sha256_Sign` with mutual trust; `run_r3.py` emitting the matrix as JSON.
 
-- [ ] **Step 1: Write the failing boundary test**
+- [x] **Step 1: Write the failing boundary test**
 
 ```python
 # plant/simulator/tests/test_boundary.py
@@ -2216,7 +2343,9 @@ async def test_an_untrusted_client_is_rejected() -> None:
         )
         with pytest.raises(Exception) as excinfo:
             await client.connect()
-        assert "Untrusted" in str(excinfo.value) or "BadCertificate" in str(excinfo.value)
+        assert "Untrusted" in str(excinfo.value) or "BadCertificate" in str(
+            excinfo.value
+        )
 
 
 @pytest.mark.asyncio
@@ -2234,18 +2363,20 @@ async def test_the_trusted_gateway_certificate_connects_and_browses() -> None:
         )
         async with client:
             node = client.get_node(space.s3.nodeid)
-            names = {(await c.read_browse_name()).Name for c in await node.get_children()}
+            names = {
+                (await c.read_browse_name()).Name for c in await node.get_children()
+            }
             assert {"TaktTime", "PartCount"} <= names
 ```
 
 Generate the stranger fixture once with `simulator.pki.gen_party` into `tests/fixtures/` using a third `Party` that is never published to `pki/trusted/`.
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_boundary.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'simulator.server'`.
 
-- [ ] **Step 3: Write the server**
+- [x] **Step 3: Write the server**
 
 ```python
 # plant/simulator/src/simulator/server.py
@@ -2321,7 +2452,9 @@ async def build_server(settings: Settings) -> tuple[Server, AddressSpace]:
 
 
 async def main() -> None:
-    logging.basicConfig(level=logging.INFO, format='{"lvl":"%(levelname)s","msg":"%(message)s"}')
+    logging.basicConfig(
+        level=logging.INFO, format='{"lvl":"%(levelname)s","msg":"%(message)s"}'
+    )
     settings = Settings()
 
     from simulator.historian import Ledger, attach_historian
@@ -2330,7 +2463,9 @@ async def main() -> None:
     import httpx
 
     server, space = await build_server(settings)
-    await attach_historian(server, space, Path("/data/history.db"), settings.history_page_size)
+    await attach_historian(
+        server, space, Path("/data/history.db"), settings.history_page_size
+    )
 
     clock = SimulatedClock(
         ClockConfig(
@@ -2342,25 +2477,35 @@ async def main() -> None:
 
     async with server, httpx.AsyncClient(timeout=30.0) as http:
         produce = InspectionClient(settings, http).produce
-        log.info("phase=catchup depth=%s speed=%s", clock._cfg.history_depth, settings.catchup_speed)
+        log.info(
+            "phase=catchup depth=%s speed=%s",
+            clock._cfg.history_depth,
+            settings.catchup_speed,
+        )
         await generate_history(space, clock, settings, produce, ledger)
         log.info(
             "phase=live ledger takt=%d part_count=%d events=%d images=%d image_bytes=%d",
-            ledger.takt, ledger.part_count, ledger.events, ledger.images, ledger.image_bytes,
+            ledger.takt,
+            ledger.part_count,
+            ledger.events,
+            ledger.images,
+            ledger.image_bytes,
         )
-        await run_live(space, clock, settings, produce, ledger, start_index=ledger.events)
+        await run_live(
+            space, clock, settings, produce, ledger, start_index=ledger.events
+        )
 
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-- [ ] **Step 4: Run the boundary test to verify it passes**
+- [x] **Step 4: Run the boundary test to verify it passes**
 
 Run: `cd plant && uv run --frozen --package simulator pytest simulator/tests/test_boundary.py -v`
 Expected: PASS, 3 tests.
 
-- [ ] **Step 5: Write the plant compose file**
+- [x] **Step 5: Write the plant compose file**
 
 ```yaml
 # plant/compose.yml
@@ -2423,7 +2568,7 @@ networks:
     external: true                 # exactly two containers join this, ever
 ```
 
-- [ ] **Step 6: Write the R3 matrix runner**
+- [x] **Step 6: Write the R3 matrix runner**
 
 ```python
 # measurements/run_r3.py
@@ -2469,14 +2614,24 @@ def gateway_cell(secure: bool) -> dict[str, object]:
     """Row 1 uses the real UA-.NETStandard client from inside field-net.
     Requires Task 7's --connect-test mode."""
     cmd = [
-        "docker", "run", "--rm", "--network", "field-net",
-        "-v", f"{subprocess.check_output(['pwd']).decode().strip()}/pki:/pki:ro",
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "field-net",
+        "-v",
+        f"{subprocess.check_output(['pwd']).decode().strip()}/pki:/pki:ro",
         "machine-agent/edge-gateway:dev",
-        "--connect-test", "opc.tcp://line-simulator:4840/plant",
-        "--security", "Sign" if secure else "None",
+        "--connect-test",
+        "opc.tcp://line-simulator:4840/plant",
+        "--security",
+        "Sign" if secure else "None",
     ]
     out = subprocess.run(cmd, capture_output=True, text=True)
-    return {"ok": out.returncode == 0, "status": (out.stdout + out.stderr).strip()[-200:]}
+    return {
+        "ok": out.returncode == 0,
+        "status": (out.stdout + out.stderr).strip()[-200:],
+    }
 
 
 async def main() -> None:
@@ -2491,7 +2646,9 @@ async def main() -> None:
     print()
     required = ["gateway-field-net/Sign"]
     host_rows = [k for k in matrix if k.startswith("host-") and k.endswith("/Sign")]
-    passed = all(matrix[k]["ok"] for k in required) and any(matrix[k]["ok"] for k in host_rows)
+    passed = all(matrix[k]["ok"] for k in required) and any(
+        matrix[k]["ok"] for k in host_rows
+    )
     print(f"\nR3: {'PASS' if passed else 'FAIL'}", file=sys.stderr)
     sys.exit(0 if passed else 1)
 
@@ -2500,7 +2657,7 @@ if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-- [ ] **Step 7: Bring the plant up and run rows 2 and 3**
+- [x] **Step 7: Bring the plant up and run rows 2 and 3**
 
 ```bash
 make preflight
@@ -2515,7 +2672,7 @@ Record every cell. Row 1 will fail until Task 7 builds the gateway image; that i
 
 **If it fails with `BadCertificateHostNameInvalid`:** the DNS SAN list is short. Task 2's `test_server_dns_sans_cover_every_name_a_client_may_dial` should have caught it; add the missing name there first, then regenerate.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add plant/compose.yml plant/.env.example plant/simulator/src/simulator/server.py plant/simulator/tests/test_boundary.py measurements/run_r3.py
@@ -2536,7 +2693,7 @@ git commit -m "feat(plant): signed OPC UA endpoint on one name and one port, wit
 
 > **Note on the SDK surface.** These bindings were read from UA-.NETStandard 1.5.378.176 before this plan was written. Where a member name differs, let the compiler point at it and fix — do not go researching. The reference sample loads its configuration from XML; this gateway builds it in code so that the certificate store paths come from `pki/`.
 
-- [ ] **Step 1: Create the project with a committed lock file**
+- [x] **Step 1: Create the project with a committed lock file**
 
 ```bash
 mkdir -p diagnostics/gateway && cd diagnostics/gateway
@@ -2557,7 +2714,7 @@ Add to `Gateway.csproj`:
 </PropertyGroup>
 ```
 
-- [ ] **Step 2: Write the failing connection test**
+- [x] **Step 2: Write the failing connection test**
 
 ```csharp
 // diagnostics/gateway/Gateway.Tests/ConnectionTests.cs
@@ -2590,12 +2747,12 @@ public class ConnectionTests
 }
 ```
 
-- [ ] **Step 3: Run it to verify it fails**
+- [x] **Step 3: Run it to verify it fails**
 
 Run: `cd diagnostics/gateway && dotnet test --locked-mode`
 Expected: FAIL — `GatewayOptions` and `CertificateInspector` do not exist.
 
-- [ ] **Step 4: Write the connection**
+- [x] **Step 4: Write the connection**
 
 ```csharp
 // diagnostics/gateway/Opc/UaConnection.cs
@@ -2762,7 +2919,7 @@ public sealed class UaConnection : IAsyncDisposable
 }
 ```
 
-- [ ] **Step 5: Write `/status` and the connect-test mode**
+- [x] **Step 5: Write `/status` and the connect-test mode**
 
 ```csharp
 // diagnostics/gateway/Status/StatusEndpoint.cs
@@ -2786,7 +2943,7 @@ public static class StatusEndpoint
 
 `Program.cs` handles `--connect-test <url> --security <None|Sign>` by building the configuration, attempting `ConnectAsync`, printing `Good` or the `ServiceResultException`'s `StatusCode`, and exiting 0 or 1. That is what `measurements/run_r3.py` shells into for matrix row 1.
 
-- [ ] **Step 6: Write the gateway Dockerfile**
+- [x] **Step 6: Write the gateway Dockerfile**
 
 ```dockerfile
 # diagnostics/gateway/Dockerfile
@@ -2806,7 +2963,7 @@ USER gateway
 ENTRYPOINT ["dotnet", "Gateway.dll"]
 ```
 
-- [ ] **Step 7: Close R3 row 1 and re-run the whole matrix**
+- [x] **Step 7: Close R3 row 1 and re-run the whole matrix**
 
 ```bash
 docker build -t machine-agent/edge-gateway:dev diagnostics/gateway
@@ -2815,7 +2972,7 @@ uv run --frozen --package simulator python measurements/run_r3.py | tee measurem
 
 Expected: `gateway-field-net/Sign` green. **This is R3's pass condition and the moment the boundary is proven.** Record all six cells verbatim; Task 17 puts them in the report.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add diagnostics/gateway measurements/r3-matrix.json
@@ -2836,7 +2993,7 @@ Closes R3: the endpoint URL, certificate SANs and published port resolve on one 
 - Consumes: `UaConnection.Session` (Task 7).
 - Produces: `IngestRecord(Kind, NodeId, SourceTs, ServerTs, StatusCode, PayloadJson, ImageBytes)` where `Kind` is `"datachange"` or `"event"`; `LocalQueue.EnqueueAsync(IngestRecord)`, `DequeueBatchAsync(int) -> IReadOnlyList<(long Id, IngestRecord)>`, `AckAsync(IEnumerable<long>)`, `DepthAsync() -> int`; `Subscriptions.StartAsync(session, space, onRecord, ct)`.
 
-- [ ] **Step 1: Write the failing queue test**
+- [x] **Step 1: Write the failing queue test**
 
 ```csharp
 // diagnostics/gateway/Gateway.Tests/LocalQueueTests.cs
@@ -2896,12 +3053,12 @@ public class LocalQueueTests
 }
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `cd diagnostics/gateway && dotnet test --locked-mode --filter LocalQueueTests`
 Expected: FAIL — `LocalQueue` does not exist.
 
-- [ ] **Step 3: Write the queue**
+- [x] **Step 3: Write the queue**
 
 `LocalQueue` opens a SQLite file with `journal_mode=WAL`, one table:
 
@@ -2920,7 +3077,7 @@ CREATE TABLE IF NOT EXISTS queue (
 
 `EnqueueAsync` inserts; `DequeueBatchAsync(n)` selects `ORDER BY id LIMIT n`; `AckAsync` deletes by id. Ordering is by insertion for drain purposes only — **nothing downstream may assume arrival order** (§4.4), which is why `source_ts` is carried explicitly and Task 9 orders by it.
 
-- [ ] **Step 4: Write the subscription**
+- [x] **Step 4: Write the subscription**
 
 ```csharp
 // diagnostics/gateway/Opc/Subscriptions.cs
@@ -2997,12 +3154,12 @@ if (notification.Value.StatusCode.Overflow)
 }
 ```
 
-- [ ] **Step 5: Run the queue tests to verify they pass**
+- [x] **Step 5: Run the queue tests to verify they pass**
 
 Run: `cd diagnostics/gateway && dotnet test --locked-mode --filter LocalQueueTests`
 Expected: PASS, 3 tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add diagnostics/gateway/Opc/Subscriptions.cs diagnostics/gateway/Ingest diagnostics/gateway/Gateway.Tests
@@ -3022,7 +3179,7 @@ git commit -m "feat(gateway): subscription ingest with per-signal deadbands into
 - Consumes: `IngestRecord`, `LocalQueue` (Task 8).
 - Produces: `PostgresWriter.WriteBatchAsync(IReadOnlyList<IngestRecord>) -> Task<int>`, returning rows affected; the M1 schema.
 
-- [ ] **Step 1: Write the schema**
+- [x] **Step 1: Write the schema**
 
 ```sql
 -- diagnostics/gateway/Migrations/001_m1.sql
@@ -3100,7 +3257,7 @@ CREATE TABLE IF NOT EXISTS backfill_windows (
 );
 ```
 
-- [ ] **Step 2: Write the failing writer test**
+- [x] **Step 2: Write the failing writer test**
 
 Use `Testcontainers.PostgreSql` 4.15.0 so the test runs against real Postgres.
 
@@ -3153,7 +3310,7 @@ public async Task OutOfOrderArrivalsAreOrderedBySourceTimestampOnRead()
 }
 ```
 
-- [ ] **Step 3: Run it to verify it fails, then write the writer**
+- [x] **Step 3: Run it to verify it fails, then write the writer**
 
 `WriteBatchAsync` opens one `NpgsqlTransaction`, inserts every record verbatim into `raw_events`, derives the normalised rows in the same transaction, and commits once:
 
@@ -3183,12 +3340,12 @@ await tx.CommitAsync(ct);
 
 The cost of one transaction is that replaying raw after a normalisation bug means re-running the gateway's own logic, which is why §5.1 requires a `--replay-from <timestamp>` mode; add it reading `raw_events` in `source_ts` order and re-deriving.
 
-- [ ] **Step 4: Run the writer tests to verify they pass**
+- [x] **Step 4: Run the writer tests to verify they pass**
 
 Run: `cd diagnostics/gateway && dotnet test --locked-mode --filter PostgresWriterTests`
 Expected: PASS, 4 tests.
 
-- [ ] **Step 5: Measure R4 — the image ceiling**
+- [x] **Step 5: Measure R4 — the image ceiling**
 
 The live path is now complete, so R4 is measurable end to end.
 
@@ -3208,7 +3365,7 @@ Pass: `ceiling >= 4 * img_p99` and `burst_loss == 0` at B = 20. Write `measureme
 
 If the ceiling crowds `img_p99`, raise `MaxByteStringLength` and `MaxMessageSize` in `GatewayOptions` **and** asyncua's `TransportLimits` together, re-measure, and record the chosen values as configuration (§10.3). `burst_loss > 0` with no overflow bit is a blocker: undetectable loss breaks §4.4's premise that gap markers make missing data distinguishable from a quiet machine.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add diagnostics/gateway/Migrations diagnostics/gateway/Ingest/PostgresWriter.cs diagnostics/gateway/Gateway.Tests measurements/run_r4.py measurements/r4-results.json
@@ -3230,52 +3387,68 @@ This task carries R1 and R2. Read the Pre-flight findings again before starting 
 - Consumes: `UaConnection`, `LocalQueue`, `PostgresWriter`.
 - Produces: `HistoryBackfill.RunAsync(from, to, ct) -> Task<BackfillReport>` where `BackfillReport` carries `RowsReturned`, `RowsWritten`, `Pages`, `Duration`, `Windows`; `Reconciler.CheckAsync(from, to) -> Task<ReconciliationResult>`.
 
-- [ ] **Step 1: Reproduce the pre-flight findings on the pinned interpreter**
+- [x] **Step 1: Reproduce the pre-flight findings on the pinned interpreter**
 
 The numbers in Pre-flight were taken on Python 3.14. Confirm them on the pinned 3.13 before designing around them.
 
 ```python
 # measurements/probe_history.py
 """Reproduces F1 (the 10,000 ceiling) and F2 (page-boundary duplicates)."""
+
 import asyncio, sys, tempfile, os
 from datetime import datetime, timedelta, timezone
 from asyncua import ua, Server, Client
 from asyncua.server.history_sql import HistorySQLite
 
+
 async def probe(n: int, page: int, port: int) -> tuple[int, int]:
     tmp = tempfile.mkdtemp()
-    server = Server(); await server.init()
+    server = Server()
+    await server.init()
     server.set_endpoint(f"opc.tcp://127.0.0.1:{port}/probe")
     idx = await server.register_namespace("probe")
     obj = await server.nodes.objects.add_object(idx, "S3")
     var = await obj.add_variable(idx, "TaktTime", 6.0)
     st = HistorySQLite(os.path.join(tmp, "h.db"), max_history_data_response_size=page)
-    await st.init(); server.iserver.history_manager.set_storage(st)
+    await st.init()
+    server.iserver.history_manager.set_storage(st)
     base = datetime.now(timezone.utc) - timedelta(hours=18)
     async with server:
         await server.historize_node_data_change(var, period=None, count=0)
         for i in range(n):
-            await var.write_value(ua.DataValue(
-                ua.Variant(6.0 + i * 0.001, ua.VariantType.Double),
-                SourceTimestamp=base + timedelta(seconds=6 * i)))
+            await var.write_value(
+                ua.DataValue(
+                    ua.Variant(6.0 + i * 0.001, ua.VariantType.Double),
+                    SourceTimestamp=base + timedelta(seconds=6 * i),
+                )
+            )
         await asyncio.sleep(2)
         async with Client(f"opc.tcp://127.0.0.1:{port}/probe") as cl:
             rows = await cl.get_node(var.nodeid).read_raw_history(
-                base - timedelta(minutes=1), datetime.now(timezone.utc) + timedelta(days=1), 0)
+                base - timedelta(minutes=1),
+                datetime.now(timezone.utc) + timedelta(days=1),
+                0,
+            )
     await st.stop()
     return n, len(rows)
 
+
 async def main() -> None:
-    for n, page, port in ((3000, 500, 48420), (10800, 1000, 48421), (12000, 1000, 48422)):
+    for n, page, port in (
+        (3000, 500, 48420),
+        (10800, 1000, 48421),
+        (12000, 1000, 48422),
+    ):
         wrote, read = await probe(n, page, port)
         print(f"wrote={wrote:6d} page={page:5d} read={read:6d} delta={read - wrote:+d}")
 
-asyncio.run(main())   # run with python -u: buffered output is lost if it is killed
+
+asyncio.run(main())  # run with python -u: buffered output is lost if it is killed
 ```
 
 Expected, from the pre-flight run: `3000/500 -> 3007` (duplicates), `10800/1000 -> 10000` and `12000/1000 -> 10000` (a hard ceiling at 10,000 independent of page size). Record what you actually get in `measurements/r1-probe.txt`.
 
-- [ ] **Step 2: Write the failing backfill test**
+- [x] **Step 2: Write the failing backfill test**
 
 ```csharp
 // diagnostics/gateway/Gateway.Tests/BackfillTests.cs
@@ -3335,7 +3508,7 @@ public async Task EventBackfillCarriesImageBytes()
 }
 ```
 
-- [ ] **Step 3: Write the backfill**
+- [x] **Step 3: Write the backfill**
 
 The shape that F1 and F2 force:
 
@@ -3431,12 +3604,12 @@ private async Task<WindowReport> ReadVariableWindowAsync(
 
 `Reconciler.CheckAsync` compares three counts for a window: the plant's ledger (exposed by `simulator.status`), `backfill_windows.rows_returned`, and the actual `signals` / `inspection_results` counts in Postgres. Equality of the first and third is the pass; the second is expected to exceed both by roughly `pages - 1` per window.
 
-- [ ] **Step 4: Run the backfill tests to verify they pass**
+- [x] **Step 4: Run the backfill tests to verify they pass**
 
 Run: `cd diagnostics/gateway && dotnet test --locked-mode --filter BackfillTests`
 Expected: PASS, 5 tests. All four R2 mechanics are green at this point.
 
-- [ ] **Step 5: Measure R1 and R2**
+- [x] **Step 5: Measure R1 and R2**
 
 ```bash
 uv run --frozen --package analysis python measurements/run_r1_r2.py | tee measurements/r1-r2-results.json
@@ -3446,7 +3619,7 @@ The runner brings both stacks up at depths of 1 h, 4 h and 26 h, and records `ca
 
 Thresholds and the decision tree are in the risk table. The one that must not be waived: `pg_rows == plant_rows` exactly.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add diagnostics/gateway/Opc/HistoryBackfill.cs diagnostics/gateway/Ingest/Reconciler.cs diagnostics/gateway/Gateway.Tests/BackfillTests.cs measurements
@@ -3468,7 +3641,7 @@ the duplicate the historian returns at every page boundary. Closes R1 and R2."
 - Consumes: `UaConnection.Session`.
 - Produces: `TopologyDiscovery.DiscoverAsync(session, ct) -> Task<IReadOnlyList<DiscoveredStation>>` with `DiscoveredStation(Code, Name, NodeId, TaktNodeId, PartCountNodeId)`; rows written to `stations`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```csharp
 [Fact]
@@ -3492,16 +3665,16 @@ public async Task DiscoveryIsIdempotentAcrossReconnects()
 }
 ```
 
-- [ ] **Step 2: Run it to verify it fails, then implement**
+- [x] **Step 2: Run it to verify it fails, then implement**
 
 `DiscoverAsync` browses `Objects` → `Line` → `Stations`, takes each child as a station, browses its children for `TaktTime` and `PartCount`, and upserts into `stations` with `ON CONFLICT (code) DO UPDATE`. `position_in_line` is left null in M1 — it is derivable from buffer references, and buffers arrive in M2.
 
-- [ ] **Step 3: Run the tests to verify they pass**
+- [x] **Step 3: Run the tests to verify they pass**
 
 Run: `cd diagnostics/gateway && dotnet test --locked-mode --filter TopologyTests`
 Expected: PASS, 2 tests.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add diagnostics/gateway/Opc/TopologyDiscovery.cs diagnostics/gateway/Gateway.Tests/TopologyTests.cs
@@ -3526,7 +3699,7 @@ git commit -m "feat(gateway): discover station topology by browsing the address 
   - `GET /parts/{serial}/image` → `image/png`
   - `contracts/analysis.openapi.yaml` as the single source of truth, from which `diagnostics/ui/src/generated/analysis.ts` is generated
 
-- [ ] **Step 1: Write the failing contract test**
+- [x] **Step 1: Write the failing contract test**
 
 ```python
 # diagnostics/analysis/tests/test_contract.py
@@ -3558,22 +3731,28 @@ def test_coverage_is_part_of_every_stats_response() -> None:
     assert "coverage" in props
 ```
 
-- [ ] **Step 2: Write the failing endpoint test**
+- [x] **Step 2: Write the failing endpoint test**
 
 ```python
 # diagnostics/analysis/tests/test_endpoints.py
 def test_stats_window_is_closed_and_counts_are_exact(client, seeded_db) -> None:
-    r = client.get("/inspection/stats", params={"from": "2026-09-12T01:00:00Z", "to": "2026-09-12T02:00:00Z"})
+    r = client.get(
+        "/inspection/stats",
+        params={"from": "2026-09-12T01:00:00Z", "to": "2026-09-12T02:00:00Z"},
+    )
     body = r.json()
-    assert body["total"] == 600            # one hour at 6 s takt
-    assert body["rejects"] == 30           # seeded at 5 %
+    assert body["total"] == 600  # one hour at 6 s takt
+    assert body["rejects"] == 30  # seeded at 5 %
     assert sum(d["count"] for d in body["by_defect_class"]) == 30
 
 
 def test_stats_reports_gaps_rather_than_hiding_them(client, seeded_db_with_gap) -> None:
     """§4.4: without gap markers, missing data is indistinguishable from a quiet
     machine, and the agent will confidently describe a stop that was a blackout."""
-    r = client.get("/inspection/stats", params={"from": "2026-09-12T01:00:00Z", "to": "2026-09-12T02:00:00Z"})
+    r = client.get(
+        "/inspection/stats",
+        params={"from": "2026-09-12T01:00:00Z", "to": "2026-09-12T02:00:00Z"},
+    )
     assert r.json()["coverage"]["gaps"]
 
 
@@ -3595,18 +3774,18 @@ def test_only_rejects_expose_an_image_url(client, seeded_db) -> None:
     assert client.get("/parts/A-00000006").json()["image_url"] is None
 ```
 
-- [ ] **Step 3: Run both to verify they fail, then implement**
+- [x] **Step 3: Run both to verify they fail, then implement**
 
 `routes_inspection.py` issues one query grouped by `defect_class` over `inspection_results` filtered on `source_ts`, plus one over `ingest_gaps` overlapping the window, and returns up to five reject serials as `sample_serials` so the agent has something concrete to cite. `routes_parts.py` selects a single row by primary key and joins `inspection_images` for the image URL — **no time-range join anywhere**, which is what Task 12's third test guards.
 
 Closed-window caching (§5.3) is **not** implemented in M1; it is an analysis concern that pays off under concurrency, and M1 has one user. Recorded in *Spec ambiguities*.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cd diagnostics && uv run --frozen --package analysis pytest analysis/tests -v`
 Expected: PASS, 7 tests.
 
-- [ ] **Step 5: Generate the TypeScript types**
+- [x] **Step 5: Generate the TypeScript types**
 
 ```bash
 cd diagnostics/ui && pnpm dlx openapi-typescript ../../contracts/analysis.openapi.yaml -o src/generated/analysis.ts
@@ -3614,7 +3793,7 @@ cd diagnostics/ui && pnpm dlx openapi-typescript ../../contracts/analysis.openap
 
 Add a `make contract-check` target that regenerates into a temp file and diffs, so a contract change that was not propagated fails CI rather than drifting.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add contracts diagnostics/analysis diagnostics/ui/src/generated
@@ -3638,7 +3817,7 @@ git commit -m "feat(analysis): OpenAPI contract, inspection stats and the citati
   - `async run(question, session_id) -> Answer`
   - `POST /ask` streaming progress events then the answer object
 
-- [ ] **Step 1: Write the failing citation test**
+- [x] **Step 1: Write the failing citation test**
 
 ```python
 # diagnostics/agent/tests/test_citations.py
@@ -3652,9 +3831,15 @@ from agent.citations import VerificationResult, verify
 async def test_a_citation_that_does_not_resolve_is_rejected(fake_analysis) -> None:
     """§6.5: every cited id is resolved against the database before the answer ships."""
     answer = Answer(
-        findings=[Finding(statement="Part A-99999999 was rejected.", basis="measured",
-                          citations=[Citation(kind="part", id="A-99999999")])],
-        answer_markdown="...", method={"sops_used": [], "tools_called": [], "budget_used": 1},
+        findings=[
+            Finding(
+                statement="Part A-99999999 was rejected.",
+                basis="measured",
+                citations=[Citation(kind="part", id="A-99999999")],
+            )
+        ],
+        answer_markdown="...",
+        method={"sops_used": [], "tools_called": [], "budget_used": 1},
         caveats=[],
     )
     result = await verify(answer, fake_analysis)
@@ -3662,17 +3847,26 @@ async def test_a_citation_that_does_not_resolve_is_rejected(fake_analysis) -> No
 
 
 @pytest.mark.asyncio
-async def test_unresolvable_claims_are_removed_and_the_answer_says_so(fake_analysis) -> None:
+async def test_unresolvable_claims_are_removed_and_the_answer_says_so(
+    fake_analysis,
+) -> None:
     """§6.5: after one failed retry the offending claims are removed and the answer
     ships with a visible note. The failure is logged so its frequency is measurable."""
     answer = Answer(
         findings=[
-            Finding(statement="A-00000007 was rejected for a gap.", basis="measured",
-                    citations=[Citation(kind="part", id="A-00000007")]),
-            Finding(statement="A-99999999 was rejected too.", basis="measured",
-                    citations=[Citation(kind="part", id="A-99999999")]),
+            Finding(
+                statement="A-00000007 was rejected for a gap.",
+                basis="measured",
+                citations=[Citation(kind="part", id="A-00000007")],
+            ),
+            Finding(
+                statement="A-99999999 was rejected too.",
+                basis="measured",
+                citations=[Citation(kind="part", id="A-99999999")],
+            ),
         ],
-        answer_markdown="...", method={"sops_used": [], "tools_called": [], "budget_used": 1},
+        answer_markdown="...",
+        method={"sops_used": [], "tools_called": [], "budget_used": 1},
         caveats=[],
     )
     stripped = await VerificationResult.strip(answer, fake_analysis)
@@ -3685,17 +3879,24 @@ def test_m1_never_claims_a_hypothesis() -> None:
     base. M1 has no knowledge base, so a hypothesis would be an invention.
     §6.3 also requires evidence_strength whenever basis is hypothesis."""
     with pytest.raises(ValueError, match="knowledge base"):
-        Finding(statement="Carrier 7 is worn.", basis="hypothesis",
-                citations=[], evidence_strength="92 %, n=214")
+        Finding(
+            statement="Carrier 7 is worn.",
+            basis="hypothesis",
+            citations=[],
+            evidence_strength="92 %, n=214",
+        )
 
 
 def test_evidence_strength_is_required_for_a_hypothesis() -> None:
     from agent.answer import validate_basis
+
     with pytest.raises(ValueError, match="evidence_strength"):
-        validate_basis(basis="hypothesis", evidence_strength=None, allow_hypothesis=True)
+        validate_basis(
+            basis="hypothesis", evidence_strength=None, allow_hypothesis=True
+        )
 ```
 
-- [ ] **Step 2: Write the failing pipeline test**
+- [x] **Step 2: Write the failing pipeline test**
 
 ```python
 # diagnostics/agent/tests/test_pipeline.py
@@ -3705,13 +3906,17 @@ async def test_time_windows_are_computed_in_code_not_by_the_model(monkeypatch) -
     calendar maths. Date arithmetic is what models are unreliable at."""
     from agent.pipeline import resolve_window
 
-    window = resolve_window("last hour", now=datetime(2026, 9, 12, 14, 30, tzinfo=timezone.utc))
+    window = resolve_window(
+        "last hour", now=datetime(2026, 9, 12, 14, 30, tzinfo=timezone.utc)
+    )
     assert window.start == datetime(2026, 9, 12, 13, 30, tzinfo=timezone.utc)
     assert window.end == datetime(2026, 9, 12, 14, 30, tzinfo=timezone.utc)
 
 
 @pytest.mark.asyncio
-async def test_a_window_with_gaps_forces_a_caveat(fake_analysis_with_gap, fake_model) -> None:
+async def test_a_window_with_gaps_forces_a_caveat(
+    fake_analysis_with_gap, fake_model
+) -> None:
     """§6.1 step 3 is a guard, not a choice: if the window has gaps, that fact
     enters the context and the answer must mention it."""
     answer = await run("how many rejects in the last hour?", session_id="s1")
@@ -3719,7 +3924,9 @@ async def test_a_window_with_gaps_forces_a_caveat(fake_analysis_with_gap, fake_m
 
 
 @pytest.mark.asyncio
-async def test_an_empty_window_says_so_instead_of_inventing(fake_analysis_empty, fake_model) -> None:
+async def test_an_empty_window_says_so_instead_of_inventing(
+    fake_analysis_empty, fake_model
+) -> None:
     """§1's agent authenticity proof: it says 'I have no data for that window'
     instead of inventing an answer."""
     answer = await run("how many rejects last hour?", session_id="s1")
@@ -3735,7 +3942,7 @@ async def test_out_of_scope_requests_are_declined(fake_model) -> None:
     assert answer.findings == []
 ```
 
-- [ ] **Step 3: Run both to verify they fail, then implement the provider layer**
+- [x] **Step 3: Run both to verify they fail, then implement the provider layer**
 
 ```python
 # diagnostics/agent/src/agent/provider.py
@@ -3747,7 +3954,7 @@ from __future__ import annotations
 
 import anthropic
 
-MODEL = "claude-sonnet-5"   # §6.9's default
+MODEL = "claude-sonnet-5"  # §6.9's default
 
 
 class AnthropicProvider:
@@ -3783,12 +3990,12 @@ The pipeline runs §6.1's stages, narrowed: classify (a fixed set, defaulting to
 
 Budget: `max_tool_calls = 4`. Exhaustion produces a partial answer stating what it could not finish, never a silently truncated one (§6.8).
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cd diagnostics && uv run --frozen --package agent pytest agent/tests -v`
 Expected: PASS, 8 tests. The model is faked in all of them — no test in this suite spends money.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add diagnostics/agent contracts/answer.schema.json
@@ -3807,7 +4014,7 @@ git commit -m "feat(agent): staged pipeline with one tool, structured findings a
 - Consumes: `POST /ask` (SSE) from Task 13; `GET /parts/{serial}` from Task 12; generated types.
 - Produces: a single page with a question box, streamed progress lines, the composed answer, citation chips, and an evidence panel.
 
-- [ ] **Step 1: Scaffold with pinned tooling**
+- [x] **Step 1: Scaffold with pinned tooling**
 
 ```bash
 cd diagnostics/ui
@@ -3818,7 +4025,7 @@ pnpm install --frozen-lockfile
 
 Add `"engines": {"node": "22"}` to `package.json`; `.nvmrc` is at the repository root.
 
-- [ ] **Step 2: Write the failing citation test**
+- [x] **Step 2: Write the failing citation test**
 
 ```tsx
 // diagnostics/ui/src/__tests__/citation.test.tsx
@@ -3841,7 +4048,7 @@ test("each citation kind has its own renderer", () => {
 });
 ```
 
-- [ ] **Step 3: Run it to verify it fails, then implement**
+- [x] **Step 3: Run it to verify it fails, then implement**
 
 `Chat.tsx` posts the question, renders each SSE progress line as it arrives (*reading inspection results… checking coverage…*), then the composed `answer_markdown` with citation chips inlined. `CitationChip.tsx` holds a `RENDERERS` map keyed by citation `kind`; M1 registers `part`. `EvidencePanel.tsx` fetches `/parts/{serial}` and renders the row plus the image.
 
@@ -3849,12 +4056,12 @@ The reasoning trace (§7.2) is rendered collapsed under every answer from `metho
 
 Visual design is deliberately minimal. §15 defers the frontend design language until after M4 on the grounds that a layout cannot be designed for content whose shape has not been seen — M1 is where that shape first becomes visible, and it should be recorded, not decorated.
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `cd diagnostics/ui && pnpm test`
 Expected: PASS, 2 tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add diagnostics/ui
@@ -3871,7 +4078,7 @@ git commit -m "feat(ui): chat box with streamed progress and a citation that ope
 - Create: `diagnostics/gateway/Gateway.Tests/AuthenticityTests.cs`, `measurements/authenticity/`
 - Test: the file is the test.
 
-- [ ] **Step 1: Write the four proofs**
+- [x] **Step 1: Write the four proofs**
 
 ```csharp
 [Fact]
@@ -3941,16 +4148,16 @@ public async Task ExactlyTwoContainersJoinFieldNet()
 }
 ```
 
-- [ ] **Step 2: Run them**
+- [x] **Step 2: Run them**
 
 Run: `cd diagnostics/gateway && dotnet test --locked-mode --filter Category=Authenticity`
 Expected: PASS, 5 tests. These are slow — they stop and start containers. Keep them out of the default `make test` and give them `make test-authenticity`.
 
-- [ ] **Step 3: Record the five proofs M1 cannot yet make**
+- [x] **Step 3: Record the five proofs M1 cannot yet make**
 
 Write `measurements/authenticity/README.md` naming them and the milestone each waits on: analysis against ground truth (M2 + M3), the agent refusing to invent (M4 — M1 tests the empty-window case only, not the full behaviour), an external MCP client reaching the same tools (M4), unauthenticated requests returning 401 (M5), and containment scored against ground truth (M7).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add diagnostics/gateway/Gateway.Tests/AuthenticityTests.cs measurements/authenticity
@@ -3965,7 +4172,7 @@ git commit -m "test: four of §1's authenticity proofs as executable tests"
 - Modify: `Makefile`
 - Create: `README.md`, `docs/superpowers/measurements/.gitkeep`
 
-- [ ] **Step 1: Write the demo target**
+- [x] **Step 1: Write the demo target**
 
 ```makefile
 .PHONY: m1-demo browse verify-no-gaps m1-report test-authenticity
@@ -3994,11 +4201,11 @@ verify-no-gaps:
 
 `demo-plant-outage` stops the plant stack, **asks the question again while it is down** and prints the answer, then restarts and waits for `live`. That pause is the point of the whole architecture, so the demo stops and shows it rather than logging past it.
 
-- [ ] **Step 2: Write the README**
+- [x] **Step 2: Write the README**
 
 It covers architecture, the decisions with their rejected alternatives, the known limits, the security posture in plain words, and an open account of the AI-assisted development process (§14). It states, in these words, that the system is **not production-ready**. It lists the host `/etc/hosts` prerequisite, and it carries the R1–R4 results table.
 
-- [ ] **Step 3: Run the demo end to end from a clean checkout**
+- [x] **Step 3: Run the demo end to end from a clean checkout**
 
 ```bash
 git clone <repo> /tmp/m1-check && cd /tmp/m1-check && make m1-demo
@@ -4006,7 +4213,7 @@ git clone <repo> /tmp/m1-check && cd /tmp/m1-check && make m1-demo
 
 Expected: every step completes; step 6 answers with the plant down.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add Makefile README.md
@@ -4023,30 +4230,30 @@ git commit -m "docs: M1 demo sequence and a README that says what this is not"
 - Create: `docs/superpowers/measurements/2026-09-12-m1-boundary-risks.md`, `measurements/report.py`
 - Modify: `docs/superpowers/specs/2026-09-12-machine-diagnostics-assistant-design.md` (§3.2, §12, §15)
 
-- [ ] **Step 1: Aggregate every measurement into one report**
+- [x] **Step 1: Aggregate every measurement into one report**
 
 `measurements/report.py` reads `r1-r2-results.json`, `r3-matrix.json`, `r4-results.json`, `r1-probe.txt` and `r4-image-sizes.txt` and renders a table per risk: measured value, threshold, pass or fail, and for every deviation the decision taken and why. It fails with a non-zero exit if any risk has neither a pass nor a recorded, justified deviation — so "we never got round to it" cannot pass silently.
 
-- [ ] **Step 2: Write the report**
+- [x] **Step 2: Write the report**
 
 Structure: one section per risk, each carrying what was measured, the numbers, the verdict, and what changed as a result. Then a section for what M1 learned that the spec did not anticipate, which is where F1–F5 and anything new belongs.
 
-- [ ] **Step 3: Update §3.2 with the measured clock numbers**
+- [x] **Step 3: Update §3.2 with the measured clock numbers**
 
 Replace the guessed figures with the measured ones. At minimum:
 - **History depth** — 18 h is wrong for its stated purpose. Replace with the value Task 3's year sweep produced (26 h at the time of writing) and replace the justification sentence, which currently claims 18 h puts the previous night shift fully inside history. It does so only for a boot between roughly 06:00 and 16:00.
 - **Catch-up speed** — keep 600× if `catchup_wall` met its threshold; otherwise the achieved value. Note that catch-up duration is `depth / (speed − 1)`, so changing the depth changes the boot time.
 - **Takt** — keep 6 s if R1 passed at that volume; if the historian ceiling forced a different row count per window, record what changed instead.
 
-- [ ] **Step 4: Update §12 with the measured risk outcomes**
+- [x] **Step 4: Update §12 with the measured risk outcomes**
 
 Each of the four rows gains its result. Add a fifth row for whatever M1 found that §12 did not predict — on the pre-flight evidence, the historian's silent 10,000-value ceiling is the leading candidate, and it belongs in the risk table because M2 multiplies the signal count by roughly ten.
 
-- [ ] **Step 5: Close the §15 open decisions M1 owns**
+- [x] **Step 5: Close the §15 open decisions M1 owns**
 
 Strike *"Exact catch-up speed, history depth and takt — set from the M1 measurement, not guessed"* and replace it with the values and a pointer to the report. Leave the chart library, the significance test, scenario 6 and the MCP revision open — they belong to later milestones.
 
-- [ ] **Step 6: Commit the spec update**
+- [x] **Step 6: Commit the spec update**
 
 ```bash
 git add docs/superpowers/measurements docs/superpowers/specs measurements/report.py
@@ -4057,7 +4264,7 @@ git commit -m "docs(spec): set the clock numbers from M1's measurement
 Also records the boundary-risk outcomes in §12."
 ```
 
-- [ ] **Step 7: Confirm M1 is done**
+- [x] **Step 7: Confirm M1 is done**
 
 ```bash
 make test && make test-authenticity && make m1-report && make m1-demo
@@ -4065,6 +4272,55 @@ git log --oneline -1 docs/superpowers/specs/
 ```
 
 All green, the report shows a verdict for every risk, and the spec commit exists.
+
+---
+
+## Where the build departed from the plan
+
+Every task above is done. These are the places the thing built is not the thing written, each
+because building it showed the plan was wrong rather than because the plan was inconvenient.
+
+**Task 13 shipped `/ask` as plain JSON**, not the streaming endpoint its own interface section
+names. The gap was invisible until Task 14 went to consume it. Closed afterwards: `stream` is
+now the pipeline and `run` drains it, so the progress a reader sees is emitted by the line that
+does the work rather than narrated beside it.
+
+**Task 14 was scaffolded by hand rather than with `pnpm create vite`.** Two consequences worth
+naming. TypeScript is pinned to **6.0.3, not the current 7.0.2**: 7 is the native port and does
+not expose the `ts.factory` API, so `openapi-typescript` cannot run under it — revisit when the
+generator ships a 7-compatible release. And `tsconfig.json` is a solution file with two
+referenced projects, so that node globals reach `vite.config.ts` and not application code;
+`pnpm tsc --noEmit` checks *nothing* against a solution file, which is why the gate runs
+`--build --force` instead.
+
+**Task 15's proofs are Python, not `Gateway.Tests/AuthenticityTests.cs`.** They start and stop
+containers and query Postgres; none of that is C#'s business, and putting them in the .NET
+suite would have meant the gateway's unit tests and a container orchestrator sharing a runner.
+They live in `diagnostics/analysis/tests/test_authenticity.py` and run under `make verify`
+rather than the plan's `make test-authenticity` — the repository already had `verify` for
+exactly this, and two names for one thing is how one of them goes stale.
+
+The fifth proof — exactly two containers on `field-net` — is `test_compose_invariants.py`
+instead, which parses both compose files rather than inspecting a running network. That is the
+stronger version: it fails before a violating stack can be started, and it cannot be satisfied
+by a network that happens to be empty at the moment it is asked.
+
+The five proofs M1 cannot yet make are named at the bottom of the proof file rather than in
+`measurements/authenticity/README.md`. A separate file would be a second copy of the same list,
+and the copy that drifts is always the one nobody is looking at.
+
+**Nothing in the task list implemented gap markers**, though §13's scope line and §4.4 both
+name them and Tasks 9 and 10 each left a comment deferring them to the other. The table existed
+from Task 9 and no row was ever written to it, so `/inspection/stats` reported perfect coverage
+across every outage and the agent's gap caveat was unreachable code. Implemented after Task 17,
+along with `/reconcile`, which the plan's `verify-no-gaps` assumed existed.
+
+**§1's third proof failed for four measured runs before it passed.** The cause was not in the
+reconnect path everyone was reading: `HistoryBackfill` held the `ISession` it was constructed
+with, and a reconnect replaces and disposes that object — so every backfill after the first
+outage read from a disposed session, returned nothing, and reported the gap closed. The test
+was kept failing and documented rather than weakened, which is the only reason it was still
+there to be fixed.
 
 ---
 

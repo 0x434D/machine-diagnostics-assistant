@@ -1,0 +1,29 @@
+[project]
+name = "analysis"
+version = "0.1.0"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "fastapi==0.141.1",
+    "uvicorn==0.52.4",
+    "psycopg[binary,pool]==3.3.5",
+    "pydantic-settings==2.15.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+    "httpx==0.28.1",
+    "testcontainers[postgres]==4.13.2",
+    "pyyaml==6.0.3",
+    "types-pyyaml==6.0.12.20260906",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+# Authenticity proofs stop and start real containers and take minutes. `make check` must stay
+# fast and side-effect free, so they are excluded by default and run by `make verify`.
+markers = ["authenticity: §1's proofs — stops containers, minutes long (make verify)"]
+addopts = "-m 'not authenticity'"

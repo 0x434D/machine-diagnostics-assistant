@@ -1,0 +1,71 @@
+{
+  "depths": [
+    {
+      "depth_hours": 1,
+      "backfill_wall_s": 4.2,
+      "page_p50_ms": 294.0,
+      "page_p99_ms": 443.0,
+      "ingest_gaps": 0,
+      "streams": [
+        {
+          "stream": "TaktTime",
+          "read_rows": 600,
+          "pg_rows": 600,
+          "duplicate_rate": 0,
+          "pages": 1,
+          "windows": 1
+        },
+        {
+          "stream": "PartCount",
+          "read_rows": 600,
+          "pg_rows": 600,
+          "duplicate_rate": 0,
+          "pages": 1,
+          "windows": 1
+        },
+        {
+          "stream": "InspectionResult",
+          "read_rows": 600,
+          "pg_rows": 600,
+          "duplicate_rate": 0,
+          "pages": 32,
+          "windows": 1
+        }
+      ]
+    },
+    {
+      "depth_hours": 33,
+      "backfill_wall_s": 60.4,
+      "page_p50_ms": 268.0,
+      "page_p99_ms": 1309.0,
+      "ingest_gaps": 0,
+      "streams": [
+        {
+          "stream": "TaktTime",
+          "read_rows": 19800,
+          "pg_rows": 19800,
+          "duplicate_rate": 0,
+          "pages": 33,
+          "windows": 33
+        },
+        {
+          "stream": "PartCount",
+          "read_rows": 19800,
+          "pg_rows": 19800,
+          "duplicate_rate": 0,
+          "pages": 33,
+          "windows": 33
+        },
+        {
+          "stream": "InspectionResult",
+          "read_rows": 19800,
+          "pg_rows": 19800,
+          "duplicate_rate": 0,
+          "pages": 1056,
+          "windows": 33
+        }
+      ]
+    }
+  ],
+  "linearity": 0.44
+}

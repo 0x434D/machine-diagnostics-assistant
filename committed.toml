@@ -1,0 +1,40 @@
+# Commit-message gate (handbook §4). `committed` rather than commitlint: a single Rust binary,
+# no Node runtime dragged into a repository that is two-thirds not JavaScript. Run by
+# `make lint-commits`; CI calls it on the pull request's base..head range.
+#
+# Every value below was set by measuring this repository's existing history, not by taste.
+# The defaults are tuned for a different house style and reject every commit here.
+
+style = "conventional"
+
+# CLAUDE.md's list exactly: Conventional Commits' set, minus `style` and `perf` (neither has
+# come up in this project), plus `build`. Anything outside it is a typo, not a new category.
+allowed_types = ["feat", "fix", "build", "test", "docs", "refactor", "chore"]
+
+# Handbook §4 wants a subject that says what changed and why it was worth changing, which is
+# not a thing that fits in 50 characters. The longest subject in history today is 118.
+subject_length = 120
+
+# Both off, deliberately, and both contradict `committed`'s defaults. This project's subjects
+# are lowercase noun phrases describing the state after the change ("the worst-case history
+# depth is 33 h, not 32") rather than capitalised imperatives ("Fix history depth"). That is
+# the house style in every commit on the branch; a linter that fights it would be reverted
+# within a day.
+subject_capitalized = false
+imperative_subject = false
+
+# A trailing full stop in a subject is a typo in every style.
+subject_not_punctuated = true
+
+# `committed` applies line_length to EVERY line including the subject — there is no separate
+# body knob — so this cannot be the 80 that bodies actually wrap at without also rejecting the
+# house subject style above. 120 is set against measured history: longest subject 118, longest
+# body line 84. It still catches an unwrapped paragraph, which is what the rule is for.
+# hard_line_length stays 0 so a pasted URL or error string cannot fail the gate; those are
+# exactly the lines where wrapping makes things worse.
+line_length = 120
+hard_line_length = 0
+
+# `fixup!` and `WIP` are states, not commits. Squash before the pull request.
+no_fixup = true
+no_wip = true

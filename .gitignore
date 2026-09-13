@@ -4,6 +4,11 @@
 !.env.example
 *.pem
 *.key
+*.pfx
+# pki/ holds only what pki-init generates: a certificate without its key is useless and a
+# committed keypair is a secret in the repository. Ignore the tree, keep the directory.
+pki/*
+!pki/.gitkeep
 secrets/
 
 # Build and dependency output
@@ -14,6 +19,8 @@ node_modules/
 dist/
 bin/
 obj/
+# `make images` / `make sbom` output: OCI tarballs and CycloneDX documents.
+build/
 
 # Tool caches
 .pytest_cache/
@@ -22,3 +29,11 @@ obj/
 
 # Local Claude Code overrides (settings.json itself IS committed — it carries the gates)
 .claude/settings.local.json
+
+# Worktrees created by EnterWorktree for parallel lanes
+.worktrees/
+
+# Scratch volumes the measurement runners and the authenticity proofs bind-mount. Host paths
+# because Docker needs one; inside the repo so they are visible while a run is in flight.
+.authenticity-queue/
+.r1-queue/

@@ -1,0 +1,112 @@
+{
+  "version": 1,
+  "dependencies": {
+    "net10.0": {
+      "Microsoft.Data.Sqlite": {
+        "type": "Direct",
+        "requested": "[10.0.12, )",
+        "resolved": "10.0.12",
+        "contentHash": "xUq9xUc653ue7ac2rMfCaf8UQN+U3zS8poWYlugycpvJllplMM0Mk7v/+MM0CTlu9zGvbGML4BPH8YWhrUOfGw==",
+        "dependencies": {
+          "Microsoft.Data.Sqlite.Core": "10.0.12",
+          "SQLitePCLRaw.bundle_e_sqlite3": "2.1.12",
+          "SQLitePCLRaw.core": "2.1.12"
+        }
+      },
+      "Npgsql": {
+        "type": "Direct",
+        "requested": "[10.0.3, )",
+        "resolved": "10.0.3",
+        "contentHash": "7nb5YzXuvWWJxB0J8DiyL3we+X4FOctZrt0fIBnucOIaIevFEEwGQVZKtiu9olXdlNAK1eNgqSral6r/jlhI4w=="
+      },
+      "OPCFoundation.NetStandard.Opc.Ua.Client": {
+        "type": "Direct",
+        "requested": "[1.5.378.176, )",
+        "resolved": "1.5.378.176",
+        "contentHash": "S69pGBZK73tJIYfR2IqRIl2qy/r4kodeSaOXnwz3hkQtJSd++Ts3C612v3KYIKgK48jkArWOiVXQhdSTKvqwyA==",
+        "dependencies": {
+          "BitFaster.Caching": "2.6.0",
+          "OPCFoundation.NetStandard.Opc.Ua.Configuration": "1.5.378.176",
+          "OPCFoundation.NetStandard.Opc.Ua.Core": "1.5.378.176"
+        }
+      },
+      "OPCFoundation.NetStandard.Opc.Ua.Configuration": {
+        "type": "Direct",
+        "requested": "[1.5.378.176, )",
+        "resolved": "1.5.378.176",
+        "contentHash": "96eSjJ1+TyvrP9rgZs5Eb2KGqz666irjmMCQAcM3Cg8k4zNFtkM4+om67vpHLGiGn0YtM1mKOEEpk+0ziLwosw==",
+        "dependencies": {
+          "OPCFoundation.NetStandard.Opc.Ua.Core": "1.5.378.176"
+        }
+      },
+      "BitFaster.Caching": {
+        "type": "Transitive",
+        "resolved": "2.6.0",
+        "contentHash": "iF2dMiGpaya8Umwi0OfsGKtq3aMVgHVsBChwQL+NhShEsRorcoTinGf9FFNBnBMwJW2Vm0FqhtOaEBY0+74p6g=="
+      },
+      "Microsoft.Data.Sqlite.Core": {
+        "type": "Transitive",
+        "resolved": "10.0.12",
+        "contentHash": "2aL9eL5HQr0V4b8V909SD+jQAx6qnTTl7sT/v3D8dIvmr2UGdpZIQxqm1pj2Js3e4EYTvpw0oMH7DjapJJuPPw==",
+        "dependencies": {
+          "SQLitePCLRaw.core": "2.1.12"
+        }
+      },
+      "Newtonsoft.Json": {
+        "type": "Transitive",
+        "resolved": "13.0.4",
+        "contentHash": "pdgNNMai3zv51W5aq268sujXUyx7SNdE2bj1wZcWjAQrKMFZV260lbqYop1d2GM67JI1huLRwxo9ZqnfF/lC6A=="
+      },
+      "OPCFoundation.NetStandard.Opc.Ua.Core": {
+        "type": "Transitive",
+        "resolved": "1.5.378.176",
+        "contentHash": "AavQSop8he3oyJPJLoCEFrXTtltRSTwy0NSS9E11lILrOd4R4Fkki/HR8evlM0yEBPWWySeWm50Afk3InvLJww==",
+        "dependencies": {
+          "Newtonsoft.Json": "13.0.4",
+          "OPCFoundation.NetStandard.Opc.Ua.Security.Certificates": "1.5.378.176",
+          "OPCFoundation.NetStandard.Opc.Ua.Types": "1.5.378.176"
+        }
+      },
+      "OPCFoundation.NetStandard.Opc.Ua.Security.Certificates": {
+        "type": "Transitive",
+        "resolved": "1.5.378.176",
+        "contentHash": "8tuF/PgDzlGtjVjD4UZP9KNOtQrFsM/u/Gn/CHq6XmL5IzBC66bBKyus9/KMGr6RTzgCJnS4EXAdTrTcbfjnIw==",
+        "dependencies": {
+          "OPCFoundation.NetStandard.Opc.Ua.Types": "1.5.378.176"
+        }
+      },
+      "OPCFoundation.NetStandard.Opc.Ua.Types": {
+        "type": "Transitive",
+        "resolved": "1.5.378.176",
+        "contentHash": "kATDAUMKIQ42VJluTmI6+PSQpIukLp/L7sYrdlMddZ5a8tNcEgXumpkEvz6ozKFGc/fUcww57fYb0740aY453g=="
+      },
+      "SQLitePCLRaw.bundle_e_sqlite3": {
+        "type": "Transitive",
+        "resolved": "2.1.12",
+        "contentHash": "mAgscpQMLw5/nfA1Q5oJVAT29yROUo1ifZGbbTpx/lwZpSxMUGoYbKfmvdm8oXER+RzxqBmmQzeBEVKfeHv2nw==",
+        "dependencies": {
+          "SQLitePCLRaw.lib.e_sqlite3": "2.1.12",
+          "SQLitePCLRaw.provider.e_sqlite3": "2.1.12"
+        }
+      },
+      "SQLitePCLRaw.core": {
+        "type": "Transitive",
+        "resolved": "2.1.12",
+        "contentHash": "ETpNw9DY3ckWLgRRAeCHj+GKOuPi61aeczkXhgHexUvqoZBAYg8RYESE2J7O1M7+o6QbdSEZwrw9bfqztUVWXg=="
+      },
+      "SQLitePCLRaw.lib.e_sqlite3": {
+        "type": "Transitive",
+        "resolved": "2.1.12",
+        "contentHash": "fWi8Dbknuhgg72fWinIdjXVaqO1hHL4YBBwVLnr7e1c9TAZwJ0QE38j9syW1hwx6HaqEVTwI+O07WPdZn8Rp0w=="
+      },
+      "SQLitePCLRaw.provider.e_sqlite3": {
+        "type": "Transitive",
+        "resolved": "2.1.12",
+        "contentHash": "W3oH4XIfCzFrgUSDKHhN6N+dgzA5YHOR2VxX8GB6Qy7CyrJJgxPEG8NirgYWlPQC5P2jz2knSsexWu4tDUL33g==",
+        "dependencies": {
+          "SQLitePCLRaw.core": "2.1.12"
+        }
+      }
+    }
+  }
+}

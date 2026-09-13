@@ -1,0 +1,29 @@
+<Project>
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <!-- Deferred nullable warnings are nullable warnings nobody fixes, and a null-reference
+         exception is what a gateway running for months cannot afford. -->
+    <WarningsAsErrors>$(WarningsAsErrors);nullable</WarningsAsErrors>
+    <!-- NuGet audit warnings honour TreatWarningsAsErrors, so a CVE published overnight in a
+         transitive dependency would break an unrelated build at an arbitrary time. They are
+         re-enabled in a scheduled audit job instead (docs/ENGINEERING.md §2). -->
+    <WarningsNotAsErrors>$(WarningsNotAsErrors);NU1900;NU1901;NU1902;NU1903;NU1904</WarningsNotAsErrors>
+    <EnableNETAnalyzers>true</EnableNETAnalyzers>
+    <!-- Spec §10.8's quality-gate table asks for AnalysisMode=All. The spec is wrong here:
+         All turns on ~200 rules including "null-check every parameter" and "localise your
+         literals" — a day of suppressions for no defect caught. A compound AnalysisLevel also
+         wins over AnalysisMode, so setting both would be dead config on top of that. -->
+    <AnalysisLevel>latest-Recommended</AnalysisLevel>
+    <AnalysisModeSecurity>All</AnalysisModeSecurity>
+    <AnalysisModeReliability>All</AnalysisModeReliability>
+    <EnforceCodeStyleInBuild>true</EnforceCodeStyleInBuild>
+
+    <Deterministic>true</Deterministic>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+</Project>

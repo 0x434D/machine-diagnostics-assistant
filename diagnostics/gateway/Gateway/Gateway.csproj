@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <!-- TargetFramework, Nullable and ImplicitUsings come from the repository-root
+       Directory.Build.props. Repeating them here would be a second place to change
+       the framework. -->
+
+  <ItemGroup>
+    <!-- The Web SDK's implicit usings bring in Microsoft.AspNetCore.Http.ISession and
+         .StatusCodes, which collide with the OPC UA types of the same name that this whole
+         service is about. Aliased once here rather than in every file that touches a session. -->
+    <Using Include="Opc.Ua.Client.ISession" Alias="ISession" />
+    <Using Include="Opc.Ua.StatusCodes" Alias="StatusCodes" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Shipped in the assembly so the schema travels with the binary that applies it. -->
+    <EmbeddedResource Include="Migrations/*.sql" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
+    <PackageReference Include="Npgsql" Version="10.0.3" />
+    <PackageReference Include="OPCFoundation.NetStandard.Opc.Ua.Client" Version="1.5.378.176" />
+    <PackageReference Include="OPCFoundation.NetStandard.Opc.Ua.Configuration" Version="1.5.378.176" />
+  </ItemGroup>
+
+</Project>

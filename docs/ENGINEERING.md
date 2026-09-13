@@ -638,7 +638,20 @@ version comment; `permissions: contents: read` at workflow level; `persist-crede
 on checkout. Add **`zizmor`** (Actions security linter — catches template injection, over-broad
 permissions, unpinned actions) and `actionlint`.
 
-**Supply chain:** Trivy on every built image, failing on HIGH and CRITICAL with fixes available.
+**Supply chain:** Trivy on every built image, failing on HIGH and CRITICAL with fixes
+available — but **on a schedule, not on the pull-request gate.** A scan's verdict is a
+function of when its vulnerability database last refreshed, so on a PR it fails for things no
+commit in that PR caused, and the fix is often somebody else's release. This is the identical
+argument that carves NU19xx out of warnings-as-errors, and it deserves the identical answer.
+SBOM generation stays on the gate, because it is a function of the lockfiles and the image
+and is therefore deterministic. `make ci` is what the gate runs; `make ci-scheduled` is what
+weekly runs.
+
+One consequence worth stating: a base image can lag its own archive. Debian publishes a
+patched package before it rebuilds the image around it, so re-pinning the digest does not
+close the window and `apt-get upgrade` in the runtime stage does. That makes the apt layer
+depend on build date — which it already did, since the `install` alongside it pins no
+versions. The digest pin covers the base layer; that layer was never reproducible.
 BuildKit SBOM and provenance attestations (`--sbom=true --provenance=true`) — but note BuildKit
 **only scans the final stage**, so a multi-stage build's SBOM omits everything installed in the
 builder. Widen it with `BUILDKIT_SBOM_SCAN_CONTEXT=true` and `BUILDKIT_SBOM_SCAN_STAGE=true`.
@@ -663,6 +676,46 @@ negatives at eight services and one developer — and Earthly is sunsetting whil
 pivoted to AI agents. Two independent stacks with independent lockfiles plus path-filtered jobs
 already provide what these tools sell. Revisit if `make check` ever exceeds a few minutes
 locally, or if a second developer arrives. Neither is near.
+
+### What the pipeline actually is, and what the plan buys
+
+The pipeline is `.github/workflows/gate.yml` plus `weekly.yml`, and both contain only `make`
+calls. **`make ci` runs the whole of it locally** — no remote required, which is the point of
+the no-logic rule rather than a side effect of it.
+
+**The plan decides more than the price.** On a free personal account, public and private are
+two different products, and three things in this section only exist on one side of that line:
+
+| | Public repo, free | Private repo, free |
+|---|---|---|
+| Required status checks / rulesets | yes | **no** — the `gate` job cannot be made required |
+| Actions minutes | unlimited | 2,000/month |
+| Artifact attestations (`actions/attest`) | yes | no (Team/Enterprise) |
+| GitHub secret scanning | yes, automatic | no, at any price (§6) |
+
+Without required checks the aggregating `gate` job still reports, but nothing stops a merge on
+red — it becomes a signal rather than a gate, and the commit hook is left carrying the
+enforcement alone. That is the trade, and it is the reason attestations and `actions/attest`
+are not wired up yet: on a private free repo they cannot work, and there is no registry to
+push to either. Revisit both together when one arrives.
+
+**Four corrections to the paragraphs above, each found by running the thing:**
+
+- `uv export --format cyclonedx` is rejected — the accepted value is **`cyclonedx1.5`**.
+- **Trivy cannot read an OCI *tar***, only an OCI *directory* or a Docker-format tar. Export
+  with `type=oci,tar=false`; the failure otherwise is a misleading "manifest.json not found".
+- The default `docker` buildx driver silently drops attestations, so the image targets create
+  their own pinned `docker-container` builder. Doing that in the Makefile rather than via
+  `docker/setup-buildx-action` is what keeps the runner from being able to build images in a
+  way a developer cannot.
+- **BuildKit pulls `docker/buildkit-syft-scanner` at build time to generate the SBOM.** Left at
+  its default tag it is an unpinned third-party image with read access to every layer it scans
+  — the one hole all the other pinning would leave open. Pin it via `--sbom=generator=<image>`.
+
+And one deliberate deviation: `dotnet format --verify-no-changes` is kept in the CI path even
+though §2 calls it redundant next to `EnforceCodeStyleInBuild`. Spec §10.8's "identical to what
+CI runs" is the stronger invariant — a CI target that is a subset of the local one is exactly
+the divergence this section exists to prevent, and the duplication costs seconds.
 
 ---
 

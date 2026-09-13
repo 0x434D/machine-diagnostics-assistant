@@ -1,0 +1,20 @@
+# The fast half only — format, lint, secret-scan, seconds not minutes (docs/ENGINEERING.md §5).
+# Type checking and tests belong to `make check`, which is the actual gate. A hook slow enough
+# to tempt anyone towards --no-verify is not a hook.
+#
+# Run with `prek`, which reads this same file and needs no Python bootstrap.
+# No `dotnet format` hook yet: there is no C# project until M1 Task 7.
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.16.7
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  # gitleaks is feature-frozen (security patches only); its successor Betterleaks is
+  # CLI-compatible, so this stays a one-line change when it is time to move.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks

@@ -1,0 +1,120 @@
+name: machine-agent-plant
+
+# Every service here runs as the identity that owns the bind-mounted `pki/` directory
+# rather than the image's own 10001. The PKI is a host bind mount on purpose: the same
+# certificate material has to be readable by the containers *and* by the host, because
+# R3 rows 2 and 3 dial the plant from the host with the gateway's own identity, and
+# `simulator.pki` writes private keys 0600. A single uid is the only arrangement in
+# which the init container can write them, the server can read its own key, and the
+# host can read the gateway's. Task 7's gateway must use the same uid for the same
+# reason -- see .env.example.
+x-runtime: &runtime
+  user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  # The default json-file driver has no size limit and will fill a disk given a chatty
+  # service and time (docs/ENGINEERING.md §7).
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  # Not a `pre_start` hook on line-simulator, which is what the handbook prefers for
+  # ephemeral setup: a hook shares its service's mounts, and line-simulator's `pki`
+  # mount is read-only. Generating certificates is the one step here that needs to
+  # write to it.
+  pki-init:
+    <<: *runtime
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args: { PACKAGE: simulator }
+    command: ["python", "-m", "simulator.pki", "/pki"]
+    volumes:
+      - ../pki:/pki
+    networks: [plant-net]
+
+  inspection-service:
+    <<: *runtime
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args: { PACKAGE: inspection }
+    command:
+      ["uvicorn", "inspection.app:app", "--host", "0.0.0.0", "--port", "8100"]
+    env_file:
+      - path: .env
+        required: false
+    healthcheck:
+      # No curl in the image, and the healthcheck belongs in Compose rather than the
+      # Dockerfile because it is environment-specific (§7).
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8100/health').read()",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks: [plant-net] # never field-net: the truth side channel lives here
+
+  line-simulator:
+    <<: *runtime
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args: { PACKAGE: simulator }
+    command: ["python", "-m", "simulator.server"]
+    # One name, including the container's own. Compose already aliases the service name
+    # on every attached network, so this changes no routing; what it changes is
+    # socket.gethostname(), which asyncua compares against its own certificate's DNS
+    # SANs at startup. Left at Docker's default -- a twelve-hex container id -- the
+    # server warns on every boot that its certificate does not cover its hostname,
+    # which is exactly the message a real SAN mistake would produce.
+    hostname: line-simulator
+    depends_on:
+      pki-init:
+        condition: service_completed_successfully
+      inspection-service:
+        # service_healthy, not service_started: catch-up posts to /inspect from its
+        # very first part, and uvicorn's port is open before the app can answer.
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # Restated here rather than left to simulator.config's defaults so that the one
+      # name this boundary is built around is visible in the file that publishes the
+      # port. test_compose_invariants.py pins these against each other and against the
+      # certificate, so the restatement cannot drift.
+      PLANT_ENDPOINT_URL: "opc.tcp://line-simulator:4840/plant"
+      PLANT_APPLICATION_URI: "urn:machine-agent:plant:line-simulator"
+      PLANT_INSPECTION_URL: "http://inspection-service:8100"
+      PLANT_PKI_ROOT: "/pki"
+    volumes:
+      - ../pki:/pki:ro
+      - plant-history:/data
+    ports:
+      # Identical inside and out. A published 14840:4840 would make the host dial a
+      # port the server never advertises, which is §12's BadTcpEndpointUrlInvalid trap
+      # verbatim. Bound to loopback explicitly: the bare `4840:4840` form binds
+      # 0.0.0.0, and Docker's own NAT rules bypass a host firewall (§7), so the only
+      # way to keep the plant off the LAN is not to publish it there.
+      - "127.0.0.1:4840:4840"
+    networks: [plant-net, field-net]
+
+volumes:
+  plant-history:
+
+networks:
+  plant-net:
+    internal: true
+  field-net:
+    external: true # exactly two containers join this, ever

@@ -1,0 +1,5 @@
+node_modules
+dist
+# Generated from contracts/. Guarded by the contract drift tests, not by formatting.
+src/generated
+pnpm-lock.yaml

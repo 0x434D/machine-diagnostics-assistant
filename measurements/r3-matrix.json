@@ -1,0 +1,38 @@
+{
+  "verdict": "PASS",
+  "pending": [],
+  "cells": {
+    "gateway-field-net/NoSecurity": {
+      "ok": false,
+      "status": "3041298. Lifetime=3600000.\ninfo: Opc.Ua.Bindings.UaSCUaBinaryClientChannel[0]\n      ChannelId 7: Token Expiry 21:58:44.909, renewal scheduled at 21:46:13.588 in 2848679 ms.\ninfo: Opc.Ua.Bindings.UaSCUaBinaryClientChannel[0]\n      ChannelId 7: CLIENTCHANNEL SOCKET CLOSED SHUTDOWN: 00BF7771\nBadSecurityModeRejected: requested SecurityMode None, but opc.tcp://line-simulator:4840/plant offers only Sign"
+    },
+    "asyncua-field-net/NoSecurity": {
+      "ok": false,
+      "status": "UaError: No matching endpoints: 1, http://opcfoundation.org/UA/SecurityPolicy#None"
+    },
+    "host-published-port/NoSecurity": {
+      "ok": false,
+      "status": "UaError: No matching endpoints: 1, http://opcfoundation.org/UA/SecurityPolicy#None"
+    },
+    "host-etc-hosts/NoSecurity": {
+      "ok": false,
+      "status": "UaError: No matching endpoints: 1, http://opcfoundation.org/UA/SecurityPolicy#None"
+    },
+    "gateway-field-net/Sign": {
+      "ok": true,
+      "status": ".\ninfo: Opc.Ua.Client.Session[0]\n      Revised session timeout value: 60000.\ninfo: Opc.Ua.Client.Session[0]\n      Max response message size value: 4194304. Max request message size: 65536\ninfo: Gateway.Opc.UaConnection[124290213]\n      session established machine-agent-gateway\nGood\ninfo: Opc.Ua.Bindings.UaSCUaBinaryClientChannel[0]\n      ChannelId 12: CLIENTCHANNEL SOCKET CLOSED SHUTDOWN: 02B6A1CA"
+    },
+    "asyncua-field-net/Sign": {
+      "ok": true,
+      "status": "Good\ncertificate does not contain the hostname in DNSNames 15317f79772e. Some applications will check this.\nRequested session timeout to be 3600000ms, got 600000ms instead"
+    },
+    "host-published-port/Sign": {
+      "ok": true,
+      "status": "Good"
+    },
+    "host-etc-hosts/Sign": {
+      "ok": true,
+      "status": "Good"
+    }
+  }
+}
