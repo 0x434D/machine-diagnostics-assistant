@@ -179,7 +179,7 @@ Component serials still belong to lots, so lot-level containment survives and ex
 as-built genealogy is gained on top. Three records per assembly instead of one —
 roughly 32,000 rows for an 18-hour history, which is nothing.
 
-Defaults, all configurable: **12 carriers · 6 s takt · buffer capacity 5**.
+Defaults, all configurable: **18 carriers · 6 s takt · buffer capacity 5**.
 
 **The stations do not share one takt — S3 paces the line.** Inspection is the slowest
 operation, so S1 and S2 run slightly faster than it and their buffers fill; S4 matches S3
@@ -196,9 +196,14 @@ Buffer capacity is the number that matters — it sets how long propagation take
 visible. With B2_3 full at five and a 6 s takt, S3 starves roughly 30 s after S2 stops, and
 reasoning about that delay is exactly the analysis's job.
 
-The carrier count has to cover what the filled buffers park. Two buffers at capacity plus
-the carriers in the stations themselves is the floor; 12 is close to it, and the M2a
-measurement is what settles whether it clears.
+The carrier count has to cover what the filled buffers park, and **12 does not** — measured
+in M2a, not estimated. No station holds a carrier between cycles, so every carrier in the
+line parks in a buffer, against three buffers of five. At 12 the steady-state margin is one
+carrier and takt jitter is what closes it: with jitter off the pool never empties, and at the
+configured sigma it pins at zero and S1 suspends for want of a carrier in 29 % of its
+suspended cycles — the plant inventing an upstream shortage that no fault caused. 18 clears
+it at every jitter setting tested. The number stays provisional until M2a's propagation
+measurement confirms it against the real stations rather than a test double.
 
 ### 3.2 The clock
 
