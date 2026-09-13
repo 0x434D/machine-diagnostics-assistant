@@ -85,9 +85,28 @@ _ACCEPTS: dict[Command, frozenset[State]] = {
     Command.UNHOLD: frozenset({State.HELD}),
     Command.SUSPEND: frozenset({State.EXECUTE}),
     Command.UNSUSPEND: frozenset({State.SUSPENDED}),
-    # Stop and Abort are accepted anywhere: a fault shutdown does not wait for the
-    # machine to reach a convenient state, and neither does an operator.
-    Command.STOP: frozenset(State),
+    # Stop is accepted only from the operating states (ISA-TR88.00.02): a station
+    # that is Aborted, Aborting, Clearing, Stopping or already Stopped must recover
+    # through Clearing then Reset, not through Stop -- Stop and Clear both land on
+    # Stopped, so letting Stop fire from Aborted would erase the distinction M3's
+    # diagnosis needs between "stopped through the required recovery path" and
+    # "stopped from a fault shutdown that never went through it." Abort has no such
+    # restriction: ISA makes only Abort universal, which is exactly what an
+    # unconditional fault shutdown has to be.
+    Command.STOP: frozenset(
+        {
+            State.IDLE,
+            State.STARTING,
+            State.EXECUTE,
+            State.HOLDING,
+            State.HELD,
+            State.UNHOLDING,
+            State.SUSPENDING,
+            State.SUSPENDED,
+            State.UNSUSPENDING,
+            State.RESETTING,
+        }
+    ),
     Command.ABORT: frozenset(State),
 }
 
@@ -143,13 +162,30 @@ class StateMachine:
     def apply(
         self, command: Command, reason: SuspendReason | str | None = None
     ) -> State:
-        """Raises ValueError if the current state does not accept `command`, or if a
-        reason-carrying transition was given none."""
+        """Raises ValueError if the current state does not accept `command`, if a
+        reason-carrying transition was given none, or if Suspend's reason is not a
+        SuspendReason."""
         if self._state not in _ACCEPTS[command]:
             raise ValueError(f"{command.value} is not accepted in {self._state.value}")
 
         entering = _ENTERS[command]
-        if entering in _CARRIES_REASON:
+        if command is Command.SUSPEND:
+            # Suspend is checked by *type*, not merely presence. Hold shares
+            # _CARRIES_REASON with Suspend but legitimately takes a free-form str
+            # ("jam"); if Suspend accepted one too, a string that merely looks right
+            # -- "starved:B2_3" -- would pass a bare `reason is not None` check while
+            # carrying no structure Task 8's gateway can parse. It would be stored
+            # indistinguishably from a real SuspendReason until something downstream
+            # tried to resolve the buffer and found nothing there.
+            if not isinstance(reason, SuspendReason):
+                raise ValueError(
+                    f"{command.value} needs a reason: §3.3 makes the field that names "
+                    "which buffer and which direction non-optional, because it is what "
+                    "makes propagation verifiable rather than inferred. Got "
+                    f"{reason!r} instead of a SuspendReason."
+                )
+            self._reason = str(reason)
+        elif entering in _CARRIES_REASON:
             if reason is None:
                 raise ValueError(
                     f"{command.value} needs a reason: §3.3 makes the field that names "

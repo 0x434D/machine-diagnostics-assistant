@@ -68,6 +68,16 @@ def test_suspending_without_naming_a_buffer_is_refused() -> None:
         machine.apply(Command.SUSPEND)
 
 
+def test_a_suspend_reason_that_is_merely_a_string_is_still_refused() -> None:
+    """Hold's reason is a free-form str ("jam"), so a bare `reason is not None`
+    check would let a string that merely *looks* like `direction:buffer_id` through
+    Suspend too -- indistinguishable from a real SuspendReason until Task 8's
+    gateway tries to resolve the buffer it names and finds nothing there."""
+    machine = running()
+    with pytest.raises(ValueError, match="reason"):
+        machine.apply(Command.SUSPEND, "starved:B2_3")
+
+
 def test_a_suspended_station_names_its_buffer_and_its_direction() -> None:
     machine = running()
     machine.apply(Command.SUSPEND, SuspendReason("starved", "B2_3"))
@@ -109,6 +119,18 @@ def test_aborting_is_reachable_from_every_state() -> None:
         machine.apply(Command.ABORT)
         assert machine.state is State.ABORTING
         assert machine.settle() is State.ABORTED
+
+
+def test_stop_does_not_shortcut_the_recovery_from_aborted() -> None:
+    """ISA-TR88.00.02 makes only Abort universal. Stop and Clear both land on
+    Stopped, so if Stop worked from Aborted a station could skip the Clearing step
+    recovery is supposed to require."""
+    machine = StateMachine()  # Aborted
+    with pytest.raises(ValueError, match="Stop"):
+        machine.apply(Command.STOP)
+
+    machine.apply(Command.CLEAR)
+    assert machine.state is State.CLEARING
 
 
 def test_a_command_the_current_state_does_not_accept_raises() -> None:
