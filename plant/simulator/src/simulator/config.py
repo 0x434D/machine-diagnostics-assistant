@@ -66,7 +66,20 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # measures exactly the delay it produces (5 x 6 s ~= 30 s from S2 stopping to S3
     # starving). Changing it changes that proof's expected value, which is why the
     # proof derives the number rather than hardcoding 30.
-    carrier_count: int = 12
+    #
+    # carrier_count is provisional, and was raised from 12 on measurement. No station
+    # holds a carrier between cycles, so every carrier in the line parks in a buffer
+    # against 15 slots; at 12 the steady-state margin is one carrier, and
+    # takt_jitter_sigma below is what closes it. Over 40,000 steps at the takts above,
+    # free running with no fault injected: with jitter off the pool never emptied, and
+    # at the configured sigma it pinned at 0 and S1 suspended on `carrier-return` for
+    # 145 of its 508 suspended cycles (29 %). That is the plant inventing an upstream
+    # supply fault nobody asked for, and since §5.4 categorises a propagation chain by
+    # direction, it makes S1's reason flip between `blocked` and `starved` on a noise
+    # setting. At 18 -- the 15 slots plus headroom -- carrier-return did not occur at
+    # any sigma from 0.05 to 1.0. Measured against the fake stations of Task 4's
+    # tests; Task 12 confirms it against the real ones.
+    carrier_count: int = 18
     buffer_capacity: int = 5
 
     # §3.1: the stations do NOT share one takt. S3 is the slowest and paces the line

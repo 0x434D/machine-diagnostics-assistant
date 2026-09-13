@@ -26,11 +26,15 @@ from simulator.packml import Command, State, StateMachine, SuspendReason
 CARRIER_RETURN = "carrier-return"
 """What S1 names when it suspends for want of a free carrier.
 
-Not one of §4.1's three buffers, and deliberately not dressed up as one. With twelve
-carriers against fifteen buffer slots the pool is what actually binds when the line
-backs up -- B1_2 never fills -- so a station that reported `starved:B1_2` here would
-be naming a condition that is not true. The carrier return path is a genuine upstream
-supply constraint; this is its name.
+Not one of §4.1's three buffers, and deliberately not dressed up as one: an empty pool
+and a full B1_2 are different conditions with different fixes, and only one of them is
+a buffer. Stop S4 and the line parks its carriers downstream -- B3_4 fills, then B2_3
+-- so S1 runs out of carriers while B1_2 still has room, and a station reporting
+`starved:B1_2` there would be naming a condition that is not true.
+
+B1_2 does fill in free running; §3.1 designs for it, and S1 reports `blocked:B1_2`
+when it does. Both conditions are real and both are reachable, which is why S1 needs a
+name for each rather than one name stretched over both.
 """
 
 
@@ -83,7 +87,8 @@ class CycleOutcome:
 
 
 class CycleQueue:
-    """Deterministic by construction: the heap key is `(at, -station_index)`."""
+    """Deterministic by construction: the heap key is
+    `(at, -station_index, station_index)` -- time first, then downstream-first."""
 
     def __init__(self) -> None:
         self._heap: list[tuple[datetime, int, int]] = []
@@ -134,8 +139,12 @@ class Line:
         # Carrier id -> the part currently riding it. A carrier holds at most one
         # part, so the id is a sufficient key and no buffer has to carry a payload.
         self._parts: dict[int, PartState] = {}
-        # Every station starts Aborted and is brought up the way a real one is, so
-        # the history of each begins with the transitions that actually happened.
+        # Every station starts Aborted and is walked up through the real sequence
+        # rather than constructed straight into Execute, so each machine's own history
+        # is the one that actually happened. Nothing is published here -- __init__ is
+        # sync and publish_state is not -- so the *observable* history still begins at
+        # an Execute nothing caused. Task 7's driver owns the async side and is where
+        # these bring-up transitions get emitted.
         self._machines = {station.code: StateMachine() for station in stations}
         for machine in self._machines.values():
             machine.apply(Command.CLEAR)
@@ -162,12 +171,24 @@ class Line:
     def hold(self, code: str, reason: str) -> None:
         """Put a station into `Held` -- §3.3's cause candidate, which does not clear
         itself. M2c injects faults through this; M2a's propagation proof uses it to
-        stop S2 and watch S3 starve."""
+        stop S2 and watch S3 starve.
+
+        Raises ValueError if the station is not in `Execute`, which is the only state
+        PackML accepts Hold from. A running station leaves `Execute` whenever its
+        buffers suspend it -- a couple of percent of steps -- so a caller injecting a
+        fault at an arbitrary instant must hold at a moment it has established rather
+        than assume this succeeds. Raises KeyError if `code` names no station here.
+        """
         machine = self._machines[code]
         machine.apply(Command.HOLD, reason)
         machine.settle()
 
     def unhold(self, code: str) -> None:
+        """Release a `Held` station back to `Execute`.
+
+        Raises ValueError if the station is not `Held`, KeyError if `code` names no
+        station here.
+        """
         machine = self._machines[code]
         machine.apply(Command.UNHOLD)
         machine.settle()
@@ -178,7 +199,14 @@ class Line:
         return upstream, downstream
 
     async def step(self) -> CycleOutcome | None:
-        """Pop the earliest due cycle and run it. None when the queue is empty."""
+        """Pop the earliest due cycle and run it. None when the queue is empty.
+
+        Must not be called concurrently with itself: one sequential driver, one queue.
+        That is D1's whole premise -- it is what makes a run a function of the seed
+        rather than of the event loop -- and it is also what the `assert acquired is
+        not None` below rests on, since a station callback is awaited between the pool
+        check and the acquire.
+        """
         due = self._queue.pop()
         if due is None:
             return None
@@ -201,6 +229,19 @@ class Line:
 
         reason = self._suspend_reason(upstream, downstream)
         if reason is not None:
+            # The reason is latched at the moment of suspension and deliberately not
+            # refreshed while the station stays Suspended -- which means a station can
+            # hold a reason whose direction has since flipped -- observed as S1
+            # reporting `starved:carrier-return` after the live condition had become
+            # `blocked:B1_2`. This reads like it contradicts §5.4, which categorises a
+            # propagation chain by direction, so: it is the causal reason and not the
+            # instantaneous one, and the cause is what diagnosis is for. Nothing stale
+            # reaches the database either -- `state_changes` gets no row for a change
+            # within an episode, so the row the analysis reads was true when written.
+            # Rare by construction, because downstream-first ordering normally clears
+            # a station from below before its own condition can flip underneath it: at
+            # carrier_count 12 it occurred once in 40,000 steps, and at the configured
+            # 18 not at all, at takt jitter sigma 0.05 or 0.5.
             if machine.state is State.EXECUTE:
                 machine.apply(Command.SUSPEND, reason)
                 machine.settle()

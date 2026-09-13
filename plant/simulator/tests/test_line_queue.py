@@ -123,10 +123,12 @@ async def test_a_station_that_gets_its_buffer_back_resumes() -> None:
 
 @pytest.mark.asyncio
 async def test_carriers_run_out_before_the_first_buffer_fills() -> None:
-    """Twelve carriers against fifteen buffer slots: stopping the line exhausts the
-    pool before B1_2 takes a single carrier, so S1 suspends for want of a carrier and
-    never for a full B1_2. A model where B1_2 filled first would be describing a
-    different line."""
+    """A deliberately undersized pool -- twelve carriers against fifteen buffer slots,
+    not the line's configured `carrier_count` -- so that stopping S4 exhausts it. The
+    carriers then park downstream (B3_4 and B2_3 take five each, B1_2 the remaining
+    two), so S1 suspends for want of a carrier while B1_2 still has room. An empty
+    pool and a full B1_2 are different faults with different fixes, and this is the
+    case that proves S1 can tell which one it hit."""
     line, _ = build_line(carriers=12, capacity=5)
     line.hold("S4", "test jam")
     for _ in range(400):
