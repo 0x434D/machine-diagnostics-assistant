@@ -35,8 +35,36 @@ make verify      §1's authenticity proofs — stops containers, minutes long
 make m1-report   the measured risk table
 ```
 
-Needs `uv` and Docker. No host entries, no hostname editing: `opc.tcp://localhost:4840/plant`
-works because the certificate's IP SAN covers it.
+Needs `uv`, Docker and Node 22. No host entries, no hostname editing:
+`opc.tcp://localhost:4840/plant` works because the certificate's IP SAN covers it.
+
+## Running it
+
+```
+make m1-demo
+```
+
+Brings both stacks up, waits for the plant to build its history and the gateway to close the
+gap, asks a question, takes Postgres away and gives it back, then takes the **plant** away and
+asks the same question again — which is the step the architecture exists for. It ends with
+the measured risk table.
+
+While it runs, the chat box is at `http://localhost:5173`. Ask *how many parts were rejected
+in the last hour, and what were the defects?* and click the citation chip under the answer: it
+opens the part it names — serial, timestamp, defect class, confidence and the inspection image.
+
+| | |
+|---|---|
+| `http://localhost:5173` | the chat box |
+| `http://localhost:8080/status` | the gateway's state machine, queue depth and backfill progress |
+| `http://localhost:8080/reconcile` | what was read against what is stored, and any recorded gap |
+| `http://localhost:8000/docs` | the analysis API |
+
+**The default provider is scripted, not a model.** It runs the whole pipeline — routing, the
+tool loop, citation verification against the real database, composition — with no credentials
+and no network, and every answer it produces says so in the prose a reader sees. Set
+`AGENT_PROVIDER=anthropic` and supply `ANTHROPIC_API_KEY` in `diagnostics/.env` for a real
+one.
 
 ## What M1 measured
 
@@ -70,10 +98,18 @@ status field described the session rather than the pipeline. Only mutation found
 
 - **M1 is one station, two signals and one event.** Four stations, buffers, carriers, PackML
   and the eight scenarios are M2.
-- **The agent is not wired up.** The analysis API and its contract exist; the pipeline that
-  calls a model does not.
-- **No authentication anywhere yet.** That is M5, deliberately before the UI so it is not
-  retrofitted.
+- **The agent knows one tool and no knowledge base.** One question shape, one citation kind,
+  one analysis endpoint. Routing, SOPs and the composer that reads them are M4, and until
+  then `basis: hypothesis` is refused structurally rather than discouraged in a prompt —
+  there is nothing behind a hypothesis with no knowledge to interpret from.
+- **The default provider does not think, and says so.** A real model is one environment
+  variable away; what the scripted provider demonstrably does not test is whether a model
+  would choose those tools or draw those conclusions.
+- **No authentication anywhere yet.** That is M5, deliberately before the UI grows past one
+  page so it is not retrofitted.
+- **The UI is deliberately undesigned.** §15 defers the visual language until after M4: a
+  layout cannot be designed for content whose shape has not been seen, and M1 is where that
+  shape first becomes visible.
 - **Closed-window caching is not implemented.** It pays off under concurrency and M1 has one
   user.
 - **Scenario 6 is stipulated, not emergent** — the confidence decay is configured rather than

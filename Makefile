@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 .PHONY: preflight lock-check fmt lint test check verify ci ci-scheduled contract m1-report \
-        m1-demo browse ask \
+        m1-demo browse ask verify-no-gaps \
         lint-python test-python check-python \
         lint-dotnet test-dotnet check-dotnet audit-dotnet \
         lint-frontend test-frontend check-frontend \
@@ -163,11 +163,9 @@ lint-python: lock-check
 # contracts/ is the single source of truth (§10.1). The served schema is compared against the
 # committed file by analysis/tests/test_contract.py, so this target is for propagating an
 # intended change, never for making a failing test pass.
-# The M1 demo. Steps 1-3, 5, 6 and 7 are the walking skeleton end to end; step 4 asks the
-# analysis API rather than a chat box, because the agent is Task 13 and is not wired up. Step
-# 6 is the one the architecture exists for, so it asks the question again with the plant
-# stopped rather than logging past the outage.
-m1-demo:
+# The M1 demo, end to end. Step 6 is the one the architecture exists for, so it asks the
+# question again with the plant stopped rather than logging past the outage.
+m1-demo: preflight
 	@echo "== 1. plant: boot, build history, go live"
 	docker compose -f plant/compose.yml up -d --build
 	@until docker compose -f plant/compose.yml exec -T line-simulator \
@@ -178,18 +176,26 @@ m1-demo:
 	docker compose -f diagnostics/compose.yml up -d --build
 	@until curl -sf localhost:8080/status | grep -q '"state":"live"'; do \
 	    curl -s localhost:8080/status; echo; sleep 5; done
-	@echo "== 4. ask the analysis API"
+	@echo "== 4. ask, and open the citation"
+	@echo "   the chat box is at http://localhost:$${UI_PORT:-5173} -- try the question below,"
+	@echo "   then click the citation chip under the answer to open the part it names."
 	@$(MAKE) ask
 	@echo "== 5. downstream outage: Postgres stops, the queue fills, nothing is lost"
 	docker compose -f diagnostics/compose.yml stop postgres
 	@sleep 30; curl -s localhost:8080/status; echo
 	docker compose -f diagnostics/compose.yml start postgres
-	@sleep 30; curl -s localhost:8080/status; echo
+	@until [ "$$(curl -sf localhost:8080/status | sed -n 's/.*"queueDepth":\([0-9]*\).*/\1/p')" = "0" ]; do \
+	    curl -s localhost:8080/status; echo; sleep 5; done
+	@$(MAKE) verify-no-gaps
 	@echo "== 6. upstream outage: the plant stops, and the question is asked again anyway"
 	docker compose -f plant/compose.yml stop line-simulator
 	@$(MAKE) ask
 	@echo "   ^ answered from history, with the plant shut down. That is the whole point."
 	docker compose -f plant/compose.yml start line-simulator
+	@echo "   ...and the outage window closes by HistoryRead, not by being forgotten."
+	@until curl -sf localhost:8080/status | grep -q '"state":"live"'; do \
+	    curl -s localhost:8080/status; echo; sleep 5; done
+	@$(MAKE) verify-no-gaps
 	@echo "== 7. the numbers"
 	$(MAKE) m1-report
 
@@ -202,9 +208,26 @@ browse:
 	  python /measurements/run_r3.py --probe opc.tcp://line-simulator:4840/plant \
 	  --pki /pki --secure
 
+# Asks the agent, not the analysis API: the whole chain is the claim, and the analysis API
+# alone would demonstrate the half that was never in doubt. /ask streams, so this keeps the
+# last data: frame -- the answer object -- and drops the progress lines.
+ASK ?= How many parts were rejected in the last hour, and what were the defects?
 ask:
-	@curl -sf "localhost:8000/inspection/stats?from=$$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)&to=$$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-	  | python3 -m json.tool
+	@curl -sfN -X POST "localhost:$${AGENT_PORT:-8001}/ask" \
+	  -H 'Content-Type: application/json' \
+	  --data-binary "$$(python3 -c 'import json,os; print(json.dumps({"question": os.environ["ASK"]}))')" \
+	  | sed -n 's/^data: //p' | tail -1 \
+	  | python3 -c 'import json,sys; a = json.load(sys.stdin); print(a["answer_markdown"]); \
+	      print("citations:", [c["id"] for f in a["findings"] for c in f["citations"]] or "none")'
+
+# §1's second and third proofs both end here: is what is stored still everything the plant
+# produced. Exits non-zero on a hole, so it can be a demo step rather than a thing to read.
+verify-no-gaps:
+	@curl -sf "localhost:$${GATEWAY_PORT:-8080}/reconcile" \
+	  | python3 -c 'import json,sys; r = json.load(sys.stdin); \
+	      print(json.dumps(r, indent=2)); \
+	      sys.exit(0 if r["reconciled"] else "RECONCILIATION FAILED")' \
+	  && echo "reconciled: nothing was read and lost, and no window is recorded as missing"
 
 # Aggregates every M1 measurement into one table with a verdict per risk, and exits non-zero
 # if any risk has neither a pass nor a recorded, justified deviation — so an unmeasured risk
