@@ -1080,7 +1080,7 @@ In `plant/simulator/src/simulator/config.py`, inside `Settings`, after the `# li
 cd plant && uv run --package simulator pytest simulator/tests/test_buffers.py simulator/tests/test_carriers.py -v
 ```
 
-Expected: PASS, 12 tests.
+Expected: PASS, 13 tests.
 
 - [ ] **Step 8: Commit**
 
@@ -2156,7 +2156,7 @@ git rm plant/simulator/src/simulator/station_s3.py
 cd plant && uv run --package simulator pytest simulator/tests/test_stations.py -v
 ```
 
-Expected: PASS, 10 tests. `test_generation.py` and `test_inspection_client.py` will now fail to import — Task 7 rewrites them; leave them failing until then and do **not** commit a red `make check`. If you need an intermediate commit, do Task 5 and Task 7 as one commit.
+Expected: PASS, 11 tests. `test_generation.py` and `test_inspection_client.py` will now fail to import — Task 7 rewrites them; leave them failing until then and do **not** commit a red `make check`. If you need an intermediate commit, do Task 5 and Task 7 as one commit.
 
 - [ ] **Step 7: Commit (with Task 7, or after moving the imports)**
 
@@ -2726,6 +2726,7 @@ Create `diagnostics/gateway/Gateway/config/signals.json`:
 ```json
 {
   "_comment": "Per-signal ingest policy (§5.1, M2 design D3). An unrecognised signal is subscribed with no deadband: topology is discovered, so this file will always be incomplete, and losing a stream is worse than storing a few redundant rows.",
+  "defaults": { "page_size": 1000 },
   "signals": {
     "TaktTime":         { "deadband": 0.05,  "why": "noisy float; 0.05 s is under the jitter sigma" },
     "JoiningForcePeak": { "deadband": 5.0,   "why": "newtons, against a 4200 N nominal and 40 N sigma" },
@@ -2742,6 +2743,12 @@ Create `diagnostics/gateway/Gateway/config/signals.json`:
   }
 }
 ```
+
+Each entry may also carry `page_size`, which Task 10 reads for backfill. Omitted means `defaults.page_size` (1,000, matching `GatewayOptions.HistoryPageSize`). The **event** stream is deliberately not in this file — it keeps `HistoryEventPageSize = 25`, because its page size is forced by image bytes against a 4 MiB response limit rather than by anything the signal itself is.
+
+*Ruling recorded at pre-flight: D3 specifies the policy as `{deadband, page_size}` and this file initially carried only `deadband`. Page size lives here rather than in a second mechanism, because splitting one signal's behaviour across two files is how the two drift.*
+
+**Interfaces produced by this task:** `SignalPolicy.Parse(string json) -> SignalPolicy`, `SignalPolicy.For(string signal, BuiltInType type) -> SignalRule`, and `SignalRule(bool Subscribe, double? Deadband, int PageSize)`. Task 10 consumes `SignalRule.PageSize`.
 
 Mount it read-only in `diagnostics/compose.yml` on `edge-gateway`, and add `GATEWAY_SIGNAL_POLICY` to `GatewayOptions` (default `/config/signals.json`). A missing file is a start-up failure, not a silent default — an operator who mounted it wrong must find out at boot.
 
@@ -2778,6 +2785,8 @@ make check
 
 **Files:**
 - Modify: `Opc/HistoryBackfill.cs`, `Opc/GatewayOptions.cs`, `Gateway.Tests/` (new backfill tests)
+
+**Page size comes from Task 9's policy file** — `SignalPolicy.For(signal, type).PageSize`, defaulting to `defaults.page_size` — not from a second mechanism. The event stream is the exception and keeps `HistoryEventPageSize = 25`.
 
 - [ ] **Step 1: Write the failing tests**
 
