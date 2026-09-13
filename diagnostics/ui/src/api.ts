@@ -38,13 +38,14 @@ export function imageUrl(part: Part): string | null {
 export async function ask(
   question: string,
   onProgress: (message: string) => void,
-  signal?: AbortSignal,
 ): Promise<Answer> {
+  // No AbortSignal parameter. There is nothing to cancel: the Ask button is disabled for
+  // the duration, so a second stream cannot start while the first is running, and a
+  // parameter no caller supplies is a guess about a future that has not arrived.
   const response = await fetch(`${AGENT}/ask`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ question }),
-    signal,
   });
   if (!response.ok || response.body === null) {
     throw new Error(`ask failed: ${response.status} ${response.statusText}`);

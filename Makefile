@@ -349,6 +349,13 @@ scan-images: images
 # uv reads uv.lock directly, so this is a dependency SBOM with no build required — the
 # "at least top-level dependencies" the CRA asks for (handbook §9).
 # The format value is `cyclonedx1.5`; handbook §9 names it `cyclonedx`, which uv rejects.
+#
+# Covers the two Python workspaces and nothing else. The gateway's NuGet graph and the UI's
+# npm graph are NOT in here, and both have lock files that could produce one — dotnet through
+# CycloneDX.NET, pnpm through @cyclonedx/cyclonedx-npm, each a third-party tool this repository
+# would have to adopt and pin. Stated rather than left to be inferred from a file listing two
+# of the four stacks: an SBOM that silently covers half the dependencies is worse than one that
+# says which half, because the first gets believed.
 sbom:
 	@mkdir -p $(BUILD_DIR)/sbom
 	cd plant && uv export --frozen --all-packages --no-dev --format cyclonedx1.5 \

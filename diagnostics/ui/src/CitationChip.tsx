@@ -9,6 +9,9 @@ import { useState, type ReactElement } from "react";
 import type { Citation } from "./generated/answer";
 import { EvidencePanel } from "./EvidencePanel";
 
+// Keyed by the generated Citation["kind"] union rather than by string, so §7.3's claim is
+// enforced rather than intended: a kind added to contracts/answer.schema.json fails to compile
+// here until it has a renderer, which is the difference between a seam and a hope.
 export const RENDERERS: Record<Citation["kind"], (id: string) => ReactElement> =
   {
     part: (id) => <EvidencePanel serial={id} />,
