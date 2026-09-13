@@ -73,7 +73,7 @@ endef
 
 define in-ui
 	@if [ -d "$(UI)" ]; then cd "$(UI)" && $(1); \
-	else echo "skip [$(UI) arrives in M1 Task 14]: $(1)"; fi
+	else echo "skip [no $(UI) in this checkout]: $(1)"; fi
 endef
 
 # BuildKit attaches attestations only on an exporter that can carry them; the default docker
@@ -207,6 +207,7 @@ m1-report:
 
 contract:
 	cd diagnostics && uv run --frozen --package analysis python $(CURDIR)/scripts/generate-contract.py
+	$(call in-ui,pnpm install --frozen-lockfile && pnpm generate)
 
 test-python: lock-check
 	$(call pytest-package,plant,simulator)
@@ -228,8 +229,17 @@ test-dotnet:
 
 check-dotnet: lint-dotnet test-dotnet
 
+# `pnpm tsc --noEmit` would check nothing: tsconfig.json is a solution file whose two
+# referenced projects hold all the sources, and a type gate that silently checks nothing is
+# worse than none. --build walks the references and --force stops a stale .tsbuildinfo from
+# reporting a pass it did not earn.
 lint-frontend:
-	$(call in-ui,pnpm install --frozen-lockfile && pnpm oxlint && pnpm prettier --check . && pnpm tsc --noEmit)
+	$(call in-ui,pnpm install --frozen-lockfile && pnpm oxlint && pnpm prettier --check . && pnpm tsc --build --force)
+# The generated types compile whether or not they still match contracts/ -- a stale one is
+# valid TypeScript asserting the shape of an endpoint that has moved on. Regenerating and
+# failing on a diff is the same guard lock-check is, in the one place the handbook left to
+# "it compiles".
+	$(call in-ui,pnpm generate && git diff --exit-code src/generated)
 
 test-frontend:
 	$(call in-ui,pnpm vitest run)

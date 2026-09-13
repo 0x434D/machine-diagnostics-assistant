@@ -9,6 +9,9 @@ IMAGES=(
   "debian:trixie-slim"
   "postgres:17-bookworm"
   "node:22-bookworm-slim"
+  # Debian-based rather than -alpine: nothing in this repository runs on musl, and the
+  # static frontend is not where that should start.
+  "nginxinc/nginx-unprivileged:1.31"
   "ghcr.io/astral-sh/uv:0.11.13"
   "mcr.microsoft.com/dotnet/sdk:10.0.103"
   "mcr.microsoft.com/dotnet/aspnet:10.0"

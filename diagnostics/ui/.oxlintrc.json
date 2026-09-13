@@ -1,0 +1,13 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error",
+    "perf": "error"
+  },
+  "rules": {
+    "no-empty": ["error", { "allowEmptyCatch": false }],
+    "no-console": "error"
+  },
+  "ignorePatterns": ["dist", "src/generated"]
+}

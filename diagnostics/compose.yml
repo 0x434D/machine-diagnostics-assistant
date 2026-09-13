@@ -106,6 +106,22 @@ services:
       - "127.0.0.1:${AGENT_PORT:-8001}:8001"
     networks: [diag-net, edge-net] # reaches the analysis service, and nothing else
 
+  ui:
+    <<: *runtime
+    build:
+      # The repository root, because the build regenerates the UI's types from contracts/.
+      context: ..
+      dockerfile: diagnostics/ui/Dockerfile
+    # nginx-unprivileged writes its temp paths under /tmp, which the shared block already
+    # provides, and its pid to /tmp as well -- so read_only holds with no exceptions.
+    user: "101:101"
+    depends_on: [agent, analysis]
+    ports:
+      - "127.0.0.1:${UI_PORT:-5173}:8080"
+    # It proxies to the agent and the analysis service by name, and has never heard of
+    # OPC UA. edge-net for both, and never field-net.
+    networks: [edge-net]
+
 volumes:
   diagnostics-db:
   gateway-queue:
