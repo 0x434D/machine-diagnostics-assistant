@@ -100,6 +100,12 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
         "S4": 6.00,
     }
 
+    # §4.1's two S2 process signals. Nominal values only -- M2c's scenario 3 drifts
+    # the force down from here, and M2b replaces both with the force-distance curve
+    # they summarise (§3.4a).
+    joining_force_nominal: float = 4200.0  # newtons
+    joining_distance_nominal: float = 12.5  # millimetres
+
     # catch-up pacing -- asyncua's own per-monitored-item notification queue caps at
     # 10,000 and silently discards the oldest entry past that, so generate_history
     # must give the ~10 ms publish loop a chance to drain before any one stream's
