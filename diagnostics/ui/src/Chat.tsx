@@ -5,7 +5,7 @@
  * not been seen — M1 is where that shape first becomes visible, and the job here is to
  * record it rather than decorate it.
  */
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 
 import { ask, type Answer } from "./api";
 import { CitationChip } from "./CitationChip";
@@ -81,7 +81,7 @@ function AnswerView({ answer }: { answer: Answer }) {
   return (
     <article className="answer">
       {answer.answer_markdown.split("\n\n").map((paragraph) => (
-        <p key={paragraph}>{paragraph}</p>
+        <p key={paragraph}>{emphasise(paragraph)}</p>
       ))}
 
       {citations.length === 0 ? null : (
@@ -99,6 +99,24 @@ function AnswerView({ answer }: { answer: Answer }) {
       <Trace answer={answer} />
     </article>
   );
+}
+
+/**
+ * `_like this_` becomes emphasis.
+ *
+ * Not a markdown renderer, and deliberately not a markdown dependency either: the composer
+ * is ours and §6.5 has it arrange findings rather than author prose, so the only construct
+ * it emits is this one, around caveats. Rendering the paragraph as plain text put literal
+ * underscores in front of the reader on every answer that carried a caveat -- which is every
+ * answer the scripted provider produces. If the composer ever emits more, this becomes a
+ * real renderer; until then a real renderer would be 40 kB to serve one italic.
+ */
+function emphasise(paragraph: string): ReactNode[] {
+  return paragraph
+    .split(/_([^_]+)_/)
+    .map((part, index) =>
+      index % 2 === 1 ? <em key={`${String(index)}-${part}`}>{part}</em> : part,
+    );
 }
 
 function Trace({ answer }: { answer: Answer }) {

@@ -91,6 +91,34 @@ test("the reasoning trace names the provider that answered", async () => {
   expect(await screen.findByText("scripted")).toBeInTheDocument();
 });
 
+test("a caveat renders as emphasis, not as literal underscores", async () => {
+  // The composer wraps caveats in _underscores_, and every scripted answer carries one, so
+  // getting this wrong put markdown syntax in front of the reader on every single answer.
+  const withCaveat: Answer = {
+    ...ANSWER,
+    answer_markdown:
+      "600 parts were inspected.\n\n_The window contains 1 ingest gap._",
+    caveats: ["The window contains 1 ingest gap."],
+  };
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() =>
+      Promise.resolve(
+        sse(["event: answer\ndata: " + JSON.stringify(withCaveat) + "\n\n"]),
+      ),
+    ),
+  );
+
+  render(<Chat />);
+  fireEvent.click(screen.getByRole("button", { name: "Ask" }));
+
+  const caveat = await screen.findByText("The window contains 1 ingest gap.");
+  expect(caveat.tagName).toBe("EM");
+  // Scoped to the prose: the trace legitimately shows `inspection_stats`, so a document-wide
+  // search for an underscore fails on the tool name rather than on the markdown.
+  expect(caveat.closest("article")).not.toHaveTextContent("_The window");
+});
+
 test("a stream that ends without an answer is reported, not left blank", async () => {
   vi.stubGlobal(
     "fetch",
