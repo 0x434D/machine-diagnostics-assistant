@@ -2693,7 +2693,7 @@ git commit -m "feat(plant): signed OPC UA endpoint on one name and one port, wit
 
 > **Note on the SDK surface.** These bindings were read from UA-.NETStandard 1.5.378.176 before this plan was written. Where a member name differs, let the compiler point at it and fix — do not go researching. The reference sample loads its configuration from XML; this gateway builds it in code so that the certificate store paths come from `pki/`.
 
-- [ ] **Step 1: Create the project with a committed lock file**
+- [x] **Step 1: Create the project with a committed lock file**
 
 ```bash
 mkdir -p diagnostics/gateway && cd diagnostics/gateway
@@ -2714,7 +2714,7 @@ Add to `Gateway.csproj`:
 </PropertyGroup>
 ```
 
-- [ ] **Step 2: Write the failing connection test**
+- [x] **Step 2: Write the failing connection test**
 
 ```csharp
 // diagnostics/gateway/Gateway.Tests/ConnectionTests.cs
@@ -2747,12 +2747,12 @@ public class ConnectionTests
 }
 ```
 
-- [ ] **Step 3: Run it to verify it fails**
+- [x] **Step 3: Run it to verify it fails**
 
 Run: `cd diagnostics/gateway && dotnet test --locked-mode`
 Expected: FAIL — `GatewayOptions` and `CertificateInspector` do not exist.
 
-- [ ] **Step 4: Write the connection**
+- [x] **Step 4: Write the connection**
 
 ```csharp
 // diagnostics/gateway/Opc/UaConnection.cs
@@ -2919,7 +2919,7 @@ public sealed class UaConnection : IAsyncDisposable
 }
 ```
 
-- [ ] **Step 5: Write `/status` and the connect-test mode**
+- [x] **Step 5: Write `/status` and the connect-test mode**
 
 ```csharp
 // diagnostics/gateway/Status/StatusEndpoint.cs
@@ -2943,7 +2943,7 @@ public static class StatusEndpoint
 
 `Program.cs` handles `--connect-test <url> --security <None|Sign>` by building the configuration, attempting `ConnectAsync`, printing `Good` or the `ServiceResultException`'s `StatusCode`, and exiting 0 or 1. That is what `measurements/run_r3.py` shells into for matrix row 1.
 
-- [ ] **Step 6: Write the gateway Dockerfile**
+- [x] **Step 6: Write the gateway Dockerfile**
 
 ```dockerfile
 # diagnostics/gateway/Dockerfile
@@ -2963,7 +2963,7 @@ USER gateway
 ENTRYPOINT ["dotnet", "Gateway.dll"]
 ```
 
-- [ ] **Step 7: Close R3 row 1 and re-run the whole matrix**
+- [x] **Step 7: Close R3 row 1 and re-run the whole matrix**
 
 ```bash
 docker build -t machine-agent/edge-gateway:dev diagnostics/gateway
@@ -2972,7 +2972,7 @@ uv run --frozen --package simulator python measurements/run_r3.py | tee measurem
 
 Expected: `gateway-field-net/Sign` green. **This is R3's pass condition and the moment the boundary is proven.** Record all six cells verbatim; Task 17 puts them in the report.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add diagnostics/gateway measurements/r3-matrix.json
@@ -2993,7 +2993,7 @@ Closes R3: the endpoint URL, certificate SANs and published port resolve on one 
 - Consumes: `UaConnection.Session` (Task 7).
 - Produces: `IngestRecord(Kind, NodeId, SourceTs, ServerTs, StatusCode, PayloadJson, ImageBytes)` where `Kind` is `"datachange"` or `"event"`; `LocalQueue.EnqueueAsync(IngestRecord)`, `DequeueBatchAsync(int) -> IReadOnlyList<(long Id, IngestRecord)>`, `AckAsync(IEnumerable<long>)`, `DepthAsync() -> int`; `Subscriptions.StartAsync(session, space, onRecord, ct)`.
 
-- [ ] **Step 1: Write the failing queue test**
+- [x] **Step 1: Write the failing queue test**
 
 ```csharp
 // diagnostics/gateway/Gateway.Tests/LocalQueueTests.cs
@@ -3053,12 +3053,12 @@ public class LocalQueueTests
 }
 ```
 
-- [ ] **Step 2: Run it to verify it fails**
+- [x] **Step 2: Run it to verify it fails**
 
 Run: `cd diagnostics/gateway && dotnet test --locked-mode --filter LocalQueueTests`
 Expected: FAIL — `LocalQueue` does not exist.
 
-- [ ] **Step 3: Write the queue**
+- [x] **Step 3: Write the queue**
 
 `LocalQueue` opens a SQLite file with `journal_mode=WAL`, one table:
 
@@ -3077,7 +3077,7 @@ CREATE TABLE IF NOT EXISTS queue (
 
 `EnqueueAsync` inserts; `DequeueBatchAsync(n)` selects `ORDER BY id LIMIT n`; `AckAsync` deletes by id. Ordering is by insertion for drain purposes only — **nothing downstream may assume arrival order** (§4.4), which is why `source_ts` is carried explicitly and Task 9 orders by it.
 
-- [ ] **Step 4: Write the subscription**
+- [x] **Step 4: Write the subscription**
 
 ```csharp
 // diagnostics/gateway/Opc/Subscriptions.cs
@@ -3154,12 +3154,12 @@ if (notification.Value.StatusCode.Overflow)
 }
 ```
 
-- [ ] **Step 5: Run the queue tests to verify they pass**
+- [x] **Step 5: Run the queue tests to verify they pass**
 
 Run: `cd diagnostics/gateway && dotnet test --locked-mode --filter LocalQueueTests`
 Expected: PASS, 3 tests.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add diagnostics/gateway/Opc/Subscriptions.cs diagnostics/gateway/Ingest diagnostics/gateway/Gateway.Tests
@@ -3179,7 +3179,7 @@ git commit -m "feat(gateway): subscription ingest with per-signal deadbands into
 - Consumes: `IngestRecord`, `LocalQueue` (Task 8).
 - Produces: `PostgresWriter.WriteBatchAsync(IReadOnlyList<IngestRecord>) -> Task<int>`, returning rows affected; the M1 schema.
 
-- [ ] **Step 1: Write the schema**
+- [x] **Step 1: Write the schema**
 
 ```sql
 -- diagnostics/gateway/Migrations/001_m1.sql
@@ -3257,7 +3257,7 @@ CREATE TABLE IF NOT EXISTS backfill_windows (
 );
 ```
 
-- [ ] **Step 2: Write the failing writer test**
+- [x] **Step 2: Write the failing writer test**
 
 Use `Testcontainers.PostgreSql` 4.15.0 so the test runs against real Postgres.
 
@@ -3310,7 +3310,7 @@ public async Task OutOfOrderArrivalsAreOrderedBySourceTimestampOnRead()
 }
 ```
 
-- [ ] **Step 3: Run it to verify it fails, then write the writer**
+- [x] **Step 3: Run it to verify it fails, then write the writer**
 
 `WriteBatchAsync` opens one `NpgsqlTransaction`, inserts every record verbatim into `raw_events`, derives the normalised rows in the same transaction, and commits once:
 
@@ -3340,12 +3340,12 @@ await tx.CommitAsync(ct);
 
 The cost of one transaction is that replaying raw after a normalisation bug means re-running the gateway's own logic, which is why §5.1 requires a `--replay-from <timestamp>` mode; add it reading `raw_events` in `source_ts` order and re-deriving.
 
-- [ ] **Step 4: Run the writer tests to verify they pass**
+- [x] **Step 4: Run the writer tests to verify they pass**
 
 Run: `cd diagnostics/gateway && dotnet test --locked-mode --filter PostgresWriterTests`
 Expected: PASS, 4 tests.
 
-- [ ] **Step 5: Measure R4 — the image ceiling**
+- [x] **Step 5: Measure R4 — the image ceiling**
 
 The live path is now complete, so R4 is measurable end to end.
 
@@ -3365,7 +3365,7 @@ Pass: `ceiling >= 4 * img_p99` and `burst_loss == 0` at B = 20. Write `measureme
 
 If the ceiling crowds `img_p99`, raise `MaxByteStringLength` and `MaxMessageSize` in `GatewayOptions` **and** asyncua's `TransportLimits` together, re-measure, and record the chosen values as configuration (§10.3). `burst_loss > 0` with no overflow bit is a blocker: undetectable loss breaks §4.4's premise that gap markers make missing data distinguishable from a quiet machine.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add diagnostics/gateway/Migrations diagnostics/gateway/Ingest/PostgresWriter.cs diagnostics/gateway/Gateway.Tests measurements/run_r4.py measurements/r4-results.json
@@ -3387,7 +3387,7 @@ This task carries R1 and R2. Read the Pre-flight findings again before starting 
 - Consumes: `UaConnection`, `LocalQueue`, `PostgresWriter`.
 - Produces: `HistoryBackfill.RunAsync(from, to, ct) -> Task<BackfillReport>` where `BackfillReport` carries `RowsReturned`, `RowsWritten`, `Pages`, `Duration`, `Windows`; `Reconciler.CheckAsync(from, to) -> Task<ReconciliationResult>`.
 
-- [ ] **Step 1: Reproduce the pre-flight findings on the pinned interpreter**
+- [x] **Step 1: Reproduce the pre-flight findings on the pinned interpreter**
 
 The numbers in Pre-flight were taken on Python 3.14. Confirm them on the pinned 3.13 before designing around them.
 
@@ -3448,7 +3448,7 @@ asyncio.run(main())  # run with python -u: buffered output is lost if it is kill
 
 Expected, from the pre-flight run: `3000/500 -> 3007` (duplicates), `10800/1000 -> 10000` and `12000/1000 -> 10000` (a hard ceiling at 10,000 independent of page size). Record what you actually get in `measurements/r1-probe.txt`.
 
-- [ ] **Step 2: Write the failing backfill test**
+- [x] **Step 2: Write the failing backfill test**
 
 ```csharp
 // diagnostics/gateway/Gateway.Tests/BackfillTests.cs
@@ -3508,7 +3508,7 @@ public async Task EventBackfillCarriesImageBytes()
 }
 ```
 
-- [ ] **Step 3: Write the backfill**
+- [x] **Step 3: Write the backfill**
 
 The shape that F1 and F2 force:
 
@@ -3604,12 +3604,12 @@ private async Task<WindowReport> ReadVariableWindowAsync(
 
 `Reconciler.CheckAsync` compares three counts for a window: the plant's ledger (exposed by `simulator.status`), `backfill_windows.rows_returned`, and the actual `signals` / `inspection_results` counts in Postgres. Equality of the first and third is the pass; the second is expected to exceed both by roughly `pages - 1` per window.
 
-- [ ] **Step 4: Run the backfill tests to verify they pass**
+- [x] **Step 4: Run the backfill tests to verify they pass**
 
 Run: `cd diagnostics/gateway && dotnet test --locked-mode --filter BackfillTests`
 Expected: PASS, 5 tests. All four R2 mechanics are green at this point.
 
-- [ ] **Step 5: Measure R1 and R2**
+- [x] **Step 5: Measure R1 and R2**
 
 ```bash
 uv run --frozen --package analysis python measurements/run_r1_r2.py | tee measurements/r1-r2-results.json
@@ -3619,7 +3619,7 @@ The runner brings both stacks up at depths of 1 h, 4 h and 26 h, and records `ca
 
 Thresholds and the decision tree are in the risk table. The one that must not be waived: `pg_rows == plant_rows` exactly.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add diagnostics/gateway/Opc/HistoryBackfill.cs diagnostics/gateway/Ingest/Reconciler.cs diagnostics/gateway/Gateway.Tests/BackfillTests.cs measurements
@@ -3641,7 +3641,7 @@ the duplicate the historian returns at every page boundary. Closes R1 and R2."
 - Consumes: `UaConnection.Session`.
 - Produces: `TopologyDiscovery.DiscoverAsync(session, ct) -> Task<IReadOnlyList<DiscoveredStation>>` with `DiscoveredStation(Code, Name, NodeId, TaktNodeId, PartCountNodeId)`; rows written to `stations`.
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 ```csharp
 [Fact]
@@ -3665,16 +3665,16 @@ public async Task DiscoveryIsIdempotentAcrossReconnects()
 }
 ```
 
-- [ ] **Step 2: Run it to verify it fails, then implement**
+- [x] **Step 2: Run it to verify it fails, then implement**
 
 `DiscoverAsync` browses `Objects` → `Line` → `Stations`, takes each child as a station, browses its children for `TaktTime` and `PartCount`, and upserts into `stations` with `ON CONFLICT (code) DO UPDATE`. `position_in_line` is left null in M1 — it is derivable from buffer references, and buffers arrive in M2.
 
-- [ ] **Step 3: Run the tests to verify they pass**
+- [x] **Step 3: Run the tests to verify they pass**
 
 Run: `cd diagnostics/gateway && dotnet test --locked-mode --filter TopologyTests`
 Expected: PASS, 2 tests.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add diagnostics/gateway/Opc/TopologyDiscovery.cs diagnostics/gateway/Gateway.Tests/TopologyTests.cs
@@ -3699,7 +3699,7 @@ git commit -m "feat(gateway): discover station topology by browsing the address 
   - `GET /parts/{serial}/image` → `image/png`
   - `contracts/analysis.openapi.yaml` as the single source of truth, from which `diagnostics/ui/src/generated/analysis.ts` is generated
 
-- [ ] **Step 1: Write the failing contract test**
+- [x] **Step 1: Write the failing contract test**
 
 ```python
 # diagnostics/analysis/tests/test_contract.py
@@ -3731,7 +3731,7 @@ def test_coverage_is_part_of_every_stats_response() -> None:
     assert "coverage" in props
 ```
 
-- [ ] **Step 2: Write the failing endpoint test**
+- [x] **Step 2: Write the failing endpoint test**
 
 ```python
 # diagnostics/analysis/tests/test_endpoints.py
@@ -3774,18 +3774,18 @@ def test_only_rejects_expose_an_image_url(client, seeded_db) -> None:
     assert client.get("/parts/A-00000006").json()["image_url"] is None
 ```
 
-- [ ] **Step 3: Run both to verify they fail, then implement**
+- [x] **Step 3: Run both to verify they fail, then implement**
 
 `routes_inspection.py` issues one query grouped by `defect_class` over `inspection_results` filtered on `source_ts`, plus one over `ingest_gaps` overlapping the window, and returns up to five reject serials as `sample_serials` so the agent has something concrete to cite. `routes_parts.py` selects a single row by primary key and joins `inspection_images` for the image URL — **no time-range join anywhere**, which is what Task 12's third test guards.
 
 Closed-window caching (§5.3) is **not** implemented in M1; it is an analysis concern that pays off under concurrency, and M1 has one user. Recorded in *Spec ambiguities*.
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cd diagnostics && uv run --frozen --package analysis pytest analysis/tests -v`
 Expected: PASS, 7 tests.
 
-- [ ] **Step 5: Generate the TypeScript types**
+- [x] **Step 5: Generate the TypeScript types**
 
 ```bash
 cd diagnostics/ui && pnpm dlx openapi-typescript ../../contracts/analysis.openapi.yaml -o src/generated/analysis.ts
@@ -3793,7 +3793,7 @@ cd diagnostics/ui && pnpm dlx openapi-typescript ../../contracts/analysis.openap
 
 Add a `make contract-check` target that regenerates into a temp file and diffs, so a contract change that was not propagated fails CI rather than drifting.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add contracts diagnostics/analysis diagnostics/ui/src/generated
@@ -3817,7 +3817,7 @@ git commit -m "feat(analysis): OpenAPI contract, inspection stats and the citati
   - `async run(question, session_id) -> Answer`
   - `POST /ask` streaming progress events then the answer object
 
-- [ ] **Step 1: Write the failing citation test**
+- [x] **Step 1: Write the failing citation test**
 
 ```python
 # diagnostics/agent/tests/test_citations.py
@@ -3896,7 +3896,7 @@ def test_evidence_strength_is_required_for_a_hypothesis() -> None:
         )
 ```
 
-- [ ] **Step 2: Write the failing pipeline test**
+- [x] **Step 2: Write the failing pipeline test**
 
 ```python
 # diagnostics/agent/tests/test_pipeline.py
@@ -3942,7 +3942,7 @@ async def test_out_of_scope_requests_are_declined(fake_model) -> None:
     assert answer.findings == []
 ```
 
-- [ ] **Step 3: Run both to verify they fail, then implement the provider layer**
+- [x] **Step 3: Run both to verify they fail, then implement the provider layer**
 
 ```python
 # diagnostics/agent/src/agent/provider.py
@@ -3990,12 +3990,12 @@ The pipeline runs §6.1's stages, narrowed: classify (a fixed set, defaulting to
 
 Budget: `max_tool_calls = 4`. Exhaustion produces a partial answer stating what it could not finish, never a silently truncated one (§6.8).
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `cd diagnostics && uv run --frozen --package agent pytest agent/tests -v`
 Expected: PASS, 8 tests. The model is faked in all of them — no test in this suite spends money.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add diagnostics/agent contracts/answer.schema.json
@@ -4014,7 +4014,7 @@ git commit -m "feat(agent): staged pipeline with one tool, structured findings a
 - Consumes: `POST /ask` (SSE) from Task 13; `GET /parts/{serial}` from Task 12; generated types.
 - Produces: a single page with a question box, streamed progress lines, the composed answer, citation chips, and an evidence panel.
 
-- [ ] **Step 1: Scaffold with pinned tooling**
+- [x] **Step 1: Scaffold with pinned tooling**
 
 ```bash
 cd diagnostics/ui
@@ -4025,7 +4025,7 @@ pnpm install --frozen-lockfile
 
 Add `"engines": {"node": "22"}` to `package.json`; `.nvmrc` is at the repository root.
 
-- [ ] **Step 2: Write the failing citation test**
+- [x] **Step 2: Write the failing citation test**
 
 ```tsx
 // diagnostics/ui/src/__tests__/citation.test.tsx
@@ -4048,7 +4048,7 @@ test("each citation kind has its own renderer", () => {
 });
 ```
 
-- [ ] **Step 3: Run it to verify it fails, then implement**
+- [x] **Step 3: Run it to verify it fails, then implement**
 
 `Chat.tsx` posts the question, renders each SSE progress line as it arrives (*reading inspection results… checking coverage…*), then the composed `answer_markdown` with citation chips inlined. `CitationChip.tsx` holds a `RENDERERS` map keyed by citation `kind`; M1 registers `part`. `EvidencePanel.tsx` fetches `/parts/{serial}` and renders the row plus the image.
 
@@ -4056,12 +4056,12 @@ The reasoning trace (§7.2) is rendered collapsed under every answer from `metho
 
 Visual design is deliberately minimal. §15 defers the frontend design language until after M4 on the grounds that a layout cannot be designed for content whose shape has not been seen — M1 is where that shape first becomes visible, and it should be recorded, not decorated.
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `cd diagnostics/ui && pnpm test`
 Expected: PASS, 2 tests.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add diagnostics/ui
@@ -4078,7 +4078,7 @@ git commit -m "feat(ui): chat box with streamed progress and a citation that ope
 - Create: `diagnostics/gateway/Gateway.Tests/AuthenticityTests.cs`, `measurements/authenticity/`
 - Test: the file is the test.
 
-- [ ] **Step 1: Write the four proofs**
+- [x] **Step 1: Write the four proofs**
 
 ```csharp
 [Fact]
@@ -4148,16 +4148,16 @@ public async Task ExactlyTwoContainersJoinFieldNet()
 }
 ```
 
-- [ ] **Step 2: Run them**
+- [x] **Step 2: Run them**
 
 Run: `cd diagnostics/gateway && dotnet test --locked-mode --filter Category=Authenticity`
 Expected: PASS, 5 tests. These are slow — they stop and start containers. Keep them out of the default `make test` and give them `make test-authenticity`.
 
-- [ ] **Step 3: Record the five proofs M1 cannot yet make**
+- [x] **Step 3: Record the five proofs M1 cannot yet make**
 
 Write `measurements/authenticity/README.md` naming them and the milestone each waits on: analysis against ground truth (M2 + M3), the agent refusing to invent (M4 — M1 tests the empty-window case only, not the full behaviour), an external MCP client reaching the same tools (M4), unauthenticated requests returning 401 (M5), and containment scored against ground truth (M7).
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add diagnostics/gateway/Gateway.Tests/AuthenticityTests.cs measurements/authenticity
@@ -4172,7 +4172,7 @@ git commit -m "test: four of §1's authenticity proofs as executable tests"
 - Modify: `Makefile`
 - Create: `README.md`, `docs/superpowers/measurements/.gitkeep`
 
-- [ ] **Step 1: Write the demo target**
+- [x] **Step 1: Write the demo target**
 
 ```makefile
 .PHONY: m1-demo browse verify-no-gaps m1-report test-authenticity
@@ -4201,11 +4201,11 @@ verify-no-gaps:
 
 `demo-plant-outage` stops the plant stack, **asks the question again while it is down** and prints the answer, then restarts and waits for `live`. That pause is the point of the whole architecture, so the demo stops and shows it rather than logging past it.
 
-- [ ] **Step 2: Write the README**
+- [x] **Step 2: Write the README**
 
 It covers architecture, the decisions with their rejected alternatives, the known limits, the security posture in plain words, and an open account of the AI-assisted development process (§14). It states, in these words, that the system is **not production-ready**. It lists the host `/etc/hosts` prerequisite, and it carries the R1–R4 results table.
 
-- [ ] **Step 3: Run the demo end to end from a clean checkout**
+- [x] **Step 3: Run the demo end to end from a clean checkout**
 
 ```bash
 git clone <repo> /tmp/m1-check && cd /tmp/m1-check && make m1-demo
@@ -4213,7 +4213,7 @@ git clone <repo> /tmp/m1-check && cd /tmp/m1-check && make m1-demo
 
 Expected: every step completes; step 6 answers with the plant down.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add Makefile README.md
@@ -4230,30 +4230,30 @@ git commit -m "docs: M1 demo sequence and a README that says what this is not"
 - Create: `docs/superpowers/measurements/2026-09-12-m1-boundary-risks.md`, `measurements/report.py`
 - Modify: `docs/superpowers/specs/2026-09-12-machine-diagnostics-assistant-design.md` (§3.2, §12, §15)
 
-- [ ] **Step 1: Aggregate every measurement into one report**
+- [x] **Step 1: Aggregate every measurement into one report**
 
 `measurements/report.py` reads `r1-r2-results.json`, `r3-matrix.json`, `r4-results.json`, `r1-probe.txt` and `r4-image-sizes.txt` and renders a table per risk: measured value, threshold, pass or fail, and for every deviation the decision taken and why. It fails with a non-zero exit if any risk has neither a pass nor a recorded, justified deviation — so "we never got round to it" cannot pass silently.
 
-- [ ] **Step 2: Write the report**
+- [x] **Step 2: Write the report**
 
 Structure: one section per risk, each carrying what was measured, the numbers, the verdict, and what changed as a result. Then a section for what M1 learned that the spec did not anticipate, which is where F1–F5 and anything new belongs.
 
-- [ ] **Step 3: Update §3.2 with the measured clock numbers**
+- [x] **Step 3: Update §3.2 with the measured clock numbers**
 
 Replace the guessed figures with the measured ones. At minimum:
 - **History depth** — 18 h is wrong for its stated purpose. Replace with the value Task 3's year sweep produced (26 h at the time of writing) and replace the justification sentence, which currently claims 18 h puts the previous night shift fully inside history. It does so only for a boot between roughly 06:00 and 16:00.
 - **Catch-up speed** — keep 600× if `catchup_wall` met its threshold; otherwise the achieved value. Note that catch-up duration is `depth / (speed − 1)`, so changing the depth changes the boot time.
 - **Takt** — keep 6 s if R1 passed at that volume; if the historian ceiling forced a different row count per window, record what changed instead.
 
-- [ ] **Step 4: Update §12 with the measured risk outcomes**
+- [x] **Step 4: Update §12 with the measured risk outcomes**
 
 Each of the four rows gains its result. Add a fifth row for whatever M1 found that §12 did not predict — on the pre-flight evidence, the historian's silent 10,000-value ceiling is the leading candidate, and it belongs in the risk table because M2 multiplies the signal count by roughly ten.
 
-- [ ] **Step 5: Close the §15 open decisions M1 owns**
+- [x] **Step 5: Close the §15 open decisions M1 owns**
 
 Strike *"Exact catch-up speed, history depth and takt — set from the M1 measurement, not guessed"* and replace it with the values and a pointer to the report. Leave the chart library, the significance test, scenario 6 and the MCP revision open — they belong to later milestones.
 
-- [ ] **Step 6: Commit the spec update**
+- [x] **Step 6: Commit the spec update**
 
 ```bash
 git add docs/superpowers/measurements docs/superpowers/specs measurements/report.py
@@ -4264,7 +4264,7 @@ git commit -m "docs(spec): set the clock numbers from M1's measurement
 Also records the boundary-risk outcomes in §12."
 ```
 
-- [ ] **Step 7: Confirm M1 is done**
+- [x] **Step 7: Confirm M1 is done**
 
 ```bash
 make test && make test-authenticity && make m1-report && make m1-demo
@@ -4272,6 +4272,55 @@ git log --oneline -1 docs/superpowers/specs/
 ```
 
 All green, the report shows a verdict for every risk, and the spec commit exists.
+
+---
+
+## Where the build departed from the plan
+
+Every task above is done. These are the places the thing built is not the thing written, each
+because building it showed the plan was wrong rather than because the plan was inconvenient.
+
+**Task 13 shipped `/ask` as plain JSON**, not the streaming endpoint its own interface section
+names. The gap was invisible until Task 14 went to consume it. Closed afterwards: `stream` is
+now the pipeline and `run` drains it, so the progress a reader sees is emitted by the line that
+does the work rather than narrated beside it.
+
+**Task 14 was scaffolded by hand rather than with `pnpm create vite`.** Two consequences worth
+naming. TypeScript is pinned to **6.0.3, not the current 7.0.2**: 7 is the native port and does
+not expose the `ts.factory` API, so `openapi-typescript` cannot run under it — revisit when the
+generator ships a 7-compatible release. And `tsconfig.json` is a solution file with two
+referenced projects, so that node globals reach `vite.config.ts` and not application code;
+`pnpm tsc --noEmit` checks *nothing* against a solution file, which is why the gate runs
+`--build --force` instead.
+
+**Task 15's proofs are Python, not `Gateway.Tests/AuthenticityTests.cs`.** They start and stop
+containers and query Postgres; none of that is C#'s business, and putting them in the .NET
+suite would have meant the gateway's unit tests and a container orchestrator sharing a runner.
+They live in `diagnostics/analysis/tests/test_authenticity.py` and run under `make verify`
+rather than the plan's `make test-authenticity` — the repository already had `verify` for
+exactly this, and two names for one thing is how one of them goes stale.
+
+The fifth proof — exactly two containers on `field-net` — is `test_compose_invariants.py`
+instead, which parses both compose files rather than inspecting a running network. That is the
+stronger version: it fails before a violating stack can be started, and it cannot be satisfied
+by a network that happens to be empty at the moment it is asked.
+
+The five proofs M1 cannot yet make are named at the bottom of the proof file rather than in
+`measurements/authenticity/README.md`. A separate file would be a second copy of the same list,
+and the copy that drifts is always the one nobody is looking at.
+
+**Nothing in the task list implemented gap markers**, though §13's scope line and §4.4 both
+name them and Tasks 9 and 10 each left a comment deferring them to the other. The table existed
+from Task 9 and no row was ever written to it, so `/inspection/stats` reported perfect coverage
+across every outage and the agent's gap caveat was unreachable code. Implemented after Task 17,
+along with `/reconcile`, which the plan's `verify-no-gaps` assumed existed.
+
+**§1's third proof failed for four measured runs before it passed.** The cause was not in the
+reconnect path everyone was reading: `HistoryBackfill` held the `ISession` it was constructed
+with, and a reconnect replaces and disposes that object — so every backfill after the first
+outage read from a disposed session, returned nothing, and reported the gap closed. The test
+was kept failing and documented rather than weakened, which is the only reason it was still
+there to be fixed.
 
 ---
 
