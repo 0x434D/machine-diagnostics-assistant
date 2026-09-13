@@ -734,7 +734,7 @@ Carriers **circulate**. Without that, a worn carrier passes once and M2c's carri
 
 **Files:**
 - Create: `plant/simulator/src/simulator/buffers.py`, `plant/simulator/src/simulator/carriers.py`
-- Modify: `plant/simulator/src/simulator/config.py`
+- Modify: `plant/simulator/src/simulator/config.py` — carrier count, buffer capacity, **and the per-station takts §3.1 now requires**
 - Test: `plant/simulator/tests/test_buffers.py`, `plant/simulator/tests/test_carriers.py`
 
 **Interfaces:**
@@ -1052,7 +1052,27 @@ In `plant/simulator/src/simulator/config.py`, inside `Settings`, after the `# li
     # proof derives the number rather than hardcoding 30.
     carrier_count: int = 12
     buffer_capacity: int = 5
+
+    # §3.1: the stations do NOT share one takt. S3 is the slowest and paces the line
+    # at the 6 s every other number is quoted against; S1 and S2 run faster so their
+    # buffers fill, and S4 matches S3 so B3_4 stays near empty without S4 starving on
+    # every single cycle.
+    #
+    # A balanced line would make buffer capacity bound nothing -- every buffer would
+    # oscillate between empty and one, because each station consumes exactly as fast
+    # as the one above produces. The bottleneck is what gives a buffer a level to
+    # hold, and the level is what makes propagation delayed rather than immediate.
+    #
+    # Starting values, confirmed by Task 12's measurement rather than assumed.
+    station_takt_seconds: dict[str, float] = {
+        "S1": 5.70,
+        "S2": 5.85,
+        "S3": 6.00,
+        "S4": 6.00,
+    }
 ```
+
+**These values are a starting point with a stated intent, and Task 12 confirms them.** Two buffers at capacity park 10 carriers, plus what the four stations hold — against a pool of 12, that is close to the floor. If Task 12 finds S1 suspending on `carrier-return` during normal running rather than only when the line backs up, the carrier count rises. §3.1 calls all three numbers configurable and this is why.
 
 - [ ] **Step 7: Run both suites to verify they pass**
 
@@ -1691,6 +1711,20 @@ async def test_a_state_change_is_written_with_its_reason() -> None:
     assert ("StateReason", T0, "starved:carrier-return") in nodes.writes
 
 
+def test_each_station_takes_its_own_nominal_takt() -> None:
+    """§3.1: S3 paces the line and the stations above it run faster, so their buffers
+    fill. One shared takt would leave every buffer oscillating between empty and one,
+    and buffer capacity would bound nothing."""
+    means = {}
+    for factory in (FeedingStation, JoiningStation, InspectionStation, OutfeedStation):
+        station, _ = build_one(factory)
+        draws = [station.next_takt() for _ in range(500)]
+        means[station.code] = sum(draws) / len(draws)
+
+    assert means["S1"] < means["S2"] < means["S3"]
+    assert means["S3"] == pytest.approx(means["S4"], abs=0.05)
+
+
 def test_successive_takts_never_repeat() -> None:
     """Not realism: asyncua's monitored-item filter drops a notification whenever the
     written value is unchanged, so a repeated takt is a row that never reaches the
@@ -1857,7 +1891,13 @@ class Station(ABC):
         genuinely variable -- at which point the guard is dead code pretending to be a
         safety property.
         """
-        nominal = self._settings.takt_seconds
+        # Per station, not one line-wide number (§3.1). Falls back to takt_seconds
+        # for a station the configuration does not name -- the same fail-open choice
+        # Task 9's signal policy makes, and for the same reason: a station handed a
+        # takt of zero because nobody listed it would wedge the queue.
+        nominal = self._settings.station_takt_seconds.get(
+            self.code, self._settings.takt_seconds
+        )
         sigma = self._settings.takt_jitter_sigma
         for _ in range(_MAX_TAKT_RESAMPLES):
             value = nominal + self._rng.gauss(0.0, sigma)
@@ -1883,7 +1923,12 @@ class Station(ABC):
         # instant T" should look at the next row after T. The reverse convention is
         # equally self-consistent; this is the one this project made.
         await self._nodes.write(
-            "TaktTime", at, self._previous_takt or self._settings.takt_seconds
+            "TaktTime",
+            at,
+            self._previous_takt
+            or self._settings.station_takt_seconds.get(
+                self.code, self._settings.takt_seconds
+            ),
         )
         await self._nodes.write("PartCount", at, self._part_count)
         await self.on_part(at, carrier, part)
@@ -2983,13 +3028,11 @@ Expected: PASS. `test_only_the_simulator_and_the_gateway_ever_join_field_net` is
 
 M2a's authenticity proof: **stop S2, and S3 starves once B2_3 drains.** Measured, not asserted.
 
-> **§3.1 is wrong about the number, and this is the task that finds it.** §3.1 says "Five carriers at 6 s means S3 starves roughly 30 s after S2 stops." That holds only if B2_3 is near capacity when S2 stops. With four stations on an identical nominal takt and downstream-first ordering, every buffer oscillates between 0 and 1 at steady state — each station consumes as fast as the one above produces. Stopping S2 then starves S3 after roughly *one* takt, not five.
+> **§3.1's thirty seconds holds only because of the ruling already applied.** A balanced line — all four stations on one nominal takt — leaves every buffer oscillating between 0 and 1, because each station consumes exactly as fast as the one above produces. Stopping S2 would then starve S3 after roughly *one* takt, and buffer capacity would bound nothing at all.
 >
-> Two ways to make §3.1's claim true, and the choice is the spec owner's:
-> **(a)** Give the stations different nominal takts, so the slowest paces the line and its input buffer genuinely fills. This is what real lines do and it makes buffer capacity mean what §3.1 says it means.
-> **(b)** Accept that buffers run near-empty on a balanced line, and change §3.1 to say that buffer capacity bounds the *worst-case* propagation delay rather than setting the typical one.
+> §3.1 and Task 3's configuration now make **S3 the bottleneck at 6 s**, with S1 and S2 faster so that B1_2 and B2_3 fill. That is what gives §3.1's figure something to be true about.
 >
-> **Do not hardcode 30 s in the proof either way.** The test derives the expected delay from the buffer level observed at the moment S2 stops. That is correct under both readings and stays correct when the takts change.
+> **Do not hardcode 30 s in the proof.** The test derives the expected delay from the buffer level observed at the moment S2 stops, so it survives the retuning this task may well conclude is needed.
 
 **Files:**
 - Create: `plant/simulator/tests/test_propagation.py`, `measurements/authenticity/README.md`
@@ -3075,7 +3118,11 @@ async def test_s2_itself_is_held_rather_than_suspended() -> None:
 cd plant && uv run --package simulator pytest simulator/tests/test_propagation.py -v
 ```
 
-**Record the observed steady-state level of each buffer in the commit message.** That number is the evidence for choosing (a) or (b) above, and it belongs in the record rather than in someone's memory.
+**Record the observed steady-state level of each buffer, and the free-carrier count, in the commit message.** Three things are being confirmed rather than assumed:
+
+1. **B1_2 and B2_3 reach capacity, and B3_4 does not.** If they do not, the takt spread is too small and S3 is not really the bottleneck.
+2. **S1 does not suspend on `carrier-return` during normal running.** Two full buffers park 10 of 12 carriers; if the pool is exhausted in steady state, `carrier_count` rises.
+3. **S4 does not starve on every cycle.** S4 matching S3's nominal is what avoids that. Frequent but not constant starvation is correct, and is exactly the "within normal spread" judgement M3 will have to make.
 
 - [ ] **Step 3: Write the file M1 marked done and never committed**
 
@@ -3123,7 +3170,7 @@ Run against the spec with fresh eyes, per the writing-plans skill.
 
 **Open questions for the spec owner, raised rather than absorbed:**
 - **§4.1's "reference"** — implemented as `String` variables carrying the station browse name, not a custom OPC UA reference type (Task 6). Topology is discovered either way.
-- **§3.1's "roughly 30 s"** — does not hold on a balanced line (Task 12). Needs ruling (a) or (b).
+- ~~**§3.1's "roughly 30 s"** — does not hold on a balanced line.~~ **Ruled and applied:** S3 paces the line at 6 s and the stations above it run faster, so their buffers fill. §3.1 rewritten, Task 3 carries the per-station takts, Task 12 confirms the levels and the carrier headroom.
 - **§15's stream count** — corrected to 25 in the spec revision; every guard in Tasks 9 and 10 is sized against that number.
 
 **Type consistency.** `StationNodes` (Protocol, Task 5) is implemented by `StationNodeSet` (Task 6). `StationCycle` (Protocol, Task 4) is implemented by `Station` (Task 5) and its four subclasses. `PartState` is defined in Task 4 and consumed in Tasks 4, 5 and 11. `Ledger.record(station_code, signal)` (Task 7) is keyed the same way `state_changes` and `signals` are keyed in Task 8. `PartOutcome` and `serial_for` move from `station_s3.py` to `stations/base.py` unchanged.

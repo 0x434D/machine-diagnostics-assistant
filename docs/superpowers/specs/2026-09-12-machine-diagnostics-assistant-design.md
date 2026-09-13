@@ -181,9 +181,24 @@ roughly 32,000 rows for an 18-hour history, which is nothing.
 
 Defaults, all configurable: **12 carriers · 6 s takt · buffer capacity 5**.
 
+**The stations do not share one takt — S3 paces the line.** Inspection is the slowest
+operation, so S1 and S2 run slightly faster than it and their buffers fill; S4 matches S3
+and its buffer runs near empty. The line's throughput is therefore S3's 6 s, which is the
+takt every other number here is quoted against.
+
+This is not decoration. On a perfectly balanced line every buffer oscillates between empty
+and one, because each station consumes exactly as fast as the one above produces — and
+buffer capacity then bounds nothing, because no buffer ever holds anything. A bottleneck is
+what gives a buffer a level to hold, and a level is what makes propagation delayed rather
+than immediate.
+
 Buffer capacity is the number that matters — it sets how long propagation takes to become
-visible. Five carriers at 6 s means S3 starves roughly 30 s after S2 stops, and reasoning
-about that delay is exactly the analysis's job.
+visible. With B2_3 full at five and a 6 s takt, S3 starves roughly 30 s after S2 stops, and
+reasoning about that delay is exactly the analysis's job.
+
+The carrier count has to cover what the filled buffers park. Two buffers at capacity plus
+the carriers in the stations themselves is the floor; 12 is close to it, and the M2a
+measurement is what settles whether it clears.
 
 ### 3.2 The clock
 
