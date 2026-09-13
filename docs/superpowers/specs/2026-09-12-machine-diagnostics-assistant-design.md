@@ -281,6 +281,15 @@ A good part's verdict confidence is high while all six class scores are low; the
 reading — mass spread over six defect classes — reported a good part as 27% confident and ~30%
 misaligned, which is the symptom of treating the vector as a distribution.
 
+**The verdict comes from the truth side channel; the confidence scalar is computed from the
+image.** `SimulatedClassifier` resolves *what is wrong* by part id as above, but derives
+*how sure it is* from a statistic of the rendered image — contrast, local variance. This is
+what turns scenario 6 from a stipulation into a cause: fouled optics render a genuinely
+degraded image, and confidence falls because the image fell. Stated honestly, a
+statistic-to-confidence formula is still a formula, so the stipulation moves one layer down
+rather than vanishing — but the fouling now has a real effect on a real measurement, and the
+confidence field carries information about the thing it claims to describe.
+
 Defect classes: `gap`, `crack`, `misalignment`, `missing_part`, `scratch`, `contamination`.
 
 **Only rejected parts carry their image** into the OPC UA event. Good parts get a result
@@ -352,7 +361,10 @@ realistic noise):
 - baseline scrap ~1.5 % drawn from a distribution unrelated to any injected fault
 - operator interventions — alarms acknowledged after realistic delays, manual restarts,
   the occasional unnecessary reset
-- false rejects and false accepts at a configured rate
+- false rejects and false accepts at a configured rate — **owned by the classifier (§3.4)**,
+  listed here because they are visible as line behaviour. A real `ModelClassifier` has error
+  rates emergently, so modelling them here as well would double-count them the day it is
+  swapped in
 - genuine carrier-to-carrier variation that is **not** a fault
 
 The last item is the point. Without background variation, finding carrier 7 is a
@@ -401,6 +413,14 @@ Objects/
 ```
 
 `StateReason` carries `starved`/`blocked` **and the buffer id**.
+
+**What that tree actually counts to: 37 variable nodes.** Nine are static topology
+(`Capacity`, `UpstreamStation`, `DownstreamStation`) and are read on connect, never
+historised. Three restate what an event already carries authoritatively — `Lane1_Lot`,
+`Lane2_Lot`, `CurrentAssemblySerial` — and are live-only, because a historised second copy
+invites exactly the time-join §3.4a forbids. That leaves **25 historised streams and five
+event types**, against M1's two and one. The count is worth stating because all three of
+§12's truncation defects scale with it.
 
 Buffer nodes reference the stations they sit between. The gateway reads those references
 on connect and fills the `stations` and `buffers` tables — **the line's topology is
@@ -543,6 +563,7 @@ genealogy           assembly_serial · component_serial · position      as-buil
 
 part_station_events assembly_serial · station_id · entered_at · left_at · state_at_entry
 part_process_values assembly_serial · station_id · signal · value      authoritative per part
+part_process_curves assembly_serial · station_id · signal · samples[]  §3.4a's force–distance curve
 part_dispositions   assembly_serial · at · disposition · reason
 
 signals             source_ts · station_id · signal · value     PK(station, signal, source_ts)
@@ -1403,10 +1424,15 @@ M1  WALKING SKELETON        one station · two signals · one event with an imag
                             a chat box that answers one question with one real citation
                             ─── answers: does the boundary actually work? ───
 
-M2  THE PLANT IS REAL       4 stations · PackML · buffers · carriers · clock and catch-up
-                            component and assembly serials · lots · genealogy
-                            per-part process values · scenarios 1–8
-                            ground-truth log · noise floor · plant HMI
+M2  THE PLANT IS REAL       three sequenced plans. Each is releasable, and each carries
+                            its own gateway subscriptions and its own migration, so no
+                            milestone ends with streams that nothing reads
+    M2a the line runs       4 stations · PackML · buffers · carriers · clock and catch-up
+    M2b every part          component and assembly serials · lots · genealogy
+        has a name          per-part process values · force–distance curves
+    M2c the line            scenarios 1–8 · noise floor · ground-truth log · alarms
+        misbehaves on
+        purpose             ─── plant HMI grows across all three ───
 
 M3  THE ANALYSIS IS REAL    propagation with derivation · significance · coverage
                             time resolution · traceability and containment queries
@@ -1487,9 +1513,15 @@ Target: all of M1–M8.
   and 3.13 stands.** `asyncua` 2.0.1 runs on 3.13 and every defect M1 found in it (§12's three
   truncation rows) is a logic defect that a newer interpreter would not touch, so there is
   nothing here pulling towards 3.14. What would move it is a dependency that requires it;
-  revisit at M2, when the plant grows nine more signal streams and the dependency set changes.
-- Whether scenario 6 (optics fouling) survives review once confidence decay is visible in
-  practice, given that it is stipulated rather than emergent
+  revisit at M2, when the plant grows twenty-three more historised signal streams and four
+  more event types, and the dependency set changes. M2's own known additions (`fastapi`,
+  `uvicorn` for the plant HMI) are already resolved in the workspace and do not move this.
+- ~~Whether scenario 6 (optics fouling) survives review once confidence decay is visible in
+  practice, given that it is stipulated rather than emergent~~ **Closed at M2, by removing
+  the stipulation.** The simulator renders genuinely degraded images and the classifier
+  derives its confidence from the image (§3.4); the verdict still comes from the truth side
+  channel. The scenario keeps its label as the one that improves most when a real model
+  arrives
 - MCP specification revision to pin — decide at M4 against what clients actually support
 
 **Frontend design — an entire topic, deliberately deferred.** Not yet discussed: visual
