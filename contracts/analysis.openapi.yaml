@@ -1,0 +1,268 @@
+# Generated from diagnostics/analysis (FastAPI) and committed as the contract.
+# §10.1: contracts/ is the single source of truth — the frontend's TypeScript types are
+# generated from this file, and analysis/tests/test_contract.py fails if the served
+# schema and this file disagree, so an API change that was not propagated breaks the
+# gate rather than drifting quietly.
+#
+# Regenerate with: make contract
+components:
+  schemas:
+    Coverage:
+      description: "\xA74.4: without gap markers, missing data is indistinguishable from a quiet machine."
+      properties:
+        gaps:
+          items:
+            $ref: '#/components/schemas/Gap'
+          title: Gaps
+          type: array
+      required:
+      - gaps
+      title: Coverage
+      type: object
+    DefectClassCount:
+      properties:
+        count:
+          title: Count
+          type: integer
+        defect_class:
+          title: Defect Class
+          type: string
+      required:
+      - defect_class
+      - count
+      title: DefectClassCount
+      type: object
+    Gap:
+      properties:
+        from_ts:
+          format: date-time
+          title: From Ts
+          type: string
+        reason:
+          title: Reason
+          type: string
+        to_ts:
+          format: date-time
+          title: To Ts
+          type: string
+      required:
+      - from_ts
+      - to_ts
+      - reason
+      title: Gap
+      type: object
+    HTTPValidationError:
+      properties:
+        detail:
+          items:
+            $ref: '#/components/schemas/ValidationError'
+          title: Detail
+          type: array
+      title: HTTPValidationError
+      type: object
+    InspectionStats:
+      properties:
+        by_defect_class:
+          items:
+            $ref: '#/components/schemas/DefectClassCount'
+          title: By Defect Class
+          type: array
+        coverage:
+          $ref: '#/components/schemas/Coverage'
+        rejects:
+          title: Rejects
+          type: integer
+        sample_serials:
+          items:
+            type: string
+          title: Sample Serials
+          type: array
+        total:
+          title: Total
+          type: integer
+        window:
+          $ref: '#/components/schemas/Window'
+      required:
+      - window
+      - total
+      - rejects
+      - by_defect_class
+      - sample_serials
+      - coverage
+      title: InspectionStats
+      type: object
+    Part:
+      properties:
+        assembly_serial:
+          title: Assembly Serial
+          type: string
+        confidence:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Confidence
+        defect_class:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Defect Class
+        image_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Image Url
+        model_version:
+          title: Model Version
+          type: string
+        result:
+          title: Result
+          type: string
+        source_ts:
+          format: date-time
+          title: Source Ts
+          type: string
+        station:
+          title: Station
+          type: string
+      required:
+      - assembly_serial
+      - source_ts
+      - station
+      - result
+      - defect_class
+      - confidence
+      - model_version
+      - image_url
+      title: Part
+      type: object
+    ValidationError:
+      properties:
+        ctx:
+          title: Context
+          type: object
+        input:
+          title: Input
+        loc:
+          items:
+            anyOf:
+            - type: string
+            - type: integer
+          title: Location
+          type: array
+        msg:
+          title: Message
+          type: string
+        type:
+          title: Error Type
+          type: string
+      required:
+      - loc
+      - msg
+      - type
+      title: ValidationError
+      type: object
+    Window:
+      properties:
+        from_ts:
+          format: date-time
+          title: From Ts
+          type: string
+        to_ts:
+          format: date-time
+          title: To Ts
+          type: string
+      required:
+      - from_ts
+      - to_ts
+      title: Window
+      type: object
+info:
+  title: machine-agent analysis
+  version: 0.1.0
+openapi: 3.1.0
+paths:
+  /inspection/stats:
+    get:
+      description: Counts over a closed window, with the gaps that make them incomplete.
+      operationId: inspectionStats
+      parameters:
+      - in: query
+        name: from
+        required: true
+        schema:
+          format: date-time
+          title: From
+          type: string
+      - in: query
+        name: to
+        required: true
+        schema:
+          format: date-time
+          title: To
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InspectionStats'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Inspection Stats
+  /parts/{serial}:
+    get:
+      description: "Reads the per-part record directly.\n\n\xA73.4a: that record is authoritative for\
+        \ the part and is never reconstructed by joining\nthe time series on \"which part was at S3 at\
+        \ 02:14:07\" \u2014 with buffers, variable takt and\nhistory gaps that association is an inference,\
+        \ and inferred traceability is what makes a\ncontainment list unusable at the moment it matters.\
+        \ There is no time-range join here."
+      operationId: getPart
+      parameters:
+      - in: path
+        name: serial
+        required: true
+        schema:
+          title: Serial
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Part'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Part
+  /parts/{serial}/image:
+    get:
+      description: "Rejects only. A good part has no image and that is not a missing value (\xA73.4)."
+      operationId: getPartImage
+      parameters:
+      - in: path
+        name: serial
+        required: true
+        schema:
+          title: Serial
+          type: string
+      responses:
+        '200':
+          content:
+            image/png: {}
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Part Image

@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-.PHONY: preflight lock-check fmt lint test check verify ci ci-scheduled \
+.PHONY: preflight lock-check fmt lint test check verify ci ci-scheduled contract \
         lint-python test-python check-python \
         lint-dotnet test-dotnet check-dotnet audit-dotnet \
         lint-frontend test-frontend check-frontend \
@@ -142,6 +142,12 @@ lint-python: lock-check
 	cd plant && uv run --frozen ruff format --check $(CURDIR)/measurements \
 	  && uv run --frozen ruff check $(CURDIR)/measurements \
 	  && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini $(CURDIR)/measurements
+
+# contracts/ is the single source of truth (§10.1). The served schema is compared against the
+# committed file by analysis/tests/test_contract.py, so this target is for propagating an
+# intended change, never for making a failing test pass.
+contract:
+	cd diagnostics && uv run --frozen --package analysis python $(CURDIR)/scripts/generate-contract.py
 
 test-python: lock-check
 	$(call pytest-package,plant,simulator)

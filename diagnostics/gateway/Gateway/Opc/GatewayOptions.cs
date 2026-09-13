@@ -73,8 +73,16 @@ public sealed record GatewayOptions
     /// </summary>
     public TimeSpan MinimumBackfillWindow { get; init; } = TimeSpan.FromSeconds(30);
 
-    /// <summary>How far back to reach on a first boot, when storage holds nothing.</summary>
-    public TimeSpan HistoryDepth { get; init; } = TimeSpan.FromHours(18);
+    /// <summary>
+    /// How far back to reach on a first boot, when storage holds nothing.
+    ///
+    /// 33 h, not the 18 h §3.2 states. The plant lane probed 366 day-boundaries: the worst
+    /// case is a boot at 05:00 *inside* a running night shift, where the last completed one
+    /// started 33 h earlier — 24 h of day-gap plus a 9 h autumn fall-back night, supremum
+    /// 1 day 8:59:59.999999 on 2026-10-25. At 18 h the flagship question has no data for
+    /// exactly the shift it asks about, which is the failure this depth exists to prevent.
+    /// </summary>
+    public TimeSpan HistoryDepth { get; init; } = TimeSpan.FromHours(33);
     public int PublishingIntervalMs { get; init; } = 250;
     public int SamplingIntervalMs { get; init; } = 250;
     public uint QueueSize { get; init; } = 100;
