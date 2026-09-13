@@ -8,7 +8,8 @@ namespace Gateway.Opc;
 /// follows S1, and asyncua assigns node identifiers automatically, so they are not
 /// predictable anyway. Task 11 widens this to the full topology.
 /// </summary>
-public sealed record AddressSpace(NodeId S3NodeId, NodeId TaktNodeId, NodeId PartCountNodeId)
+public sealed record AddressSpace(
+    NodeId S3NodeId, NodeId TaktNodeId, NodeId PartCountNodeId, NodeId? PhaseNodeId)
 {
     /// <summary>
     /// The station code the schema keys on. Browse name "S3_Inspection" carries both the code
@@ -53,7 +54,29 @@ public sealed record AddressSpace(NodeId S3NodeId, NodeId TaktNodeId, NodeId Par
             TaktNodeId: await TranslateAsync(session, ns, [.. S3Path, "TaktTime"], ct)
                 .ConfigureAwait(false),
             PartCountNodeId: await TranslateAsync(session, ns, [.. S3Path, "PartCount"], ct)
+                .ConfigureAwait(false),
+            // §4.1 exposes the clock deliberately: the gateway can see that the machine runs
+            // on its own time, in which phase. Optional, because a plant that does not publish
+            // one is a plant this gateway should still ingest from — the alternative is a
+            // gateway that refuses to start against anything but this simulator, which is the
+            // opposite of "point it at a real plant". Its absence is reported, never assumed.
+            PhaseNodeId: await TryTranslateAsync(session, ns, ["Line", "Clock", "Phase"], ct)
                 .ConfigureAwait(false));
+    }
+
+    private static async Task<NodeId?> TryTranslateAsync(
+        ISession session, ushort ns, string[] browseNames, CancellationToken ct)
+    {
+        try
+        {
+            return await TranslateAsync(session, ns, browseNames, ct).ConfigureAwait(false);
+        }
+        catch (ServiceResultException e) when (e.StatusCode == StatusCodes.BadNotFound)
+        {
+            // Specifically "this node is not published", which is a fact about the server
+            // rather than a failure. Every other status still propagates.
+            return null;
+        }
     }
 
     internal static async Task<NodeId> TranslateAsync(

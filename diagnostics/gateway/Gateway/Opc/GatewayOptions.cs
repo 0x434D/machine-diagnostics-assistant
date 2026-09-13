@@ -47,6 +47,9 @@ public sealed record GatewayOptions
     public int DrainIdleMs { get; init; } = 250;
     public int DrainRetryMs { get; init; } = 2_000;
 
+    /// <summary>How often to re-read Clock.Phase while the plant is still catching up.</summary>
+    public int PhasePollMs { get; init; } = 1_000;
+
     /// <summary>
     /// One backfill window. At a 6 s takt this is 600 values per signal — sixteen times under
     /// the 10,000 ceiling F1 measured, so a window can never silently truncate.

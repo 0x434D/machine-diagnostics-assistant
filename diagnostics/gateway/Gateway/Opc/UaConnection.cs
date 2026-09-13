@@ -193,6 +193,21 @@ public sealed partial class UaConnection : IAsyncDisposable
         StateChanged?.Invoke("backfilling");
     }
 
+    /// <summary>
+    /// §4.3: the phase says whether the plant has finished building its history. Backfilling
+    /// mid-catch-up would read a history still being written, and subscribing mid-catch-up
+    /// delivers it through the live path — measured at ~275 records/second.
+    ///
+    /// Only two values exist, catchup and live. §4.1 names a third, booting, but the plant is
+    /// already in catchup at the boot instant, so there is nothing to wait for and no handler
+    /// is written for a phase that cannot occur.
+    /// </summary>
+    public async Task<string> ReadPhaseAsync(NodeId phaseNode, CancellationToken ct)
+    {
+        var value = await Session!.ReadValueAsync(phaseNode, ct).ConfigureAwait(false);
+        return value.Value as string ?? "unknown";
+    }
+
     public async ValueTask DisposeAsync()
     {
         if (Session is not null)

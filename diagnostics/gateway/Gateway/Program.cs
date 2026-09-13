@@ -33,6 +33,8 @@ var connection = new UaConnection(options, DefaultTelemetry.Create(l => l.AddCon
 
 var state = "disconnected";
 DateTime? lastEventSourceTs = null;
+DateTime? historyAvailableFrom = null;
+var clockAvailable = true;
 Subscriptions? subscriptions = null;
 connection.StateChanged += next => state = next;
 
@@ -45,7 +47,8 @@ StatusEndpoint.Map(app, async () => new GatewayStatus(
     BackfillProgress: backfill?.Progress ?? 0.0,
     OverflowCount: subscriptions?.OverflowCount ?? 0,
     RowsWritten: drain?.RowsWritten ?? 0,
-    HistoryAvailableFrom: null));
+    HistoryAvailableFrom: historyAvailableFrom?.ToString("O"),
+    ClockAvailable: clockAvailable));
 
 var stopping = app.Lifetime.ApplicationStopping;
 var ingest = Task.Run(
@@ -62,6 +65,25 @@ var ingest = Task.Run(
             }
 
             await queue.EnqueueAsync(record).ConfigureAwait(false);
+        }
+
+        // §4.3's handshake: the plant builds its own history at catch-up speed, so wait for
+        // it to finish before reading any of it. The ready signal gates backfill, not the
+        // system — the gateway is connected and answering /status throughout.
+        if (space.PhaseNodeId is null)
+        {
+            // Said out loud rather than skipped quietly: without the phase the gateway cannot
+            // tell catch-up from live, so it may backfill a history still being written.
+            clockAvailable = false;
+        }
+        else
+        {
+            while (await connection.ReadPhaseAsync(space.PhaseNodeId, stopping).ConfigureAwait(false)
+                   == "catchup")
+            {
+                state = "waiting_for_history";
+                await Task.Delay(options.PhasePollMs, stopping).ConfigureAwait(false);
+            }
         }
 
         // §4.1: stations are browsed, not configured, before anything writes rows that
@@ -88,10 +110,16 @@ var ingest = Task.Run(
             ? null
             : await writer.LastStoredSourceTimestampAsync(stopping).ConfigureAwait(false))
             ?? to - options.HistoryDepth;
+        historyAvailableFrom = from;
+        state = "backfilling";
         await backfill.RunAsync(from, to, stopping).ConfigureAwait(false);
 
         subscriptions = new Subscriptions(options, EnqueueAsync);
         await subscriptions.StartAsync(session, space, stopping).ConfigureAwait(false);
+
+        // ConnectAsync reports "live" when the session comes up, which is before backfill has
+        // run. Live means subscribed and receiving, so it is claimed here and not earlier.
+        state = "live";
 
         await draining.ConfigureAwait(false);
     },
