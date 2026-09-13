@@ -1483,9 +1483,11 @@ Target: all of M1–M8.
   unchanged. Measured in
   `docs/superpowers/measurements/2026-09-12-m1-boundary-risks.md`; §3.2 carries the numbers
   and the reasoning.
-- **Python 3.13 or 3.14.** 3.14 is the current stable release, so 3.13 is two minors behind.
-  3.13 is the conservative pick and stands, but it should be a decision rather than drift —
-  revisit once M1 confirms `asyncua` support.
+- ~~**Python 3.13 or 3.14** — revisit once M1 confirms `asyncua` support~~ **Answered by M1,
+  and 3.13 stands.** `asyncua` 2.0.1 runs on 3.13 and every defect M1 found in it (§12's three
+  truncation rows) is a logic defect that a newer interpreter would not touch, so there is
+  nothing here pulling towards 3.14. What would move it is a dependency that requires it;
+  revisit at M2, when the plant grows nine more signal streams and the dependency set changes.
 - Whether scenario 6 (optics fouling) survives review once confidence decay is visible in
   practice, given that it is stipulated rather than emergent
 - MCP specification revision to pin — decide at M4 against what clients actually support

@@ -181,6 +181,10 @@ m1-demo: preflight
 	@until curl -sf localhost:$${GATEWAY_PORT:-8080}/status | grep -q '"state":"live"'; do \
 	    curl -s localhost:$${GATEWAY_PORT:-8080}/status; echo; sleep 5; done
 	@echo "== 4. ask, and open the citation"
+# `up -d --build` recreates the agent and the UI too, and step 3 waits only for the gateway --
+# so the first run of this demo asked an agent that was still starting and died on an empty
+# response. `make ask` retries; this waits for the page a human is being sent to.
+	@until curl -sf -o /dev/null "localhost:$${UI_PORT:-5173}/"; do sleep 2; done
 	@echo "   the chat box is at http://localhost:$${UI_PORT:-5173} -- try the question below,"
 	@echo "   then click the citation chip under the answer to open the part it names."
 	@$(MAKE) ask
@@ -220,12 +224,14 @@ ASK ?= How many parts were rejected in the last hour, and what were the defects?
 # the question contains characters that a shell would otherwise get an opinion about.
 export ASK
 ask:
-	@curl -sfN -X POST "localhost:$${AGENT_PORT:-8001}/ask" \
-	  -H 'Content-Type: application/json' \
-	  --data-binary "$$(python3 -c 'import json,os; print(json.dumps({"question": os.environ["ASK"]}))')" \
-	  | sed -n 's/^data: //p' | tail -1 \
-	  | python3 -c 'import json,sys; a = json.load(sys.stdin); print(a["answer_markdown"]); \
-	      print("citations:", [c["id"] for f in a["findings"] for c in f["citations"]] or "none")'
+	@port=$${AGENT_PORT:-8001}; \
+	 body=$$(curl -sfN --retry 10 --retry-delay 3 --retry-connrefused --retry-all-errors \
+	   -X POST "localhost:$$port/ask" -H 'Content-Type: application/json' \
+	   --data-binary "$$(python3 -c 'import json,os; print(json.dumps({"question": os.environ["ASK"]}))')") \
+	 || { echo "the agent did not answer on localhost:$$port"; exit 1; }; \
+	 printf '%s' "$$body" | sed -n 's/^data: //p' | tail -1 \
+	   | python3 -c 'import json,sys; a = json.load(sys.stdin); print(a["answer_markdown"]); \
+	       print("citations:", [c["id"] for f in a["findings"] for c in f["citations"]] or "none")'
 
 # §1's second and third proofs both end here: is what is stored still everything the plant
 # produced. Exits non-zero on a hole, so it can be a demo step rather than a thing to read.
