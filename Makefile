@@ -165,6 +165,10 @@ lint-python: lock-check
 # intended change, never for making a failing test pass.
 # The M1 demo, end to end. Step 6 is the one the architecture exists for, so it asks the
 # question again with the plant stopped rather than logging past the outage.
+#
+# Every published port is read from the environment with the compose file's own default, so a
+# host that already has something on 8080 runs this with GATEWAY_PORT=18080 and nothing else
+# changes. Hardcoding them here meant the demo could not run on the machine it was written on.
 m1-demo: preflight
 	@echo "== 1. plant: boot, build history, go live"
 	docker compose -f plant/compose.yml up -d --build
@@ -174,18 +178,18 @@ m1-demo: preflight
 	$(MAKE) browse
 	@echo "== 3. diagnostics: connect, wait for the plant's phase, backfill, go live"
 	docker compose -f diagnostics/compose.yml up -d --build
-	@until curl -sf localhost:8080/status | grep -q '"state":"live"'; do \
-	    curl -s localhost:8080/status; echo; sleep 5; done
+	@until curl -sf localhost:$${GATEWAY_PORT:-8080}/status | grep -q '"state":"live"'; do \
+	    curl -s localhost:$${GATEWAY_PORT:-8080}/status; echo; sleep 5; done
 	@echo "== 4. ask, and open the citation"
 	@echo "   the chat box is at http://localhost:$${UI_PORT:-5173} -- try the question below,"
 	@echo "   then click the citation chip under the answer to open the part it names."
 	@$(MAKE) ask
 	@echo "== 5. downstream outage: Postgres stops, the queue fills, nothing is lost"
 	docker compose -f diagnostics/compose.yml stop postgres
-	@sleep 30; curl -s localhost:8080/status; echo
+	@sleep 30; curl -s localhost:$${GATEWAY_PORT:-8080}/status; echo
 	docker compose -f diagnostics/compose.yml start postgres
-	@until [ "$$(curl -sf localhost:8080/status | sed -n 's/.*"queueDepth":\([0-9]*\).*/\1/p')" = "0" ]; do \
-	    curl -s localhost:8080/status; echo; sleep 5; done
+	@until [ "$$(curl -sf localhost:$${GATEWAY_PORT:-8080}/status | sed -n 's/.*"queueDepth":\([0-9]*\).*/\1/p')" = "0" ]; do \
+	    curl -s localhost:$${GATEWAY_PORT:-8080}/status; echo; sleep 5; done
 	@$(MAKE) verify-no-gaps
 	@echo "== 6. upstream outage: the plant stops, and the question is asked again anyway"
 	docker compose -f plant/compose.yml stop line-simulator
@@ -193,8 +197,8 @@ m1-demo: preflight
 	@echo "   ^ answered from history, with the plant shut down. That is the whole point."
 	docker compose -f plant/compose.yml start line-simulator
 	@echo "   ...and the outage window closes by HistoryRead, not by being forgotten."
-	@until curl -sf localhost:8080/status | grep -q '"state":"live"'; do \
-	    curl -s localhost:8080/status; echo; sleep 5; done
+	@until curl -sf localhost:$${GATEWAY_PORT:-8080}/status | grep -q '"state":"live"'; do \
+	    curl -s localhost:$${GATEWAY_PORT:-8080}/status; echo; sleep 5; done
 	@$(MAKE) verify-no-gaps
 	@echo "== 7. the numbers"
 	$(MAKE) m1-report
@@ -212,6 +216,9 @@ browse:
 # alone would demonstrate the half that was never in doubt. /ask streams, so this keeps the
 # last data: frame -- the answer object -- and drops the progress lines.
 ASK ?= How many parts were rejected in the last hour, and what were the defects?
+# `export`, because the recipe reads it from the environment rather than interpolating it:
+# the question contains characters that a shell would otherwise get an opinion about.
+export ASK
 ask:
 	@curl -sfN -X POST "localhost:$${AGENT_PORT:-8001}/ask" \
 	  -H 'Content-Type: application/json' \
