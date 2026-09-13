@@ -22,6 +22,10 @@ services:
     image: postgres:17-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0
     # Postgres writes its own runtime files; read_only from the shared block would stop it.
     read_only: false
+    # The shared block's uid exists for one reason: the gateway has to be whoever owns the
+    # bind-mounted pki/. Postgres never touches that, and running as a foreign uid leaves it
+    # unable to chmod its own data directory -- initdb fails with "Operation not permitted".
+    user: postgres
     environment:
       POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-diagnostics}"
       POSTGRES_DB: diagnostics
@@ -58,7 +62,9 @@ services:
       - ../pki:/pki:ro
       - gateway-queue:/queue
     ports:
-      - "127.0.0.1:8080:8080"
+      # Every number is configuration (§10.3). The default is what the README and the
+      # demo use; override when the host already has something on it.
+      - "127.0.0.1:${GATEWAY_PORT:-8080}:8080"
     networks: [diag-net, field-net] # the only diagnostics container that may join field-net
 
   analysis:
@@ -75,15 +81,41 @@ services:
     environment:
       ANALYSIS_DATABASE_URL: "postgresql://postgres:${POSTGRES_PASSWORD:-diagnostics}@postgres:5432/diagnostics"
     ports:
-      - "127.0.0.1:8000:8000"
-    networks: [diag-net] # answers from history; it has never heard of OPC UA
+      - "127.0.0.1:${ANALYSIS_PORT:-8000}:8000"
+    # diag-net to reach Postgres, edge-net to be reachable from the host. It has never
+    # heard of OPC UA and never joins field-net.
+    networks: [diag-net, edge-net]
+
+  agent:
+    <<: *runtime
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args: { PACKAGE: agent }
+    command: ["uvicorn", "agent.app:app", "--host", "0.0.0.0", "--port", "8001"]
+    depends_on: [analysis]
+    environment:
+      AGENT_ANALYSIS_URL: "http://analysis:8000"
+      # "scripted" needs no credentials and reaches no network. Set to "anthropic" and
+      # provide ANTHROPIC_API_KEY through .env (which is gitignored) to use a real model.
+      AGENT_PROVIDER: "${AGENT_PROVIDER:-scripted}"
+    env_file:
+      - path: .env
+        required: false
+    ports:
+      - "127.0.0.1:${AGENT_PORT:-8001}:8001"
+    networks: [diag-net, edge-net] # reaches the analysis service, and nothing else
 
 volumes:
   diagnostics-db:
   gateway-queue:
 
 networks:
+  # Postgres lives here alone and is unreachable from outside the stack. internal also means
+  # no container on it can publish a port, which is why the services that answer HTTP sit on
+  # edge-net as well.
   diag-net:
     internal: true
+  edge-net:
   field-net:
     external: true # exactly two containers join this, ever

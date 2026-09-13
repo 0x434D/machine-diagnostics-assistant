@@ -180,9 +180,19 @@ public sealed class Subscriptions
                 sourceTs = time;
             }
 
-            payload[name] = name == "Confidence" && value is not null
-                ? Convert.ToDouble(value, CultureInfo.InvariantCulture)
-                : Convert.ToString(value, CultureInfo.InvariantCulture);
+            if (name == "Confidence" && value is not null)
+            {
+                payload[name] = Convert.ToDouble(value, CultureInfo.InvariantCulture);
+                continue;
+            }
+
+            // An empty string is not a value. A good part carries no defect class, and the
+            // server sends "" rather than null for it — stored as-is it becomes a defect class
+            // whose name is empty, and every breakdown then reports good parts as a defect.
+            // Same shape as the empty ByteString that would have given every good part an
+            // image row: absent and empty are different claims.
+            var text = Convert.ToString(value, CultureInfo.InvariantCulture);
+            payload[name] = string.IsNullOrEmpty(text) ? null : text;
         }
 
         return new IngestRecord(

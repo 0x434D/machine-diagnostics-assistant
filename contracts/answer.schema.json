@@ -1,0 +1,160 @@
+{
+  "$defs": {
+    "Citation": {
+      "description": "\u00a77.3's typed citation. M1 emits only `part`; the other kinds arrive with the\nanalysis endpoints that resolve them.",
+      "properties": {
+        "kind": {
+          "const": "part",
+          "title": "Kind",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "id"
+      ],
+      "title": "Citation",
+      "type": "object"
+    },
+    "Contradiction": {
+      "properties": {
+        "derived_root": {
+          "title": "Derived Root",
+          "type": "string"
+        },
+        "agent_root": {
+          "title": "Agent Root",
+          "type": "string"
+        },
+        "reasoning": {
+          "title": "Reasoning",
+          "type": "string"
+        }
+      },
+      "required": [
+        "derived_root",
+        "agent_root",
+        "reasoning"
+      ],
+      "title": "Contradiction",
+      "type": "object"
+    },
+    "Finding": {
+      "properties": {
+        "statement": {
+          "title": "Statement",
+          "type": "string"
+        },
+        "basis": {
+          "enum": [
+            "measured",
+            "derived",
+            "hypothesis"
+          ],
+          "title": "Basis",
+          "type": "string"
+        },
+        "citations": {
+          "items": {
+            "$ref": "#/$defs/Citation"
+          },
+          "title": "Citations",
+          "type": "array"
+        },
+        "evidence_strength": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Evidence Strength"
+        }
+      },
+      "required": [
+        "statement",
+        "basis"
+      ],
+      "title": "Finding",
+      "type": "object"
+    },
+    "Method": {
+      "properties": {
+        "sops_used": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Sops Used",
+          "type": "array"
+        },
+        "tools_called": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Tools Called",
+          "type": "array"
+        },
+        "budget_used": {
+          "default": 0,
+          "title": "Budget Used",
+          "type": "integer"
+        },
+        "provider": {
+          "default": "unknown",
+          "title": "Provider",
+          "type": "string"
+        }
+      },
+      "title": "Method",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "findings": {
+      "items": {
+        "$ref": "#/$defs/Finding"
+      },
+      "title": "Findings",
+      "type": "array"
+    },
+    "answer_markdown": {
+      "title": "Answer Markdown",
+      "type": "string"
+    },
+    "method": {
+      "$ref": "#/$defs/Method"
+    },
+    "caveats": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Caveats",
+      "type": "array"
+    },
+    "contradiction": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Contradiction"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    }
+  },
+  "required": [
+    "answer_markdown",
+    "method"
+  ],
+  "title": "machine-agent answer object (\u00a76.3)",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}
