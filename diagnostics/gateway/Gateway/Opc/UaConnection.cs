@@ -151,6 +151,30 @@ public sealed partial class UaConnection : IAsyncDisposable
             preferredLocales: null,
             ct).ConfigureAwait(false);
 
+        _reconnectHandler = new SessionReconnectHandler(_telemetry, true, 30_000);
+        Adopt(session);
+        StateChanged?.Invoke("live");
+        LogSessionEstablished(session.SessionName);
+        return session;
+    }
+
+    /// <summary>
+    /// Take ownership of a session: settings, keep-alive, and the Session property.
+    ///
+    /// Called on reconnect as well as on first connect, and that is the point. A reconnect
+    /// can hand back a different session object, and the settings and the keep-alive
+    /// subscription belong to the object rather than to this class — so a version of this
+    /// that only ran at startup left the replacement with no keep-alive at all, and the
+    /// gateway could detect exactly one outage per process lifetime.
+    /// </summary>
+    private void Adopt(ISession session)
+    {
+        var previous = Session;
+        if (previous is not null && !ReferenceEquals(previous, session))
+        {
+            previous.KeepAlive -= OnKeepAlive;
+        }
+
         session.KeepAliveInterval = 5_000;
         session.DeleteSubscriptionsOnClose = false;
         // False, deliberately. Transferring looks like the helpful setting and is the wrong
@@ -162,13 +186,13 @@ public sealed partial class UaConnection : IAsyncDisposable
         // "subscriptionId N is already created", after which the SDK recreates a subscription
         // this process no longer has a handle to — so it cannot be torn down either.
         session.TransferSubscriptionsOnReconnect = false;
+
+        // -= before += : re-adopting the same object must not leave two handlers on it, each
+        // starting its own reconnect for one outage.
+        session.KeepAlive -= OnKeepAlive;
         session.KeepAlive += OnKeepAlive;
 
-        _reconnectHandler = new SessionReconnectHandler(_telemetry, true, 30_000);
         Session = session;
-        StateChanged?.Invoke("live");
-        LogSessionEstablished(session.SessionName);
-        return session;
     }
 
     [LoggerMessage(Level = LogLevel.Information, Message = "session established {SessionName}")]
@@ -196,17 +220,19 @@ public sealed partial class UaConnection : IAsyncDisposable
             return;
         }
 
-        if (!ReferenceEquals(Session, _reconnectHandler.Session))
+        var replaced = !ReferenceEquals(Session, _reconnectHandler.Session);
+        var old = Session;
+        Adopt(_reconnectHandler.Session);
+        if (replaced)
         {
-            var old = Session;
-            Session = _reconnectHandler.Session;
             Utils.SilentDispose(old);
         }
 
         // A new or reactivated session means the plant may have been away. Backfill closes
-        // whatever gap exists — one mechanism, three situations (§4.3). The SDK transfers the
-        // subscription, so live data resumes by itself; what the plant produced while it was
-        // away exists only in its history, and nothing else would go and get it.
+        // whatever gap exists — one mechanism, three situations (§4.3). Nothing resumes by
+        // itself: subscriptions are not transferred, so the supervisor re-subscribes and
+        // goes and gets what the plant produced while it was away, which exists only in its
+        // history.
         StateChanged?.Invoke("backfilling");
         Reconnected?.Invoke();
     }

@@ -41,7 +41,14 @@ public sealed class HistoryBackfill
     /// </summary>
     private sealed record PageOutcome(int Rows, int Pages, long DurationMs, bool MayBeTruncated);
 
-    private readonly ISession _session;
+    /// <summary>
+    /// The session as it is now, not as it was at construction. A reconnect replaces the
+    /// session object and disposes the old one, and this class outlives that: holding the
+    /// original meant every backfill after the first outage read from a disposed session,
+    /// returned nothing, and reported the gap closed. Resolved per read.
+    /// </summary>
+    private readonly Func<ISession> _session;
+
     private readonly AddressSpace _space;
     private readonly Func<IngestRecord, Task> _onRecord;
     private readonly GatewayOptions _options;
@@ -49,7 +56,7 @@ public sealed class HistoryBackfill
     public double Progress { get; private set; }
 
     public HistoryBackfill(
-        ISession session, AddressSpace space, Func<IngestRecord, Task> onRecord,
+        Func<ISession> session, AddressSpace space, Func<IngestRecord, Task> onRecord,
         GatewayOptions options)
     {
         _session = session;
@@ -210,7 +217,7 @@ public sealed class HistoryBackfill
         {
             do
             {
-                var response = await _session.HistoryReadAsync(
+                var response = await _session().HistoryReadAsync(
                     null,
                     new ExtensionObject(details),
                     TimestampsToReturn.Both,   // §4.2 needs both
@@ -273,7 +280,7 @@ public sealed class HistoryBackfill
 
     private async Task ReleaseAsync(NodeId node, byte[] continuationPoint)
     {
-        await _session.HistoryReadAsync(
+        await _session().HistoryReadAsync(
             null,
             new ExtensionObject(new ReadRawModifiedDetails()),
             TimestampsToReturn.Both,

@@ -111,7 +111,7 @@ var ingest = Task.Run(
         // subscription opened before the plant finishes catching up delivers its history
         // through the live path at ~100 events/second, which is the thing §4.3 exists to
         // avoid. Backfill closes exactly the gap this gateway has.
-        var history = new HistoryBackfill(session, space, EnqueueAsync, options);
+        var history = new HistoryBackfill(() => connection.Session!, space, EnqueueAsync, options);
         backfill = history;
 
         // One backfill for all three of §4.3's situations — first boot, a downstream outage
@@ -167,11 +167,11 @@ var ingest = Task.Run(
         // run. Live means subscribed and receiving, so it is claimed here and not earlier.
         state = "live";
 
-        // The other two of §4.3's three situations. The SDK transfers the subscription across
-        // a reconnect, so live data resumes by itself — but whatever the plant produced while
-        // it was away exists only in its history, and without this it would stay a hole that
-        // nothing reports. Backfill asks storage where it ends, so the window is exactly the
-        // outage however long it lasted.
+        // The other two of §4.3's three situations. Subscriptions are deliberately not
+        // transferred across a reconnect (see UaConnection), so nothing resumes by itself:
+        // this is what re-subscribes, and what goes and gets whatever the plant produced
+        // while it was away, which exists only in its history. Backfill asks storage where
+        // it ends, so the window is exactly the outage however long it lasted.
         var supervising = Task.Run(
             async () =>
             {
