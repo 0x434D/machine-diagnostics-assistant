@@ -89,6 +89,16 @@ async def measure(
                         ua.Variant(
                             float(row * streams + stream), ua.VariantType.Double
                         ),
+                        # DataValue types SourceTimestamp as ua.DateTime, a datetime
+                        # subclass asyncua's own runtime never constructs -- every
+                        # value that reaches here, including this one, is a plain
+                        # datetime. That's not merely tolerated: since Python 3.12
+                        # deprecated the implicit subclass adapter, sqlite3's binder
+                        # matches by exact type, so a real ua.DateTime would raise
+                        # "type 'DateTime' is not supported" inside
+                        # HistorySQLite.save_node_value's own try/except, where it is
+                        # logged, not raised -- and the row vanishes with no visible
+                        # error. The annotation is narrower than what storage needs.
                         SourceTimestamp=sim_ts,  # type: ignore[arg-type]
                     )
                 )
