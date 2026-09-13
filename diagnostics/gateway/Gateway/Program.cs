@@ -32,11 +32,14 @@ if (!string.IsNullOrWhiteSpace(options.PostgresConnectionString))
 var connection = new UaConnection(options, DefaultTelemetry.Create(l => l.AddConsole()));
 
 var state = "disconnected";
+// Released when a dropped session comes back, so the gap it left gets closed.
+using var reconnected = new SemaphoreSlim(0);
 DateTime? lastEventSourceTs = null;
 DateTime? historyAvailableFrom = null;
 var clockAvailable = true;
 Subscriptions? subscriptions = null;
 connection.StateChanged += next => state = next;
+connection.Reconnected += () => reconnected.Release();
 
 // Backfill arrives in Task 10. Until then BackfillProgress reports what is true — no
 // backfill has run — rather than a plausible number.
@@ -127,13 +130,92 @@ var ingest = Task.Run(
         }
 
         subscriptions = new Subscriptions(options, EnqueueAsync);
-        await subscriptions.StartAsync(session, space, stopping).ConfigureAwait(false);
+        var active = await subscriptions.StartAsync(session, space, stopping).ConfigureAwait(false);
 
         // ConnectAsync reports "live" when the session comes up, which is before backfill has
         // run. Live means subscribed and receiving, so it is claimed here and not earlier.
         state = "live";
 
-        await draining.ConfigureAwait(false);
+        // The other two of §4.3's three situations. The SDK transfers the subscription across
+        // a reconnect, so live data resumes by itself — but whatever the plant produced while
+        // it was away exists only in its history, and without this it would stay a hole that
+        // nothing reports. Backfill asks storage where it ends, so the window is exactly the
+        // outage however long it lasted.
+        var supervising = Task.Run(
+            async () =>
+            {
+                while (!stopping.IsCancellationRequested)
+                {
+                    await reconnected.WaitAsync(stopping).ConfigureAwait(false);
+                    await CloseTheGapAsync().ConfigureAwait(false);
+                }
+            },
+            stopping);
+
+        async Task CloseTheGapAsync()
+        {
+            // Several keep-alive failures can queue several signals for one outage; they all
+            // mean the same thing, so the extras are dropped rather than replayed.
+            while (reconnected.CurrentCount > 0)
+            {
+                await reconnected.WaitAsync(0, stopping).ConfigureAwait(false);
+            }
+
+            // The subscription comes down first. The SDK transfers it across a reconnect, so a
+            // plant that restarted delivers its whole catch-up through the live path at 700x —
+            // measured here as 84,000 rows arriving while the phase still read "catchup", which
+            // is precisely what §4.3 orders backfill-before-subscribe to prevent. Worse, that
+            // flood moves max(source_ts) to now, so the gap-closing backfill then finds nothing
+            // to do and the outage is papered over rather than closed.
+            // Every subscription on the session, not just the handle this process holds: a
+            // failed transfer leaves one behind that belongs to the SDK, and tearing down only
+            // the tracked object leaves that one publishing.
+            var current = connection.Session;
+            if (current is not null)
+            {
+                foreach (var stale in current.Subscriptions.ToList())
+                {
+                    await current.RemoveSubscriptionAsync(stale, stopping).ConfigureAwait(false);
+                }
+            }
+
+            active = null;
+
+            if (space.PhaseNodeId is not null)
+            {
+                // A plant that restarted rebuilds its history at catch-up speed; reading it
+                // mid-catch-up would read a history still being written.
+                while (await connection.ReadPhaseAsync(space.PhaseNodeId, stopping)
+                           .ConfigureAwait(false) == "catchup")
+                {
+                    state = "waiting_for_history";
+                    await Task.Delay(options.PhasePollMs, stopping).ConfigureAwait(false);
+                }
+            }
+
+            state = "backfilling";
+            var resumeFrom = (writer is null
+                ? null
+                : await writer.LastStoredSourceTimestampAsync(stopping).ConfigureAwait(false))
+                ?? DateTime.UtcNow - options.HistoryDepth;
+            var closing = await backfill.RunAsync(resumeFrom, DateTime.UtcNow, stopping)
+                .ConfigureAwait(false);
+            if (writer is not null)
+            {
+                foreach (var window in closing.Windows)
+                {
+                    await writer.RecordBackfillWindowAsync(
+                        window.From, window.To, window.Stream, window.RowsReturned, window.Pages,
+                        (int)window.DurationMs, stopping).ConfigureAwait(false);
+                }
+            }
+
+            active = await subscriptions
+                .StartAsync(connection.Session!, space, stopping).ConfigureAwait(false);
+            state = "live";
+        }
+
+        await Task.WhenAll(draining, supervising).ConfigureAwait(false);
     },
     stopping);
 

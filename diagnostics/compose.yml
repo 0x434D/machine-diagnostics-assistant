@@ -1,0 +1,89 @@
+name: machine-agent-diagnostics
+
+# Same uid discipline as the plant, and for the same reason: the gateway reads its own
+# private key out of the bind-mounted `pki/`, and `simulator.pki` writes those 0600. A
+# container running as anyone else fails in a way that reads as a missing certificate
+# rather than as a permissions problem -- see plant/.env.example.
+x-runtime: &runtime
+  user: "${HOST_UID:-1000}:${HOST_GID:-1000}"
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  logging:
+    driver: json-file
+    options:
+      max-size: "10m"
+      max-file: "3"
+
+services:
+  postgres:
+    <<: *runtime
+    image: postgres:17-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0
+    # Postgres writes its own runtime files; read_only from the shared block would stop it.
+    read_only: false
+    environment:
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD:-diagnostics}"
+      POSTGRES_DB: diagnostics
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres", "-d", "diagnostics"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    volumes:
+      - diagnostics-db:/var/lib/postgresql/data
+    networks: [diag-net] # never field-net: nothing but OPC UA crosses to the plant
+
+  edge-gateway:
+    <<: *runtime
+    build:
+      # The repository root, because Directory.Build.props and global.json live there and
+      # carry the target framework, the analyzer set and the SDK pin.
+      context: ..
+      dockerfile: diagnostics/gateway/Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # Restated here rather than left to GatewayOptions' defaults so the one name this
+      # boundary is built around is visible in the file that joins the network.
+      GATEWAY_ENDPOINT_URL: "opc.tcp://line-simulator:4840/plant"
+      GATEWAY_APPLICATION_URI: "urn:machine-agent:diagnostics:edge-gateway"
+      GATEWAY_SECURITY_MODE: "Sign"
+      GATEWAY_PKI_ROOT: "/pki"
+      GATEWAY_QUEUE_PATH: "/queue/gateway.db"
+      GATEWAY_POSTGRES: "Host=postgres;Username=postgres;Password=${POSTGRES_PASSWORD:-diagnostics};Database=diagnostics"
+    volumes:
+      - ../pki:/pki:ro
+      - gateway-queue:/queue
+    ports:
+      - "127.0.0.1:8080:8080"
+    networks: [diag-net, field-net] # the only diagnostics container that may join field-net
+
+  analysis:
+    <<: *runtime
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args: { PACKAGE: analysis }
+    command:
+      ["uvicorn", "analysis.app:app", "--host", "0.0.0.0", "--port", "8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      ANALYSIS_DATABASE_URL: "postgresql://postgres:${POSTGRES_PASSWORD:-diagnostics}@postgres:5432/diagnostics"
+    ports:
+      - "127.0.0.1:8000:8000"
+    networks: [diag-net] # answers from history; it has never heard of OPC UA
+
+volumes:
+  diagnostics-db:
+  gateway-queue:
+
+networks:
+  diag-net:
+    internal: true
+  field-net:
+    external: true # exactly two containers join this, ever

@@ -1,5 +1,6 @@
 SHELL := /bin/bash
 .PHONY: preflight lock-check fmt lint test check verify ci ci-scheduled contract m1-report \
+        m1-demo browse ask \
         lint-python test-python check-python \
         lint-dotnet test-dotnet check-dotnet audit-dotnet \
         lint-frontend test-frontend check-frontend \
@@ -146,6 +147,49 @@ lint-python: lock-check
 # contracts/ is the single source of truth (§10.1). The served schema is compared against the
 # committed file by analysis/tests/test_contract.py, so this target is for propagating an
 # intended change, never for making a failing test pass.
+# The M1 demo. Steps 1-3, 5, 6 and 7 are the walking skeleton end to end; step 4 asks the
+# analysis API rather than a chat box, because the agent is Task 13 and is not wired up. Step
+# 6 is the one the architecture exists for, so it asks the question again with the plant
+# stopped rather than logging past the outage.
+m1-demo:
+	@echo "== 1. plant: boot, build history, go live"
+	docker compose -f plant/compose.yml up -d --build
+	@until docker compose -f plant/compose.yml exec -T line-simulator \
+	    python -c "import urllib.request" >/dev/null 2>&1; do sleep 2; done
+	@echo "== 2. a foreign client browses the address space"
+	$(MAKE) browse
+	@echo "== 3. diagnostics: connect, wait for the plant's phase, backfill, go live"
+	docker compose -f diagnostics/compose.yml up -d --build
+	@until curl -sf localhost:8080/status | grep -q '"state":"live"'; do \
+	    curl -s localhost:8080/status; echo; sleep 5; done
+	@echo "== 4. ask the analysis API"
+	@$(MAKE) ask
+	@echo "== 5. downstream outage: Postgres stops, the queue fills, nothing is lost"
+	docker compose -f diagnostics/compose.yml stop postgres
+	@sleep 30; curl -s localhost:8080/status; echo
+	docker compose -f diagnostics/compose.yml start postgres
+	@sleep 30; curl -s localhost:8080/status; echo
+	@echo "== 6. upstream outage: the plant stops, and the question is asked again anyway"
+	docker compose -f plant/compose.yml stop line-simulator
+	@$(MAKE) ask
+	@echo "   ^ answered from history, with the plant shut down. That is the whole point."
+	docker compose -f plant/compose.yml start line-simulator
+	@echo "== 7. the numbers"
+	$(MAKE) m1-report
+
+# A client that is not our gateway, proving the boundary is a real OPC UA server rather than
+# gateway-specific glue.
+browse:
+	docker run --rm --network field-net --user "$$(id -u):$$(id -g)" \
+	  -v "$(CURDIR)/pki:/pki:ro" -v "$(CURDIR)/measurements:/measurements:ro" \
+	  machine-agent-plant-line-simulator \
+	  python /measurements/run_r3.py --probe opc.tcp://line-simulator:4840/plant \
+	  --pki /pki --secure
+
+ask:
+	@curl -sf "localhost:8000/inspection/stats?from=$$(date -u -d '1 hour ago' +%Y-%m-%dT%H:%M:%SZ)&to=$$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+	  | python3 -m json.tool
+
 # Aggregates every M1 measurement into one table with a verdict per risk, and exits non-zero
 # if any risk has neither a pass nor a recorded, justified deviation — so an unmeasured risk
 # cannot pass silently.
@@ -199,6 +243,7 @@ check: lint test
 # gate slow enough to skip is not a gate. Task 15 registers the `authenticity` marker.
 verify:
 	cd plant && uv run --frozen --package simulator pytest simulator/tests -q -m authenticity
+	cd diagnostics && uv run --frozen --package analysis pytest analysis/tests -q -m authenticity
 
 # --- the rest of the pipeline (handbook §9) -----------------------------------------------
 

@@ -20,6 +20,13 @@ public sealed partial class UaConnection : IAsyncDisposable
     public ISession? Session { get; private set; }
     public event Action<string>? StateChanged;
 
+    /// <summary>
+    /// Raised when a dropped session has been re-established. §4.3's backfill closes the gap
+    /// it has "after first boot, after a crash, after an outage — one mechanism, three
+    /// situations", and this is how the second and third situations reach it.
+    /// </summary>
+    public event Action? Reconnected;
+
     public UaConnection(GatewayOptions options, ITelemetryContext telemetry)
     {
         _options = options;
@@ -146,7 +153,15 @@ public sealed partial class UaConnection : IAsyncDisposable
 
         session.KeepAliveInterval = 5_000;
         session.DeleteSubscriptionsOnClose = false;
-        session.TransferSubscriptionsOnReconnect = true;
+        // False, deliberately. Transferring looks like the helpful setting and is the wrong
+        // one here: a plant that restarted republishes its whole catch-up, and a transferred
+        // subscription delivers it through the live path at 700x — measured at 84,000 rows
+        // arriving while Clock.Phase still read "catchup". §4.3 orders backfill before
+        // subscribe for exactly that reason, and the ordering has to hold on reconnect too,
+        // not only at boot. The transfer also fails here anyway, as BadInvalidState
+        // "subscriptionId N is already created", after which the SDK recreates a subscription
+        // this process no longer has a handle to — so it cannot be torn down either.
+        session.TransferSubscriptionsOnReconnect = false;
         session.KeepAlive += OnKeepAlive;
 
         _reconnectHandler = new SessionReconnectHandler(_telemetry, true, 30_000);
@@ -189,8 +204,11 @@ public sealed partial class UaConnection : IAsyncDisposable
         }
 
         // A new or reactivated session means the plant may have been away. Backfill closes
-        // whatever gap exists — one mechanism, three situations (§4.3).
+        // whatever gap exists — one mechanism, three situations (§4.3). The SDK transfers the
+        // subscription, so live data resumes by itself; what the plant produced while it was
+        // away exists only in its history, and nothing else would go and get it.
         StateChanged?.Invoke("backfilling");
+        Reconnected?.Invoke();
     }
 
     /// <summary>
