@@ -1,5 +1,5 @@
 SHELL := /bin/bash
-.PHONY: preflight lock-check fmt lint test check verify ci ci-scheduled contract \
+.PHONY: preflight lock-check fmt lint test check verify ci ci-scheduled contract m1-report \
         lint-python test-python check-python \
         lint-dotnet test-dotnet check-dotnet audit-dotnet \
         lint-frontend test-frontend check-frontend \
@@ -146,6 +146,12 @@ lint-python: lock-check
 # contracts/ is the single source of truth (§10.1). The served schema is compared against the
 # committed file by analysis/tests/test_contract.py, so this target is for propagating an
 # intended change, never for making a failing test pass.
+# Aggregates every M1 measurement into one table with a verdict per risk, and exits non-zero
+# if any risk has neither a pass nor a recorded, justified deviation — so an unmeasured risk
+# cannot pass silently.
+m1-report:
+	cd plant && uv run --frozen --package simulator python $(CURDIR)/measurements/report.py
+
 contract:
 	cd diagnostics && uv run --frozen --package analysis python $(CURDIR)/scripts/generate-contract.py
 

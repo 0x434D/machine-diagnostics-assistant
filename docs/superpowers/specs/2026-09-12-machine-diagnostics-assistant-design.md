@@ -188,9 +188,10 @@ about that delay is exactly the analysis's job.
 ### 3.2 The clock
 
 ```
-  start = now − 18 h        catch-up @ 600×  (≈108 s wall)        live @ 1.0×
+  start = now − 33 h      catch-up @ 700×  (151–185 s wall)      live @ 1.0×
   ├──────────────────────────────────────────────────────────────►│──────────►
-  │         previous night shift lies fully inside history        now
+  │     last *completed* night shift lies inside history,         now
+  │     whatever hour the boot happens at
 ```
 
 **Live speed is exactly 1.0.** Anything faster makes simulated time overrun the wall
@@ -202,8 +203,27 @@ perfectly watchable.
 local-time concept and DST is real. Shifts: early 06–14, late 14–22, night 22–06.
 "Last night" resolves to the most recent *completed* night shift.
 
-The 18 h default exists so the previous night shift lies fully inside history at startup,
-otherwise the flagship question has no data on a fresh boot.
+**The 33 h default exists so the last *completed* night shift lies fully inside history at
+startup, whatever hour the boot happens at** — otherwise the flagship question has partial
+data, which is worse than none because nothing says so.
+
+33 h rather than a rounder number because the requirement is a supremum, not an average.
+The worst case is a boot at 05:00 *inside* a running night shift: the last completed one
+began the previous evening, 24 h of day-gap earlier, and the autumn fall-back night runs
+nine hours. Probing all 366 day-boundaries of a year puts the supremum at
+`1 day, 8:59:59.999999`, on 2026-10-25.
+
+Set from measurement, not guessed — see
+`docs/superpowers/measurements/2026-09-12-m1-boundary-risks.md`. The earlier 18 h figure was
+wrong for the purpose this paragraph states: it holds only for a boot between roughly 06:00
+and 16:00. An hourly sweep gives 26 h and is also wrong, because it never lands on the
+sawtooth's right edge.
+
+Catch-up duration is `depth / (speed − 1)`, so changing the depth changes the boot time.
+At 700× and 33 h it measured **151.3, 160.7 and 184.9 s** over three boots — dominated by
+rendering 19,800 images and the inspection round-trips, so it scales with parts per
+catch-up rather than with station count. The spec's earlier "≈108 s" assumed 600× at 18 h
+with flat-art images and was unreachable once either changed.
 
 **Catch-up happens in-process.** The simulator generates history into its own historian
 without touching OPC UA. Nothing crosses the wire at catch-up rates; the gateway pulls it
@@ -1348,19 +1368,29 @@ owns two independent user-facing surfaces on opposite sides of the boundary.
 
 ## 12. Risks
 
-| Risk | Impact | Mitigation |
-|---|---|---|
-| asyncua history backend performance with ~10k events | backfill slow or unreliable | measured in M1 before anything depends on it |
-| UA-.NETStandard `HistoryRead` client ergonomics | gateway work larger than estimated | measured in M1 |
-| OPC UA endpoint URL vs. Docker hostname (`BadTcpEndpointUrlInvalid`) | `docker compose up` does not just work | same port inside and out; endpoint URL configured to the service name; proven in M1 |
-| Structured events carrying image bytes | rejects arrive without evidence | exercised in M1 with one station |
-| OPC UA certificate SANs vs. Docker service names | signed connections fail in a way that looks like a network problem | certificate generation scripted against the same names as the endpoint URL; solved together with the endpoint trap in M1 |
-| OIDC in a browser SPA — redirect URIs, token refresh, silent renewal | login works locally and breaks on any change of host or port | `oidc-client-ts` rather than hand-rolled; redirect URIs derived from one configured origin |
-| Scope | eight milestones is weeks of work | milestone boundaries are releasable; M4 is the first honest demo over API and MCP |
-| Knowledge tuning without measurement | SOP edits become guesswork | the harness lands at M6; before/after diffing from then on |
+**M1 measured the first five. Outcomes below; the full report with every number is
+`docs/superpowers/measurements/2026-09-12-m1-boundary-risks.md`.**
 
-The first four all live at the boundary, which is why M1 exists and why it is thin
-everywhere except there.
+| Risk | Impact | Mitigation | M1 outcome |
+|---|---|---|---|
+| asyncua history backend performance with ~20k rows per stream | backfill slow or unreliable | measured in M1 before anything depends on it | **the risk was misplaced.** Latency is a non-issue: 19,800 rows per stream backfilled in 60 s against a 300 s budget, p99 1.3 s, sublinear. The danger is silent miscounting — see the three truncation rows below. `pg_rows == read_rows` exactly, zero gaps |
+| UA-.NETStandard `HistoryRead` client ergonomics | gateway work larger than estimated | measured in M1 | **confirmed larger.** 1.5.378.176 ships no `HistoryRead` helper; `HistoryClient` is in the unreleased 2.0 line. Paging, decoding, continuation-point release and per-stream page sizing are all ours — ~250 lines |
+| OPC UA endpoint URL vs. Docker hostname (`BadTcpEndpointUrlInvalid`) | `docker compose up` does not just work | same port inside and out; endpoint URL configured to the service name; proven in M1 | **PASS.** All four client positions connect at `Sign`, including UA-.NETStandard inside `field-net` over the service name with `checkDomain` on. No manual host configuration: `localhost` works because the certificate's IP SAN covers it |
+| Structured events carrying image bytes | rejects arrive without evidence | exercised in M1 with one station | **PASS, 1,005× headroom.** But the limit that fires is not the one assumed: `MaxByteStringLength` and `MaxMessageSize` are unenforced in asyncua 2.0.1, and the ceiling comes from the chunk-count limit. The binding end-to-end constraint is the .NET client's 4 MiB, 38× above `img_p99` |
+| OPC UA certificate SANs vs. Docker service names | signed connections fail in a way that looks like a network problem | certificate generation scripted against the same names as the endpoint URL; solved together with the endpoint trap in M1 | **PASS.** The subject must be exactly three RDNs — a fourth fails `Utils.CompareDistinguishedName` on field count and presents as "no usable certificate" while the PKI is fine |
+| **asyncua silently truncates reads at 10,000 values** | a backfill returns 10,000 of 19,800 and reports success — no exception, no bad `StatusCode` | bounded windows with a reconciled count per window; a window returning the ceiling is refused rather than trusted | **found in M1.** M2 multiplies the signal count by roughly ten, so this compounds |
+| **asyncua silently truncates event-history paging** | a client paging smaller than the server's cap receives one page and no continuation point, and stops early believing the window complete | treat a full final page with no continuation point as truncated and halve the window until every part comes back short | **found in M1: 96% of event history lost on a green run.** `read_node_history` has the identical structure, so variables are only safe when the page size happens to equal the server's cap |
+| **asyncua's write path discards the oldest** | the internal subscription queue caps each monitored item at 10,000 and drops the oldest, destroying the earliest history as it is generated | pace generation against the queue, and assert the historian's contents rather than the generator's ledger | **found in M1: the first 16 h 20 min of a 33 h run destroyed** — precisely the shift the history depth exists to guarantee |
+| OIDC in a browser SPA — redirect URIs, token refresh, silent renewal | login works locally and breaks on any change of host or port | `oidc-client-ts` rather than hand-rolled; redirect URIs derived from one configured origin | M5 |
+| Scope | eight milestones is weeks of work | milestone boundaries are releasable; M4 is the first honest demo over API and MCP | open |
+| Knowledge tuning without measurement | SOP edits become guesswork | the harness lands at M6; before/after diffing from then on | M6 |
+
+The first five all live at the boundary, which is why M1 exists and why it is thin
+everywhere except there. The three that follow them were found by building it: all three
+are ways this stack discards data and reports success, and all three are detectable from
+the client side — which is why the guards live in the gateway rather than in a request that
+the server behave. That distinction is what makes "point it at a real plant" a claim rather
+than a hope.
 
 ---
 
@@ -1448,7 +1478,11 @@ Target: all of M1–M8.
 - Chart library for the fixed vocabulary (Recharts / visx / ECharts) — deferred to M5
 - Significance test choice (binomial exact vs. two-proportion z) and the minimum-sample
   gate — deferred to M3, needs the noise floor's real distribution
-- Exact catch-up speed, history depth and takt — set from the M1 measurement, not guessed
+- ~~Exact catch-up speed, history depth and takt — set from the M1 measurement, not
+  guessed~~ **Closed by M1.** History depth **33 h**, catch-up **700×**, takt **6 s**
+  unchanged. Measured in
+  `docs/superpowers/measurements/2026-09-12-m1-boundary-risks.md`; §3.2 carries the numbers
+  and the reasoning.
 - **Python 3.13 or 3.14.** 3.14 is the current stable release, so 3.13 is two minors behind.
   3.13 is the conservative pick and stands, but it should be a decision rather than drift —
   revisit once M1 confirms `asyncua` support.
