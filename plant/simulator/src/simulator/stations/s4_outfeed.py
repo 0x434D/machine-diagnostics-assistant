@@ -8,7 +8,7 @@ from typing import override
 from simulator.carriers import Carrier
 from simulator.config import Settings
 from simulator.line import PartState
-from simulator.stations.base import Station, StationNodes
+from simulator.stations.base import Station, StationNodes, clamp_level
 
 
 class OutfeedStation(Station):
@@ -38,4 +38,6 @@ class OutfeedStation(Station):
         """Fills as parts arrive, emptied when an operator clears it. M2c's scenario 2
         blocks the outfeed entirely, which is why this is a level rather than a
         counter."""
-        return round((self._good + self._reject) % 50 + self._rng.gauss(0.0, 0.3), 3)
+        held = (self._good + self._reject) % self._settings.outfeed_capacity
+        level = held + self._rng.gauss(0.0, self._settings.outfeed_fill_sigma)
+        return round(clamp_level(level), 3)

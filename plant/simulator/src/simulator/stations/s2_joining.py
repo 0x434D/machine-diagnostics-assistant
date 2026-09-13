@@ -21,10 +21,14 @@ class JoiningStation(Station):
     @override
     async def on_part(self, at: datetime, carrier: Carrier, part: PartState) -> None:
         peak = round(
-            self._settings.joining_force_nominal + self._rng.gauss(0.0, 40.0), 2
+            self._settings.joining_force_nominal
+            + self._rng.gauss(0.0, self._settings.joining_force_sigma),
+            2,
         )
         distance = round(
-            self._settings.joining_distance_nominal + self._rng.gauss(0.0, 0.02), 4
+            self._settings.joining_distance_nominal
+            + self._rng.gauss(0.0, self._settings.joining_distance_sigma),
+            4,
         )
         await self._nodes.write("JoiningForcePeak", at, peak)
         await self._nodes.write("JoiningDistance", at, distance)

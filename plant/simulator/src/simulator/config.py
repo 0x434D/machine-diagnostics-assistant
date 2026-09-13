@@ -105,6 +105,33 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # they summarise (§3.4a).
     joining_force_nominal: float = 4200.0  # newtons
     joining_distance_nominal: float = 12.5  # millimetres
+    # Part-to-part spread around those nominals, ~1 % of force and ~0.2 % of distance.
+    # Not measured -- §3.5's noise model is M2b's, and these exist so the two signals
+    # vary at all (a constant is coalesced away before the historian sees it, the same
+    # reason takt_jitter_sigma above exists). They are settings rather than literals
+    # because M2c's scenario 3 drifts the force against exactly this spread: a drift
+    # smaller than the noise it hides in is not detectable, and that ratio has to be
+    # tunable to make the scenario provable either way.
+    joining_force_sigma: float = 40.0  # newtons
+    joining_distance_sigma: float = 0.02  # millimetres
+
+    # §4.1's three fill levels -- S1's two feeder lanes and S4's outfeed. Each is a
+    # sawtooth: drawn down (or filled up) by production, reset when an operator
+    # intervenes. The shape carries no diagnosis in M2a; it exists so these are real
+    # varying floats. Settings rather than literals because M2c's scenario 5
+    # contaminates one lane and scenario 2 blocks the outfeed, and both scenarios are
+    # written against the level a station is supposed to sit at.
+    #
+    # A lane holds 100 units and each part draws half of one, so a lane lasts 200 of
+    # the parts it supplies -- long enough that the sawtooth is a slow trend against
+    # the takt rather than a sensor that looks broken.
+    lane_capacity: float = 100.0
+    lane_draw_per_part: float = 0.5
+    # Measurement noise on the level, not variation in the level itself.
+    lane_fill_sigma: float = 0.4
+    # Parts, not units: the outfeed holds whole parts and an operator clears it.
+    outfeed_capacity: int = 50
+    outfeed_fill_sigma: float = 0.3
 
     # catch-up pacing -- asyncua's own per-monitored-item notification queue caps at
     # 10,000 and silently discards the oldest entry past that, so generate_history

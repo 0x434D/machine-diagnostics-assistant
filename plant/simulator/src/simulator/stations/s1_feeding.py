@@ -12,7 +12,7 @@ from typing import override
 
 from simulator.carriers import Carrier
 from simulator.line import PartState
-from simulator.stations.base import Station
+from simulator.stations.base import Station, clamp_level
 
 
 class FeedingStation(Station):
@@ -25,13 +25,16 @@ class FeedingStation(Station):
             await self._nodes.write(f"LaneFill_{lane}", at, self._lane_level(lane))
 
     def _lane_level(self, lane: int) -> float:
-        """A slow sawtooth with noise: drawn down by production, refilled when low.
-        The shape carries no diagnosis in M2a -- it exists so the signal is a real
-        varying float rather than a constant the historian would coalesce away."""
+        """A slow sawtooth with noise: drawn down by production, topped back up when
+        it runs out. The shape carries no diagnosis in M2a -- it exists so the signal
+        is a real varying float rather than a constant the historian would coalesce
+        away."""
         # S1 alternates feeders, so each lane falls with the parts it actually
         # supplied: lane 1 the odd parts, lane 2 the even ones. Draining both by the
         # whole part count would make the two nodes one signal published twice, and
         # M2c's scenario 5 contaminates exactly one of them.
         supplied = (self._part_count + 2 - lane) // 2
-        drawn = (supplied * 0.5) % 100.0
-        return round(100.0 - drawn + self._rng.gauss(0.0, 0.4), 3)
+        capacity = self._settings.lane_capacity
+        drawn = (supplied * self._settings.lane_draw_per_part) % capacity
+        level = capacity - drawn + self._rng.gauss(0.0, self._settings.lane_fill_sigma)
+        return round(clamp_level(level), 3)

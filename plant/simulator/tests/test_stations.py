@@ -4,7 +4,11 @@ it reaches asyncua."""
 
 from __future__ import annotations
 
+import ast
 import itertools
+import os
+import subprocess
+import sys
 from datetime import UTC, datetime
 
 import pytest
@@ -188,6 +192,62 @@ def test_each_station_takes_its_own_nominal_takt() -> None:
 
     assert means["S1"] < means["S2"] < means["S3"]
     assert means["S3"] == pytest.approx(means["S4"], abs=0.05)
+
+
+_DRAW_PROBE = """
+from simulator.config import Settings
+from simulator.stations import FeedingStation
+
+
+class Nodes:
+    code = "S1"
+
+    async def write(self, signal, at, value):
+        raise AssertionError("the probe never cycles")
+
+    async def trigger_event(self, at, fields):
+        raise AssertionError("the probe never cycles")
+
+
+settings = Settings()
+station = FeedingStation(Nodes(), settings, seed=settings.seed)
+print(repr([station.next_takt() for _ in range(5)]))
+"""
+
+
+def _draws_under(hash_seed: str) -> str:
+    """S1's first five takts, drawn in a fresh interpreter at this PYTHONHASHSEED."""
+    completed = subprocess.run(
+        [sys.executable, "-c", _DRAW_PROBE],
+        capture_output=True,
+        text=True,
+        check=True,
+        env={**os.environ, "PYTHONHASHSEED": hash_seed},
+    )
+    return completed.stdout.strip()
+
+
+def test_the_same_seed_draws_the_same_takts_in_every_process() -> None:
+    """§3.6, and the reason it needs its own process to be tested at all.
+
+    Station RNGs are seeded from the station code, and the obvious way to fold a
+    string into a seed -- hash() -- is salted per interpreter by PYTHONHASHSEED. A
+    plant seeded that way reproduces itself perfectly within one run and differs on
+    every boot, which is the guarantee §3.6 makes, broken where nothing in a single
+    process can see it: test_line_queue's determinism test runs both of its traces in
+    one interpreter and stays green under exactly that defect.
+
+    So this spawns real interpreters. `random` is included because a fixed set of
+    seeds could in principle be satisfied by a hash that happened to agree on them.
+    """
+    outputs = {_draws_under(seed) for seed in ("1", "2", "3", "random")}
+    assert len(outputs) == 1, f"the seed did not survive a new process: {outputs}"
+
+    takts = ast.literal_eval(outputs.pop())
+    # Guards against the probe going quietly vacuous -- an empty list would satisfy
+    # the equality above no matter how the RNG were seeded.
+    assert len(takts) == 5
+    assert len(set(takts)) == 5
 
 
 def test_successive_takts_never_repeat() -> None:

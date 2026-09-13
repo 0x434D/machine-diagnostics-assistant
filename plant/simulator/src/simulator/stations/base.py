@@ -32,6 +32,13 @@ from simulator.packml import State
 
 @dataclass(frozen=True)
 class PartOutcome:
+    """One part's inspection verdict, as the vision system itself reported it.
+
+    A copy of M1's `station_s3.PartOutcome`, field for field, until Task 7 deletes
+    that module. The two are separate types meanwhile, so nothing may pass one where
+    the other is expected.
+    """
+
     disposition: str  # "good" | "reject"
     defect_class: str | None
     confidence: float
@@ -63,6 +70,17 @@ class StationNodes(Protocol):
     async def write(self, signal: str, at: datetime, value: float | str) -> None: ...
 
     async def trigger_event(self, at: datetime, fields: dict[str, object]) -> None: ...
+
+
+def clamp_level(value: float) -> float:
+    """A fill level and its sensor cannot read below empty.
+
+    Both lane fill and outfeed fill are a sawtooth plus measurement noise, and both
+    pass within one noise sigma of zero at the wrap, where the noise alone would
+    otherwise put a negative number on the wire. Shared rather than written twice so
+    the reason is stated once.
+    """
+    return max(0.0, value)
 
 
 _MAX_TAKT_RESAMPLES = 100
@@ -116,6 +134,11 @@ class Station(ABC):
         genuinely variable -- at which point the guard is dead code pretending to be a
         safety property.
 
+        Resampling rather than accepting the odds is what makes the historian's row
+        count equal the ledger's *by construction*, instead of by the odds of two
+        float64 Gaussian draws colliding -- vanishingly small, but R1 asserts exact
+        equality, not "usually".
+
         Raises ValueError if _MAX_TAKT_RESAMPLES consecutive draws all equal the
         previous takt -- see that constant for why this is a bound, not a
         retry-forever.
@@ -150,6 +173,12 @@ class Station(ABC):
         # `is None` rather than `or`: _previous_takt is a float, and `or` would read a
         # legitimate draw of 0.0 as "never drawn" and report nominal instead -- a takt
         # the station did not run at, written as if it had.
+        #
+        # This reads the takt rather than being handed it, so it is the *current*
+        # cycle's interval only because Line.step calls next_takt() before run_cycle().
+        # Swap those two calls and every station silently writes the previous cycle's
+        # interval instead -- no test fails, and the error is one row's offset in a
+        # signal nothing cross-checks. Either keep the order or pass the takt in.
         await self._nodes.write(
             "TaktTime",
             at,
