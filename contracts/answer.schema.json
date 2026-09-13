@@ -1,4 +1,5 @@
 {
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
     "Citation": {
       "description": "\u00a77.3's typed citation. M1 emits only `part`; the other kinds arrive with the\nanalysis endpoints that resolve them.",
@@ -155,6 +156,5 @@
     "method"
   ],
   "title": "machine-agent answer object (\u00a76.3)",
-  "type": "object",
-  "$schema": "https://json-schema.org/draft/2020-12/schema"
+  "type": "object"
 }

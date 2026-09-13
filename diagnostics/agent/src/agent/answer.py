@@ -75,3 +75,20 @@ def validate_basis(
             )
         if not evidence_strength:
             raise ValueError("basis 'hypothesis' requires evidence_strength (§6.3)")
+
+
+#: The committed contract carries a dialect and a human title that Pydantic does not emit.
+#: They live here rather than being applied by hand to the generated file, so that
+#: regenerating is reproducible and tests/test_contract.py has something exact to compare
+#: against. A hand-decorated contract is a contract nothing can check.
+SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
+SCHEMA_TITLE = "machine-agent answer object (\u00a76.3)"
+
+
+def json_schema() -> dict[str, object]:
+    """§6.3's answer object as JSON Schema. The UI generates its types from this."""
+    return {
+        "$schema": SCHEMA_DIALECT,
+        **Answer.model_json_schema(),
+        "title": SCHEMA_TITLE,
+    }

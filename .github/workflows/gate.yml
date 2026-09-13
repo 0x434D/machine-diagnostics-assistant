@@ -57,6 +57,7 @@ jobs:
               - 'measurements/**'
               - 'ruff.toml'
               - 'mypy.ini'
+              - 'scripts/**'
               - 'Makefile'
             dotnet:
               - 'diagnostics/gateway/**'

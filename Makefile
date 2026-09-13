@@ -146,6 +146,12 @@ lint-python: lock-check
 	cd plant && uv run --frozen ruff format --check $(CURDIR)/measurements \
 	  && uv run --frozen ruff check $(CURDIR)/measurements \
 	  && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini $(CURDIR)/measurements
+# scripts/ had the same hole measurements/ did: outside both workspaces, so no gate reached
+# it, while it writes the contracts every other gate compares against. Checked with the
+# diagnostics interpreter because that is the one it imports both services from.
+	cd diagnostics && uv run --frozen ruff format --check $(CURDIR)/scripts \
+	  && uv run --frozen ruff check $(CURDIR)/scripts \
+	  && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini $(CURDIR)/scripts
 
 # contracts/ is the single source of truth (§10.1). The served schema is compared against the
 # committed file by analysis/tests/test_contract.py, so this target is for propagating an
