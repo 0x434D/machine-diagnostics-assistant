@@ -21,10 +21,19 @@ public sealed record StreamReconciliation(
 }
 
 public sealed record ReconciliationResult(
-    DateTime From, DateTime To, IReadOnlyList<StreamReconciliation> Streams)
+    DateTime From, DateTime To, IReadOnlyList<StreamReconciliation> Streams,
+    IReadOnlyList<IngestGap> Gaps)
 {
-    public bool Reconciled => Streams.All(stream => stream.DuplicatesAbsorbed >= 0);
+    /// <summary>
+    /// Reconciled means every stream stored at least what the ledger says was pulled, and
+    /// nothing recorded a gap over the window. A negative margin is rows read and lost.
+    /// </summary>
+    public bool Reconciled =>
+        Gaps.Count == 0 && Streams.All(stream => stream.DuplicatesAbsorbed >= 0);
 }
+
+/// <summary>A window the gateway knows it does not have (§4.4).</summary>
+public sealed record IngestGap(DateTime From, DateTime To, string Reason);
 
 /// <summary>
 /// Compares what the backfill reported pulling against what is actually stored.
@@ -56,7 +65,33 @@ public sealed class Reconciler
             await ForEventsAsync(connection, from, to, ct).ConfigureAwait(false),
         };
 
-        return new ReconciliationResult(from, to, streams);
+        return new ReconciliationResult(
+            from, to, streams,
+            await GapsAsync(connection, from, to, ct).ConfigureAwait(false));
+    }
+
+    private static async Task<IReadOnlyList<IngestGap>> GapsAsync(
+        NpgsqlConnection connection, DateTime from, DateTime to, CancellationToken ct)
+    {
+        // Overlap rather than containment: a gap that starts before the window and ends
+        // inside it is still a hole in the window, and asking for containment is how one
+        // goes unreported.
+        await using var command = new NpgsqlCommand(
+            "SELECT from_ts, to_ts, reason FROM ingest_gaps "
+            + "WHERE from_ts < $2 AND to_ts > $1 ORDER BY from_ts",
+            connection);
+        command.Parameters.AddWithValue(from);
+        command.Parameters.AddWithValue(to);
+
+        var gaps = new List<IngestGap>();
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            gaps.Add(new IngestGap(
+                reader.GetDateTime(0), reader.GetDateTime(1), reader.GetString(2)));
+        }
+
+        return gaps;
     }
 
     private static async Task<StreamReconciliation> ForSignalAsync(

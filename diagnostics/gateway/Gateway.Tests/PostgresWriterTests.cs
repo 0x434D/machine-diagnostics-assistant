@@ -156,6 +156,67 @@ public sealed class PostgresWriterTests : IAsyncLifetime
         Assert.False(result.Reconciled);
     }
 
+    [Fact]
+    public async Task AGapMarkerLandsAsARowAndBreaksTheReconciliation()
+    {
+        // §4.4: without gap markers, missing data is indistinguishable from a quiet machine.
+        // The table existed from Task 9 and nothing ever wrote to it, so /inspection/stats
+        // reported perfect coverage over an outage — the exact failure the table exists to
+        // prevent, wearing the table's own name.
+        var window = Instant.AddHours(-1);
+        await _writer.WriteBatchAsync([
+            PostgresWriter.GapRecord(
+                window.AddMinutes(10), window.AddMinutes(12), "subscription_overflow",
+                "ns=2;i=7"),
+        ]);
+
+        Assert.Equal(1, await CountAsync("ingest_gaps"));
+
+        var result = await new Reconciler(_postgres.GetConnectionString())
+            .CheckAsync(window, Instant);
+
+        Assert.False(result.Reconciled, "a window containing a recorded gap reconciled");
+        var gap = Assert.Single(result.Gaps);
+        Assert.Equal("subscription_overflow", gap.Reason);
+    }
+
+    [Fact]
+    public async Task AGapOverlappingTheWindowCountsEvenWhenItStartsBeforeIt()
+    {
+        // Overlap rather than containment. An outage that began before the window and ended
+        // inside it is still a hole in the window, and asking for containment is how the one
+        // gap that matters goes unreported.
+        var window = Instant.AddHours(-1);
+        await _writer.WriteBatchAsync([
+            PostgresWriter.GapRecord(
+                window.AddHours(-2), window.AddMinutes(5), "plant_unreachable", "session"),
+        ]);
+
+        var result = await new Reconciler(_postgres.GetConnectionString())
+            .CheckAsync(window, Instant);
+
+        Assert.Single(result.Gaps);
+    }
+
+    [Fact]
+    public async Task AGapRecordAlsoLandsVerbatimInRawEvents()
+    {
+        // §5.1: every record lands raw before anything interprets it, and a gap is a record.
+        // Without this the only trace of what was lost is a derived row with no node id, and
+        // "this signal overflowed" and "the whole session went away" stop being tellable
+        // apart after the fact.
+        await _writer.WriteBatchAsync([
+            PostgresWriter.GapRecord(
+                Instant.AddMinutes(-2), Instant, "subscription_overflow", "ns=2;i=7"),
+        ]);
+
+        await using var connection = new NpgsqlConnection(_postgres.GetConnectionString());
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(
+            "SELECT node_id FROM raw_events WHERE kind = 'gap'", connection);
+        Assert.Equal("ns=2;i=7", (string?)await command.ExecuteScalarAsync());
+    }
+
     private static IngestRecord SampleDataChange(string signal, DateTime ts, double value) => new(
         Kind: "datachange", NodeId: "ns=2;i=7", SourceTs: ts, ServerTs: ts, StatusCode: 0,
         PayloadJson: $$"""{"Station":"S3","Signal":"{{signal}}","Value":{{value}}}""",

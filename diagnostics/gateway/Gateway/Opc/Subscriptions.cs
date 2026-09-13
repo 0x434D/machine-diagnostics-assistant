@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
 using Gateway.Ingest;
@@ -26,6 +27,14 @@ public sealed class Subscriptions
 
     private readonly GatewayOptions _options;
     private readonly Func<IngestRecord, Task> _onRecord;
+
+    /// <summary>
+    /// The last SourceTimestamp delivered per monitored item. The overflow bit means values
+    /// were dropped between the previous delivery and this one, so this is what turns "some
+    /// were lost" into the interval §4.4 asks a gap marker to name.
+    /// </summary>
+    private readonly ConcurrentDictionary<string, DateTime> _lastSourceTs =
+        new(StringComparer.Ordinal);
 
     public int OverflowCount { get; private set; }
 
@@ -212,23 +221,34 @@ public sealed class Subscriptions
             return;
         }
 
+        var nodeId = item.StartNodeId.ToString();
+        var sourceTs = notification.Value.SourceTimestamp;
+
         // §4.4: the server sets the overflow bit when it dropped notifications.
         // DiscardOldest=false replaces the NEWEST value — it is not a lossless setting.
         // Losslessness comes from an adequate queue plus a fast publishing interval, with
-        // this bit as the honest detector when that fails. Persisting the gap as a row is
-        // Task 9's, once there is a table to put it in.
-        // §4.4: the server sets the overflow bit when it dropped notifications.
-        // DiscardOldest=false replaces the NEWEST value — it is not a lossless setting.
-        // Losslessness comes from an adequate queue plus a fast publishing interval, with
-        // this bit as the honest detector when that fails. Persisting the gap as a row is
-        // Task 10's, once backfill can close it.
+        // this bit as the honest detector when that fails. A counter alone was not enough:
+        // /status forgets it on restart and no query can ask which minutes are missing, so
+        // the loss goes in as a row through the same queue as everything else.
         if (notification.Value.StatusCode.Overflow)
         {
             OverflowCount++;
+
+            var (from, reason) = _lastSourceTs.TryGetValue(nodeId, out var previous)
+                ? (previous, "subscription_overflow")
+
+                // Overflow on the first value this item ever delivered: nothing establishes
+                // where the dropped run began. One publishing interval is the shortest it
+                // could have been, and the reason says so rather than presenting a lower
+                // bound as the extent.
+                : (sourceTs.AddMilliseconds(-_options.PublishingIntervalMs),
+                   "subscription_overflow_lower_bound");
+
+            _ = _onRecord(PostgresWriter.GapRecord(from, sourceTs, reason, nodeId));
         }
 
-        _ = _onRecord(ToDataChangeRecord(
-            item.DisplayName, item.StartNodeId.ToString(), notification.Value));
+        _lastSourceTs[nodeId] = sourceTs;
+        _ = _onRecord(ToDataChangeRecord(item.DisplayName, nodeId, notification.Value));
     }
 
     private void OnEvent(MonitoredItem item, MonitoredItemNotificationEventArgs e)

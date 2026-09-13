@@ -94,6 +94,16 @@ public sealed class PostgresWriter
 
             using var document = JsonDocument.Parse(record.PayloadJson);
             var payload = document.RootElement;
+
+            // Before the station lookup, because ingest_gaps is not station-scoped: §4.4's
+            // claim is about the window, and a gap that had to name a station would be a
+            // gap the schema cannot express when the whole connection is what was lost.
+            if (record.Kind == "gap")
+            {
+                rows += await InsertGapAsync(connection, record, payload, ct).ConfigureAwait(false);
+                continue;
+            }
+
             var stationId = await EnsureStationAsync(
                 connection, Required(payload, "Station").GetString()!, ct).ConfigureAwait(false);
 
@@ -109,6 +119,38 @@ public sealed class PostgresWriter
 
         await transaction.CommitAsync(ct).ConfigureAwait(false);
         return rows;
+    }
+
+    /// <summary>
+    /// §4.4: without gap markers, missing data is indistinguishable from a quiet machine.
+    /// This is the row that makes the difference, and it travels through the local queue
+    /// like every other record — a gap written straight to Postgres would be lost during a
+    /// Postgres outage, which is one of the two times a gap is worth having.
+    /// </summary>
+    private static async Task<int> InsertGapAsync(
+        NpgsqlConnection connection, IngestRecord record, JsonElement payload,
+        CancellationToken ct)
+    {
+        await using var command = new NpgsqlCommand(
+            "INSERT INTO ingest_gaps (from_ts, to_ts, reason) VALUES ($1, $2, $3)", connection);
+        command.Parameters.AddWithValue(record.SourceTs);
+        command.Parameters.AddWithValue(Required(payload, "To").GetDateTime());
+        command.Parameters.AddWithValue(Required(payload, "Reason").GetString()!);
+        return await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// A gap record, ready for the queue. The node id names what was lost so that a reader
+    /// of raw_events can tell an overflow on one signal from a whole connection going away.
+    /// </summary>
+    public static IngestRecord GapRecord(DateTime from, DateTime to, string reason, string nodeId)
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            To = to,
+            Reason = reason,
+        });
+        return new IngestRecord("gap", nodeId, from, DateTime.UtcNow, 0, payload, null);
     }
 
     private static async Task<int> InsertRawAsync(

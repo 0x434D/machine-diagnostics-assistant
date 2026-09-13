@@ -19,10 +19,12 @@ var queue = await LocalQueue.OpenAsync(options.QueuePath).ConfigureAwait(false);
 QueueDrain? drain = null;
 HistoryBackfill? backfill = null;
 PostgresWriter? writer = null;
+Reconciler? reconciler = null;
 if (!string.IsNullOrWhiteSpace(options.PostgresConnectionString))
 {
     await PostgresWriter.ApplySchemaAsync(options.PostgresConnectionString).ConfigureAwait(false);
     writer = new PostgresWriter(options.PostgresConnectionString);
+    reconciler = new Reconciler(options.PostgresConnectionString);
     drain = new QueueDrain(
         queue,
         writer,
@@ -41,8 +43,9 @@ Subscriptions? subscriptions = null;
 connection.StateChanged += next => state = next;
 connection.Reconnected += () => reconnected.Release();
 
-// Backfill arrives in Task 10. Until then BackfillProgress reports what is true — no
-// backfill has run — rather than a plausible number.
+// Every field reports what is true rather than a plausible number: before the ingest task
+// has built them, there is no backfill to report progress for and no subscription to have
+// overflowed, and 0.0 with a state of "connecting" says exactly that.
 StatusEndpoint.Map(app, async () => new GatewayStatus(
     State: state,
     LastEventSourceTs: lastEventSourceTs,
@@ -52,6 +55,7 @@ StatusEndpoint.Map(app, async () => new GatewayStatus(
     RowsWritten: drain?.RowsWritten ?? 0,
     HistoryAvailableFrom: historyAvailableFrom?.ToString("O"),
     ClockAvailable: clockAvailable));
+StatusEndpoint.MapReconcile(app, reconciler, options.HistoryDepth);
 
 var stopping = app.Lifetime.ApplicationStopping;
 var ingest = Task.Run(
@@ -99,38 +103,65 @@ var ingest = Task.Run(
                 .ConfigureAwait(false);
         }
 
-        // Drains while backfill runs, or 18 h of history would sit in the local queue waiting
-        // for a subscription that has not started yet.
+        // Drains while backfill runs, or the whole history depth would sit in the local queue
+        // waiting for a subscription that has not started yet.
         var draining = drain is null ? Task.CompletedTask : drain.RunAsync(stopping);
 
         // §4.3: HistoryRead for the past, subscriptions for live, and backfill first — a
         // subscription opened before the plant finishes catching up delivers its history
         // through the live path at ~100 events/second, which is the thing §4.3 exists to
         // avoid. Backfill closes exactly the gap this gateway has.
-        backfill = new HistoryBackfill(session, space, EnqueueAsync, options);
-        var to = DateTime.UtcNow;
-        var from = (writer is null
-            ? null
-            : await writer.LastStoredSourceTimestampAsync(stopping).ConfigureAwait(false))
-            ?? to - options.HistoryDepth;
-        historyAvailableFrom = from;
-        state = "backfilling";
-        var report = await backfill.RunAsync(from, to, stopping).ConfigureAwait(false);
+        var history = new HistoryBackfill(session, space, EnqueueAsync, options);
+        backfill = history;
 
-        // R1's ledger. Written from the backfill's own report rather than recomputed, so the
-        // two cannot disagree about what was pulled.
-        if (writer is not null)
+        // One backfill for all three of §4.3's situations — first boot, a downstream outage
+        // and an upstream one. They differ in when they run and in nothing else, and two
+        // copies of "where does storage end" is two places for the answer to drift.
+        async Task BackfillFromStorageAsync()
         {
-            foreach (var window in report.Windows)
+            var to = DateTime.UtcNow;
+            var earliest = to - options.HistoryDepth;
+            var stored = writer is null
+                ? null
+                : await writer.LastStoredSourceTimestampAsync(stopping).ConfigureAwait(false);
+            var from = stored ?? earliest;
+
+            // The plant keeps HistoryDepth and no more. An outage longer than that leaves a
+            // window HistoryRead cannot return, and asking for it anyway completes clean over
+            // data that is simply gone — a success report covering a hole. §4.4: it goes in
+            // as a gap marker, and backfill starts where history actually begins.
+            if (from < earliest)
             {
-                await writer.RecordBackfillWindowAsync(
-                    window.From, window.To, window.Stream, window.RowsReturned, window.Pages,
-                    (int)window.DurationMs, stopping).ConfigureAwait(false);
+                await EnqueueAsync(PostgresWriter.GapRecord(
+                    from, earliest, "beyond_history_depth", "session")).ConfigureAwait(false);
+                from = earliest;
+            }
+
+            historyAvailableFrom = from;
+            state = "backfilling";
+            var report = await history.RunAsync(from, to, stopping).ConfigureAwait(false);
+
+            // R1's ledger. Written from the backfill's own report rather than recomputed, so
+            // the two cannot disagree about what was pulled.
+            if (writer is not null)
+            {
+                foreach (var window in report.Windows)
+                {
+                    await writer.RecordBackfillWindowAsync(
+                        window.From, window.To, window.Stream, window.RowsReturned, window.Pages,
+                        (int)window.DurationMs, stopping).ConfigureAwait(false);
+                }
             }
         }
 
+        await BackfillFromStorageAsync().ConfigureAwait(false);
+
         subscriptions = new Subscriptions(options, EnqueueAsync);
-        var active = await subscriptions.StartAsync(session, space, stopping).ConfigureAwait(false);
+        // The returned Subscription is deliberately not held. The session owns it, and the
+        // teardown below iterates session.Subscriptions rather than a handle of ours —
+        // holding one invited exactly the mistake that comment describes, where a failed
+        // transfer leaves a subscription behind that the tracked object does not name.
+        await subscriptions.StartAsync(session, space, stopping).ConfigureAwait(false);
 
         // ConnectAsync reports "live" when the session comes up, which is before backfill has
         // run. Live means subscribed and receiving, so it is claimed here and not earlier.
@@ -179,8 +210,6 @@ var ingest = Task.Run(
                 }
             }
 
-            active = null;
-
             if (space.PhaseNodeId is not null)
             {
                 // A plant that restarted rebuilds its history at catch-up speed; reading it
@@ -193,24 +222,9 @@ var ingest = Task.Run(
                 }
             }
 
-            state = "backfilling";
-            var resumeFrom = (writer is null
-                ? null
-                : await writer.LastStoredSourceTimestampAsync(stopping).ConfigureAwait(false))
-                ?? DateTime.UtcNow - options.HistoryDepth;
-            var closing = await backfill.RunAsync(resumeFrom, DateTime.UtcNow, stopping)
-                .ConfigureAwait(false);
-            if (writer is not null)
-            {
-                foreach (var window in closing.Windows)
-                {
-                    await writer.RecordBackfillWindowAsync(
-                        window.From, window.To, window.Stream, window.RowsReturned, window.Pages,
-                        (int)window.DurationMs, stopping).ConfigureAwait(false);
-                }
-            }
+            await BackfillFromStorageAsync().ConfigureAwait(false);
 
-            active = await subscriptions
+            await subscriptions
                 .StartAsync(connection.Session!, space, stopping).ConfigureAwait(false);
             state = "live";
         }

@@ -1,3 +1,5 @@
+using Gateway.Ingest;
+
 namespace Gateway.Status;
 
 /// <summary>
@@ -30,5 +32,37 @@ public static class StatusEndpoint
         ArgumentNullException.ThrowIfNull(app);
         ArgumentNullException.ThrowIfNull(snapshot);
         app.MapGet("/status", async () => Results.Json(await snapshot().ConfigureAwait(false)));
+    }
+
+    /// <summary>
+    /// §1's second and third authenticity proofs both end in the same question — is what is
+    /// stored still everything the plant produced — and that question was answerable only by
+    /// opening a psql session. `make verify-no-gaps` asks it here instead.
+    ///
+    /// The window defaults to the configured history depth: the demo asks after an outage,
+    /// and an outage that fell outside the default window would report a clean reconciliation
+    /// for a period nobody was asking about.
+    /// </summary>
+    public static void MapReconcile(
+        WebApplication app, Reconciler? reconciler, TimeSpan defaultWindow)
+    {
+        ArgumentNullException.ThrowIfNull(app);
+
+        app.MapGet("/reconcile", async (DateTime? from, DateTime? to) =>
+        {
+            if (reconciler is null)
+            {
+                // 503 rather than an empty result: "nothing to reconcile against" and
+                // "reconciled, nothing wrong" must not look the same to a demo script.
+                return Results.Problem(
+                    "no Postgres configured; there is nothing to reconcile against",
+                    statusCode: Microsoft.AspNetCore.Http.StatusCodes.Status503ServiceUnavailable);
+            }
+
+            var end = to ?? DateTime.UtcNow;
+            var start = from ?? end - defaultWindow;
+            return Results.Json(
+                await reconciler.CheckAsync(start, end).ConfigureAwait(false));
+        });
     }
 }
