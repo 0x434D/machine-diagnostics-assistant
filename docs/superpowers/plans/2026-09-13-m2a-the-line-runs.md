@@ -2343,6 +2343,33 @@ M1's `generate_history` and `run_live` move into `line.py` and become queue-driv
 **Files:**
 - Modify: `plant/simulator/src/simulator/line.py`, `historian.py`, `server.py`, `status.py`
 - Modify: `plant/simulator/tests/test_generation.py`, `test_inspection_client.py`
+- **Delete: `plant/simulator/src/simulator/station_s3.py`** — see below
+
+### The deletion this task owes
+
+Task 5 created `stations/` but was ruled to **leave `station_s3.py` in place**, so that every
+task ends with a green gate and its own reviewable commit. The cost is duplication that
+CLAUDE.md forbids as a steady state, and **this task is what pays it**. Not optional.
+
+Living in both places until this task removes the originals:
+
+| Duplicated | In `station_s3.py` | Now also in |
+|---|---|---|
+| `PartOutcome`, `ProduceFn`, `serial_for` | top of file | `stations/base.py` |
+| `_MAX_TAKT_RESAMPLES` and the takt-jitter resample loop | `_next_takt` | `Station.next_takt` |
+| The six-field event construction with its `or ""` / `or b""` fallbacks | `_emit_part` | `stations/s3_inspection.py` |
+| The forward-looking-takt convention comment | `generate_history` docstring | `Station.run_cycle` |
+
+**`inspection_client.py:13` imports `station_s3.PartOutcome` and must be repointed** to
+`stations.base.PartOutcome`. These are two distinct classes, so `mypy --strict` refuses the
+wiring the moment this task attempts it — the duplication cannot go silently wrong, only
+permanently un-deleted.
+
+**One ordering hazard to preserve while moving code.** `Station.run_cycle` reads
+`self._previous_takt` rather than being handed the takt, so `TaktTime` is the *current*
+cycle's interval only because `line.py` calls `next_takt()` **before** `run_cycle()`. Swap
+those two calls and `TaktTime` silently becomes the previous cycle's interval — a wrong
+number in the historian with no test failing.
 
 **Interfaces:**
 - Produces: `Ledger` keyed per `(station_code, signal)` rather than M1's three named fields; `run_catchup(line, clock, settings, storage) -> datetime`; `run_live(line, clock, settings, start_ts) -> None`.
