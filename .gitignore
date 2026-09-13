@@ -32,3 +32,8 @@ build/
 
 # Worktrees created by EnterWorktree for parallel lanes
 .worktrees/
+
+# Scratch volumes the measurement runners and the authenticity proofs bind-mount. Host paths
+# because Docker needs one; inside the repo so they are visible while a run is in flight.
+.authenticity-queue/
+.r1-queue/
