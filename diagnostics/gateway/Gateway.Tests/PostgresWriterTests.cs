@@ -139,11 +139,33 @@ public sealed class PostgresWriterTests : IAsyncLifetime
     }
 
     [Fact]
-    public async Task StoringMoreThanWasPulledIsNotReconciled()
+    public async Task RowsReadAndNotStoredAreNotReconciled()
     {
-        // The direction that means the ledger is wrong rather than the historian chatty: rows
-        // exist that no backfill reported returning, so the record of what was pulled is not
-        // a record of anything.
+        // R1's actual question. One page, so page boundaries explain no duplicates at all:
+        // eight rows returned and two stored is six read and lost, and the whole point of the
+        // ledger is that this cannot pass as success.
+        var window = Instant.AddHours(-1);
+        await _writer.WriteBatchAsync([SampleDataChange("TaktTime", window.AddMinutes(1), 6.0)]);
+        await _writer.WriteBatchAsync([SampleDataChange("TaktTime", window.AddMinutes(2), 6.1)]);
+        await _writer.RecordBackfillWindowAsync(
+            window, Instant, "TaktTime", rowsReturned: 8, pages: 1, durationMs: 10);
+
+        var result = await new Reconciler(_postgres.GetConnectionString())
+            .CheckAsync(window, Instant);
+
+        Assert.False(result.Reconciled);
+        Assert.Equal(6, result.Streams.Single(s => s.Stream == "TaktTime").Lost);
+    }
+
+    [Fact]
+    public async Task StoringMoreThanTheLedgerAccountsForIsStillReconciled()
+    {
+        // Replaces a test that asserted the opposite, and was wrong to. A surplus is the
+        // normal state of a running gateway: the live subscription writes rows no backfill
+        // window ever claimed, so over any window containing live ingest — which is every
+        // window a running gateway is asked about — a surplus says nothing about whether data
+        // is missing. Asserted the other way, /reconcile called a healthy gateway broken on
+        // the first real request it served.
         var window = Instant.AddHours(-1);
         await _writer.WriteBatchAsync([SampleDataChange("TaktTime", window.AddMinutes(1), 6.0)]);
         await _writer.WriteBatchAsync([SampleDataChange("TaktTime", window.AddMinutes(2), 6.1)]);
@@ -153,7 +175,28 @@ public sealed class PostgresWriterTests : IAsyncLifetime
         var result = await new Reconciler(_postgres.GetConnectionString())
             .CheckAsync(window, Instant);
 
-        Assert.False(result.Reconciled);
+        Assert.True(result.Reconciled);
+    }
+
+    [Fact]
+    public async Task DuplicatesOnePerPageBoundaryDoNotCountAsLoss()
+    {
+        // F2: the continuation point is the SourceTimestamp of the first row of the next page
+        // and the next query re-includes it, so one duplicate arrives per boundary and the
+        // upsert absorbs it. Four pages over one window is three boundaries, so three fewer
+        // rows stored than returned is exactly explained and is not loss.
+        var window = Instant.AddHours(-1);
+        await _writer.WriteBatchAsync([SampleDataChange("TaktTime", window.AddMinutes(1), 6.0)]);
+        await _writer.RecordBackfillWindowAsync(
+            window, Instant, "TaktTime", rowsReturned: 4, pages: 4, durationMs: 10);
+
+        var result = await new Reconciler(_postgres.GetConnectionString())
+            .CheckAsync(window, Instant);
+
+        var takt = result.Streams.Single(s => s.Stream == "TaktTime");
+        Assert.Equal(3, takt.ExpectedFromPageBoundaries);
+        Assert.Equal(0, takt.Lost);
+        Assert.True(result.Reconciled);
     }
 
     [Fact]

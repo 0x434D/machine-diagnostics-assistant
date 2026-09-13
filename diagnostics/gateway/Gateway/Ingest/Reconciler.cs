@@ -3,7 +3,7 @@ using Npgsql;
 namespace Gateway.Ingest;
 
 public sealed record StreamReconciliation(
-    string Stream, int RowsReturned, int RowsStored, int Pages)
+    string Stream, int RowsReturned, int RowsStored, int Pages, int Windows)
 {
     /// <summary>
     /// What the historian handed over beyond what was stored. F2: the continuation point is
@@ -13,11 +13,16 @@ public sealed record StreamReconciliation(
     public int DuplicatesAbsorbed => RowsReturned - RowsStored;
 
     /// <summary>
-    /// Duplicates expected from F2 alone: one per page boundary, and a window's final page has
-    /// no boundary after it. Reported rather than asserted — judging the margin is the
-    /// measurement runner's job, and a comparison buried here would be a threshold nobody sees.
+    /// Duplicates F2 alone explains: one per page boundary, and a window's final page has no
+    /// boundary after it.
     /// </summary>
-    public int ExpectedFromPageBoundaries(int windows) => Math.Max(0, Pages - windows);
+    public int ExpectedFromPageBoundaries => Math.Max(0, Pages - Windows);
+
+    /// <summary>
+    /// Rows the backfill reported reading that are not stored and that page boundaries do not
+    /// explain. This is the number R1 is about: read and lost, as opposed to read twice.
+    /// </summary>
+    public int Lost => Math.Max(0, DuplicatesAbsorbed - ExpectedFromPageBoundaries);
 }
 
 public sealed record ReconciliationResult(
@@ -25,11 +30,16 @@ public sealed record ReconciliationResult(
     IReadOnlyList<IngestGap> Gaps)
 {
     /// <summary>
-    /// Reconciled means every stream stored at least what the ledger says was pulled, and
-    /// nothing recorded a gap over the window. A negative margin is rows read and lost.
+    /// Nothing was read and lost, and no window is recorded as missing.
+    ///
+    /// Only the loss direction is judged. A stream storing MORE than the backfill ledger
+    /// accounts for is the normal state of a running gateway — the live subscription writes
+    /// rows that no backfill window ever claimed — so over any window that includes live
+    /// ingest, and that is every window a running gateway is asked about, a surplus carries
+    /// no information about whether data is missing. Asserting on it reported a healthy
+    /// gateway as unreconciled on the first real request this endpoint served.
     /// </summary>
-    public bool Reconciled =>
-        Gaps.Count == 0 && Streams.All(stream => stream.DuplicatesAbsorbed >= 0);
+    public bool Reconciled => Gaps.Count == 0 && Streams.All(stream => stream.Lost == 0);
 }
 
 /// <summary>A window the gateway knows it does not have (§4.4).</summary>
@@ -98,8 +108,7 @@ public sealed class Reconciler
         NpgsqlConnection connection, string signal, DateTime from, DateTime to,
         CancellationToken ct)
     {
-        var (returned, pages) = await LedgerAsync(connection, signal, from, to, ct)
-            .ConfigureAwait(false);
+        var ledger = await LedgerAsync(connection, signal, from, to, ct).ConfigureAwait(false);
 
         await using var command = new NpgsqlCommand(
             "SELECT count(*) FROM signals WHERE signal = $1 AND source_ts >= $2 AND source_ts < $3",
@@ -109,13 +118,14 @@ public sealed class Reconciler
         command.Parameters.AddWithValue(to);
         var stored = Convert.ToInt32(await command.ExecuteScalarAsync(ct).ConfigureAwait(false));
 
-        return new StreamReconciliation(signal, returned, stored, pages);
+        return new StreamReconciliation(
+            signal, ledger.Returned, stored, ledger.Pages, ledger.Windows);
     }
 
     private static async Task<StreamReconciliation> ForEventsAsync(
         NpgsqlConnection connection, DateTime from, DateTime to, CancellationToken ct)
     {
-        var (returned, pages) = await LedgerAsync(connection, "InspectionResult", from, to, ct)
+        var ledger = await LedgerAsync(connection, "InspectionResult", from, to, ct)
             .ConfigureAwait(false);
 
         await using var command = new NpgsqlCommand(
@@ -125,15 +135,16 @@ public sealed class Reconciler
         command.Parameters.AddWithValue(to);
         var stored = Convert.ToInt32(await command.ExecuteScalarAsync(ct).ConfigureAwait(false));
 
-        return new StreamReconciliation("InspectionResult", returned, stored, pages);
+        return new StreamReconciliation(
+            "InspectionResult", ledger.Returned, stored, ledger.Pages, ledger.Windows);
     }
 
-    private static async Task<(int Returned, int Pages)> LedgerAsync(
+    private static async Task<(int Returned, int Pages, int Windows)> LedgerAsync(
         NpgsqlConnection connection, string stream, DateTime from, DateTime to,
         CancellationToken ct)
     {
         await using var command = new NpgsqlCommand(
-            "SELECT coalesce(sum(rows_returned), 0), coalesce(sum(pages), 0) "
+            "SELECT coalesce(sum(rows_returned), 0), coalesce(sum(pages), 0), count(*) "
             + "FROM backfill_windows WHERE stream = $1 AND from_ts >= $2 AND to_ts <= $3",
             connection);
         command.Parameters.AddWithValue(stream);
@@ -142,6 +153,9 @@ public sealed class Reconciler
 
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
         await reader.ReadAsync(ct).ConfigureAwait(false);
-        return (Convert.ToInt32(reader.GetValue(0)), Convert.ToInt32(reader.GetValue(1)));
+        return (
+            Convert.ToInt32(reader.GetValue(0)),
+            Convert.ToInt32(reader.GetValue(1)),
+            Convert.ToInt32(reader.GetValue(2)));
     }
 }

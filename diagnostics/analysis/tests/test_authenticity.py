@@ -185,26 +185,18 @@ def test_history_read_closes_an_upstream_outage() -> None:
     """§1 row 3. Stop the plant, let it be away, start it — and the gap closes by HistoryRead
     rather than staying a hole. §4.3's one mechanism, three situations.
 
-    KNOWN FAILING, and left failing on purpose: this is a real defect in the gateway's
-    reconnect path, not a flaky test. What is established so far, over four measured runs:
+    This failed for four measured runs and was kept failing rather than weakened, which is
+    the only reason it was still here to be fixed. Everything visible pointed away from the
+    cause: the reconnect worked, the state machine moved disconnected -> waiting_for_history
+    -> backfilling in order, live data resumed, and the gap-closing backfill reported success
+    having found nothing to close. It found nothing because HistoryBackfill was handed an
+    ISession at construction and kept it, while a reconnect against a restarted plant must
+    build a new session and dispose the old — so it was reading a disposed object, which
+    returns nothing and raises nothing (979bc49).
 
-      - The reconnect itself works. State moves disconnected -> waiting_for_history ->
-        backfilling, so keep-alive detection, the reconnect handler and the phase read are
-        all sound.
-      - Live data resumes: rows keep arriving at takt rate afterwards.
-      - It never reaches "live" again. Backfill reports progress 1 and records no new
-        windows, so the gap-closing pass finds nothing to close.
-      - The cause of *that* is understood: a restarting plant republishes its whole catch-up,
-        and the subscription delivered ~84,000 rows through the live path while Clock.Phase
-        still read "catchup", which moved max(source_ts) to now. Backfill then correctly
-        concluded there was no gap. TransferSubscriptionsOnReconnect is now false and every
-        subscription is torn down before the phase wait, which should have closed it and did
-        not — so something still publishes across the reconnect, or the state is reset by a
-        later pass.
-
-    Not weakened to pass, and not deleted. Everything else in this milestone was found by a
-    check that ran in the path that decided; this is one that does, and it is telling us
-    something true.
+    Note the timings. The plant rebuilds 33 h of history at ~750x on restart, so the gateway
+    correctly sits in waiting_for_history for ~160 s before it may read any of it; the 420 s
+    allowed here is that plus backfill plus margin, not padding.
     """
     _sh("docker", "stop", PLANT_CONTAINER)
     time.sleep(90)

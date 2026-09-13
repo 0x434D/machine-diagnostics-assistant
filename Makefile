@@ -58,11 +58,18 @@ BUILD_DIR := build
 # is whatever this branch adds on top of main.
 COMMIT_RANGE ?= main..HEAD
 
-# pytest exits 5 when it collects no tests. inspection, analysis and agent have none until
-# Tasks 5, 12 and 13, and "no tests yet" must not read as a failing gate. Only 5 is forgiven —
-# every other non-zero status still fails.
+# Strict: every package has tests now, so "collected nothing" is a package whose tests stopped
+# being found, which must fail rather than read as a pass.
 define pytest-package
-	cd $(1) && uv run --frozen --package $(2) pytest $(2)/tests -q; \
+	cd $(1) && uv run --frozen --package $(2) pytest $(2)/tests -q
+endef
+
+# The same, for a marker. Here exit 5 IS forgiven and stays forgiven: a package with no
+# authenticity-marked test has nothing to prove, not a broken suite, and `make verify` failing
+# on the plant's empty selection is why it had never once run through to the proofs that do
+# exist — which is a worse failure than the one the strictness was guarding against.
+define pytest-marked
+	cd $(1) && uv run --frozen --package $(2) pytest $(2)/tests -q -m $(3); \
 	  status=$$?; [ $$status -eq 0 ] || [ $$status -eq 5 ]
 endef
 
@@ -261,8 +268,8 @@ check: lint test
 # Separate from `check` on purpose: the authenticity proofs stop and restart containers, and a
 # gate slow enough to skip is not a gate. Task 15 registers the `authenticity` marker.
 verify:
-	cd plant && uv run --frozen --package simulator pytest simulator/tests -q -m authenticity
-	cd diagnostics && uv run --frozen --package analysis pytest analysis/tests -q -m authenticity
+	$(call pytest-marked,plant,simulator,authenticity)
+	$(call pytest-marked,diagnostics,analysis,authenticity)
 
 # --- the rest of the pipeline (handbook §9) -----------------------------------------------
 
