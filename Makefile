@@ -1,5 +1,6 @@
 SHELL := /bin/bash
 .PHONY: preflight lock-check fmt lint test check verify ci ci-scheduled contract m1-report \
+        m2a-r5 \
         m1-demo browse ask verify-no-gaps \
         lint-python test-python check-python \
         lint-dotnet test-dotnet check-dotnet audit-dotnet \
@@ -247,6 +248,12 @@ verify-no-gaps:
 # cannot pass silently.
 m1-report:
 	cd plant && uv run --frozen --package simulator python $(CURDIR)/measurements/report.py
+
+# R5: the one number M1's results cannot predict -- historian throughput at M2's stream
+# count. Run before Task 2, not after the line is built, so a bad number changes the
+# design rather than the excuses.
+m2a-r5:
+	cd plant && uv run --frozen --package simulator python $(CURDIR)/measurements/run_r5.py
 
 contract:
 	cd diagnostics && uv run --frozen --package analysis python $(CURDIR)/scripts/generate-contract.py
