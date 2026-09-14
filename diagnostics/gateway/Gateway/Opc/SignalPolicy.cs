@@ -27,9 +27,10 @@ public sealed record SignalRule(bool Subscribe, double? Deadband, int PageSize);
 public sealed class SignalPolicy
 {
     /// <summary>
-    /// Used when neither the signal nor <c>defaults</c> names one. Equal to
-    /// <see cref="GatewayOptions.HistoryPageSize"/>'s default, because it is the same number
-    /// about the same reads.
+    /// Used when neither the signal nor <c>defaults</c> names one. This is the only place a
+    /// variable stream's page size comes from — the backfill asks the policy per signal, so a
+    /// signal the file does not name is still paged at a stated number rather than at one the
+    /// reader carries privately.
     /// </summary>
     public const int DefaultPageSize = 1_000;
 

@@ -116,7 +116,9 @@ var ingest = Task.Run(
         // subscription opened before the plant finishes catching up delivers its history
         // through the live path at ~100 events/second, which is the thing §4.3 exists to
         // avoid. Backfill closes exactly the gap this gateway has.
-        var history = new HistoryBackfill(() => connection.Session!, space, EnqueueAsync, options);
+        var history = new HistoryBackfill(
+            HistoryBackfill.Through(() => connection.Session!), space, signalPolicy, EnqueueAsync,
+            options);
         backfill = history;
 
         // One backfill for all three of §4.3's situations — first boot, a downstream outage
@@ -146,8 +148,10 @@ var ingest = Task.Run(
             state = "backfilling";
             var report = await history.RunAsync(from, to, stopping).ConfigureAwait(false);
 
-            // R1's ledger. Written from the backfill's own report rather than recomputed, so
-            // the two cannot disagree about what was pulled.
+            // R1's ledger, one row per stream per window. Written from the backfill's own
+            // report rather than recomputed, so the two cannot disagree about what was pulled
+            // — and per stream because an aggregate across 25 of them cannot say which one
+            // came back short, which is the only thing the ledger is for.
             if (writer is not null)
             {
                 foreach (var window in report.Windows)

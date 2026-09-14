@@ -125,17 +125,18 @@ public sealed class SignalPolicyTests
     }
 
     [Fact]
-    public void PageSizeFallsBackToTheDefaultAndTheDefaultMatchesTheHistoryReader()
+    public void PageSizeFallsBackToTheDefaultAndTheShippedFileStatesIt()
     {
-        // Task 10 reads history at SignalRule.PageSize. The shipped default has to equal
-        // GatewayOptions.HistoryPageSize, or the same read is paged two different ways
-        // depending on whether the signal happens to be named.
+        // The backfill reads every variable stream at SignalRule.PageSize and nowhere else, so
+        // a signal the file names and one it has never heard of must be paged the same way --
+        // otherwise "an unknown signal is subscribed" would still lose it to a page size
+        // nobody stated.
         var policy = SignalPolicy.Parse(RealJson);
         Assert.Equal(
-            GatewayOptions.Default().HistoryPageSize,
+            SignalPolicy.DefaultPageSize,
             policy.For("TaktTime", BuiltInType.Double).PageSize);
         Assert.Equal(
-            GatewayOptions.Default().HistoryPageSize,
+            SignalPolicy.DefaultPageSize,
             policy.For("NobodyPlannedThisEither", BuiltInType.Double).PageSize);
     }
 

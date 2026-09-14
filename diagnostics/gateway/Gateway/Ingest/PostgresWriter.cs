@@ -17,9 +17,9 @@ public sealed class PostgresWriter
     /// The signal names that are not numbers. §5.2 gives each of them its own table because
     /// signals.value is DOUBLE PRECISION and a buffer level belongs to a buffer.
     /// </summary>
-    private const string StateSignal = "State";
-    private const string StateReasonSignal = "StateReason";
-    private const string BufferLevelSignal = "Level";
+    internal const string StateSignal = "State";
+    internal const string StateReasonSignal = "StateReason";
+    internal const string BufferLevelSignal = "Level";
 
     // Ordered, and applied in this order: 002 references stations, which 001 creates. Every
     // statement in both is IF NOT EXISTS, so applying them to an existing database is a no-op.

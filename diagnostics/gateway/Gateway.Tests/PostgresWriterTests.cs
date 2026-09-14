@@ -126,11 +126,11 @@ public sealed class PostgresWriterTests : IAsyncLifetime
 
         // Three returned, two stored: the third was the duplicate a page boundary re-included.
         await _writer.RecordBackfillWindowAsync(
-            window, Instant, "TaktTime", rowsReturned: 3, pages: 2, durationMs: 10);
+            window, Instant, "S3.TaktTime", rowsReturned: 3, pages: 2, durationMs: 10);
 
         var result = await new Reconciler(_postgres.GetConnectionString())
             .CheckAsync(window, Instant);
-        var takt = result.Streams.Single(s => s.Stream == "TaktTime");
+        var takt = result.Streams.Single(s => s.Stream == "S3.TaktTime");
 
         Assert.Equal(3, takt.RowsReturned);
         Assert.Equal(2, takt.RowsStored);
@@ -148,13 +148,13 @@ public sealed class PostgresWriterTests : IAsyncLifetime
         await _writer.WriteBatchAsync([SampleDataChange("TaktTime", window.AddMinutes(1), 6.0)]);
         await _writer.WriteBatchAsync([SampleDataChange("TaktTime", window.AddMinutes(2), 6.1)]);
         await _writer.RecordBackfillWindowAsync(
-            window, Instant, "TaktTime", rowsReturned: 8, pages: 1, durationMs: 10);
+            window, Instant, "S3.TaktTime", rowsReturned: 8, pages: 1, durationMs: 10);
 
         var result = await new Reconciler(_postgres.GetConnectionString())
             .CheckAsync(window, Instant);
 
         Assert.False(result.Reconciled);
-        Assert.Equal(6, result.Streams.Single(s => s.Stream == "TaktTime").Lost);
+        Assert.Equal(6, result.Streams.Single(s => s.Stream == "S3.TaktTime").Lost);
     }
 
     [Fact]
@@ -170,7 +170,7 @@ public sealed class PostgresWriterTests : IAsyncLifetime
         await _writer.WriteBatchAsync([SampleDataChange("TaktTime", window.AddMinutes(1), 6.0)]);
         await _writer.WriteBatchAsync([SampleDataChange("TaktTime", window.AddMinutes(2), 6.1)]);
         await _writer.RecordBackfillWindowAsync(
-            window, Instant, "TaktTime", rowsReturned: 1, pages: 1, durationMs: 10);
+            window, Instant, "S3.TaktTime", rowsReturned: 1, pages: 1, durationMs: 10);
 
         var result = await new Reconciler(_postgres.GetConnectionString())
             .CheckAsync(window, Instant);
@@ -188,14 +188,128 @@ public sealed class PostgresWriterTests : IAsyncLifetime
         var window = Instant.AddHours(-1);
         await _writer.WriteBatchAsync([SampleDataChange("TaktTime", window.AddMinutes(1), 6.0)]);
         await _writer.RecordBackfillWindowAsync(
-            window, Instant, "TaktTime", rowsReturned: 4, pages: 4, durationMs: 10);
+            window, Instant, "S3.TaktTime", rowsReturned: 4, pages: 4, durationMs: 10);
 
         var result = await new Reconciler(_postgres.GetConnectionString())
             .CheckAsync(window, Instant);
 
-        var takt = result.Streams.Single(s => s.Stream == "TaktTime");
+        var takt = result.Streams.Single(s => s.Stream == "S3.TaktTime");
         Assert.Equal(3, takt.ExpectedFromPageBoundaries);
         Assert.Equal(0, takt.Lost);
+        Assert.True(result.Reconciled);
+    }
+
+    [Fact]
+    public async Task EveryStreamGetsItsOwnReconciliationRow()
+    {
+        // R1's ledger is per stream. One aggregate row across 25 streams cannot say which one
+        // came back short, which is the only thing the ledger is for.
+        foreach (var stream in new[] { "S2.TaktTime", "S2.JoiningForcePeak" })
+        {
+            await _writer.RecordBackfillWindowAsync(
+                Instant, Instant.AddHours(1), stream, rowsReturned: 600, pages: 1, durationMs: 12);
+        }
+
+        var rows = await QueryAsync(
+            "SELECT stream, rows_returned FROM backfill_windows ORDER BY stream");
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal("S2.JoiningForcePeak", rows[0]["stream"]);
+        Assert.Equal("S2.TaktTime", rows[1]["stream"]);
+    }
+
+    [Fact]
+    public async Task TwoStationsOneSignalAndOneWindowAreTwoLedgerRows()
+    {
+        // The defect the qualifier exists for: backfill_windows is UNIQUE (from_ts, to_ts,
+        // stream) and the write upserts on it, so four stations recording a bare "TaktTime"
+        // over the same window leave one row holding the last station's numbers — and the
+        // reconciliation then reports that station's count for all four. Station CODE, not
+        // browse name: two identifiers for one station means two rows for one station.
+        foreach (var station in new[] { "S1", "S2", "S3", "S4" })
+        {
+            await _writer.RecordBackfillWindowAsync(
+                Instant, Instant.AddHours(1), $"{station}.TaktTime",
+                rowsReturned: 600, pages: 1, durationMs: 12);
+        }
+
+        Assert.Equal(4, await CountAsync("backfill_windows"));
+    }
+
+    [Fact]
+    public async Task AStreamTheLedgerCannotAttributeToAnOwnerIsRefused()
+    {
+        // An unqualified row predates the qualifier and could belong to any of four stations.
+        // Counted against one of them it would report a loss or a surplus that is an artefact
+        // of the guess, so /reconcile fails loudly instead of answering.
+        await _writer.RecordBackfillWindowAsync(
+            Instant, Instant.AddHours(1), "TaktTime", rowsReturned: 600, pages: 1, durationMs: 12);
+
+        var reconciler = new Reconciler(_postgres.GetConnectionString());
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => reconciler.CheckAsync(Instant, Instant.AddHours(1)));
+
+        Assert.Contains("TaktTime", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task EveryKindOfStreamIsReconciledAgainstTheTableItsRowsWentInto()
+    {
+        // A signal, a buffer level and an inspection event land in three different tables, and
+        // a stream counted against the wrong one reconciles against nothing at all.
+        await SeedTopologyAsync();
+        var window = Instant.AddHours(-1);
+
+        await _writer.WriteBatchAsync([
+            SampleDataChange("TaktTime", window.AddMinutes(1), 6.0),
+            SampleBufferLevel("B1_2", window.AddMinutes(1), 3),
+            SampleEvent("A-1", reject: false, image: null),
+        ]);
+
+        foreach (var stream in new[] { "S3.TaktTime", "B1_2.Level", "S3.InspectionResult" })
+        {
+            await _writer.RecordBackfillWindowAsync(
+                window, Instant, stream, rowsReturned: 1, pages: 1, durationMs: 10);
+        }
+
+        // Past Instant, because SampleEvent is stamped on it and the window is half-open.
+        var result = await new Reconciler(_postgres.GetConnectionString())
+            .CheckAsync(window, Instant.AddMinutes(1));
+
+        Assert.Equal(3, result.Streams.Count);
+        Assert.All(result.Streams, stream => Assert.Equal(1, stream.RowsStored));
+        Assert.True(result.Reconciled);
+    }
+
+    [Fact]
+    public async Task AnUnsuspendCarriesNoReasonAndIsNotALostStateReasonRow()
+    {
+        // A StateReason value is not a row of its own: it is a column on the row its paired
+        // State keys. The empty string a station publishes when it stops being suspended is
+        // deliberately stored as the NULL that already says so, and counting only the rows
+        // carrying text would report every unsuspend in the history as read and lost.
+        await SeedTopologyAsync();
+        var window = Instant.AddHours(-1);
+        var suspended = window.AddMinutes(1);
+        var running = window.AddMinutes(2);
+
+        await _writer.WriteBatchAsync([
+            SampleDataChange("S2", "State", suspended, "Suspended"),
+            SampleDataChange("S2", "StateReason", suspended, "starved:B1_2"),
+            SampleDataChange("S2", "State", running, "Execute"),
+            SampleDataChange("S2", "StateReason", running, ""),
+        ]);
+
+        await _writer.RecordBackfillWindowAsync(
+            window, Instant, "S2.State", rowsReturned: 2, pages: 1, durationMs: 10);
+        await _writer.RecordBackfillWindowAsync(
+            window, Instant, "S2.StateReason", rowsReturned: 2, pages: 1, durationMs: 10);
+
+        var result = await new Reconciler(_postgres.GetConnectionString())
+            .CheckAsync(window, Instant);
+
+        Assert.Equal(2, result.Streams.Single(s => s.Stream == "S2.State").RowsStored);
+        Assert.Equal(2, result.Streams.Single(s => s.Stream == "S2.StateReason").RowsStored);
         Assert.True(result.Reconciled);
     }
 

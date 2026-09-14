@@ -41,9 +41,18 @@ public sealed partial class Subscriptions
         "Time", "AssemblySerial", "Disposition", "DefectClass", "Confidence", "ModelVersion", "Image",
     ];
 
+    /// <summary>
+    /// How S3's event stream is named, in the subscription and in the backfill ledger alike.
+    /// Not a variable in the address space — event history hangs off the emitting station
+    /// node itself — so this names the event type rather than a signal.
+    /// </summary>
+    public const string EventStream = "InspectionResult";
+
+    /// <summary>The one historised variable a buffer has, and the one signal name that
+    /// routes to a buffer rather than to a station.</summary>
+    public const string BufferLevelSignal = "Level";
+
     private const string ImageField = "Image";
-    private const string EventStream = "InspectionResult";
-    private const string BufferLevelSignal = "Level";
 
     private readonly GatewayOptions _options;
     private readonly SignalPolicy _policy;

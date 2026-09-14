@@ -62,10 +62,12 @@ public sealed record GatewayOptions
     /// the 10,000 ceiling F1 measured, so a window can never silently truncate.
     /// </summary>
     public TimeSpan BackfillWindow { get; init; } = TimeSpan.FromHours(1);
-    public int HistoryPageSize { get; init; } = 1_000;
 
     /// <summary>
     /// The event stream needs its own, far smaller page because its rows carry images.
+    /// It is the only page size that is not a signal's: every variable stream is paged at
+    /// <see cref="SignalPolicy"/>'s <c>page_size</c>, because a page size that lived here as
+    /// well would be a second mechanism for one number, free to disagree with the mounted file.
     /// R4 measured a reject image at up to 110,486 B, so a worst-case page of 25 all-reject
     /// events is ~2.7 MB against the 4 MiB response limit. At the plan's shared page size of
     /// 1,000 the response exceeds that limit and the read fails as BadEncodingLimitsExceeded
@@ -143,7 +145,6 @@ public sealed record GatewayOptions
             HistoryEventPageSize = ReadInt(environment, "GATEWAY_HISTORY_EVENT_PAGE_SIZE", 25),
             HistoryDepth = TimeSpan.FromHours(
                 ReadInt(environment, "GATEWAY_HISTORY_DEPTH_HOURS", 33)),
-            HistoryPageSize = ReadInt(environment, "GATEWAY_HISTORY_PAGE_SIZE", 1_000),
             MaxByteStringLength = ReadInt(
                 environment, "GATEWAY_MAX_BYTE_STRING_LENGTH", DefaultMaxByteStringLength),
             MaxMessageSize = ReadInt(
