@@ -77,6 +77,22 @@ const HELD_S2: LineSnapshot = {
       downstream_browse_name: "S4_Outfeed",
     },
   ],
+  parts: [
+    {
+      serial: "A-00000412",
+      at: "2026-09-13T06:09:54+00:00",
+      disposition: "reject",
+      reason: "gap",
+      image_url: "/parts/A-00000412/image",
+    },
+    {
+      serial: "A-00000411",
+      at: "2026-09-13T06:09:48+00:00",
+      disposition: "good",
+      reason: "",
+      image_url: null,
+    },
+  ],
 };
 
 function tileFor(browseName: string): HTMLElement {

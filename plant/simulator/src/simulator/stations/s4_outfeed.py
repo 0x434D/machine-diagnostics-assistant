@@ -7,8 +7,14 @@ from typing import ClassVar, override
 
 from simulator.carriers import Carrier
 from simulator.config import Settings
+from simulator.events import PART_COMPLETED
 from simulator.line import PartState
-from simulator.stations.base import Station, StationNodes, clamp_level
+from simulator.stations.base import (
+    Station,
+    StationNodes,
+    clamp_level,
+    require_assembly,
+)
 
 
 class OutfeedStation(Station):
@@ -23,6 +29,10 @@ class OutfeedStation(Station):
 
     @override
     async def on_part(self, at: datetime, carrier: Carrier, part: PartState) -> None:
+        # Identity is held to the same standard as the disposition, and checked first:
+        # a part nobody can name cannot be reported as completed, and §14's traceability
+        # line ends at this event.
+        assembly = require_assembly(part, carrier, self.code)
         if part.disposition is None:
             raise ValueError(
                 f"part on carrier {carrier.carrier_id} reached S4 with no disposition: "
@@ -37,6 +47,17 @@ class OutfeedStation(Station):
         await self._nodes.write("GoodCount", at, self._good)
         await self._nodes.write("RejectCount", at, self._reject)
         await self._nodes.write("OutfeedFill", at, self._outfeed_level())
+        # §5.2's `part_dispositions` row: how the part left the line, and why. The
+        # reason is S3's verdict carried on the part, not re-derived here.
+        await self._nodes.trigger_event(
+            PART_COMPLETED,
+            at,
+            {
+                "AssemblySerial": assembly.serial,
+                "Disposition": part.disposition,
+                "Reason": part.reason,
+            },
+        )
 
     def _outfeed_level(self) -> float:
         """Fills as parts arrive, emptied when an operator clears it. M2c's scenario 2

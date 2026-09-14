@@ -14,6 +14,15 @@ export interface paths {
         /**
          * Inspection Stats
          * @description Counts over a closed window, with the gaps that make them incomplete.
+         *
+         *     **The breakdown reads §3.4's score vector, not a scalar class.** It grouped by
+         *     `inspection_results.defect_class` until M2b Task 7, and by then nothing filled that
+         *     column: the plant sends `DefectClasses`, the gateway's select clause named the old
+         *     scalar, asyncua maps a select clause it cannot resolve to `Variant(None)` rather than
+         *     erroring, the writer resolves that to `DBNull`, and `defect_class IS NOT NULL` then
+         *     emptied the group-by. No exception and no 500 — `by_defect_class: []` beside a correct
+         *     `total` and `rejects`, which is a silently empty answer to "which defects are we
+         *     seeing" and the exact failure §1 exists to prevent.
          */
         get: operations["inspectionStats"];
         put?: never;
@@ -33,12 +42,20 @@ export interface paths {
         };
         /**
          * Get Part
-         * @description Reads the per-part record directly.
+         * @description §14's trace: genealogy, what each station recorded, the verdict and the disposition.
          *
-         *     §3.4a: that record is authoritative for the part and is never reconstructed by joining
-         *     the time series on "which part was at S3 at 02:14:07" — with buffers, variable takt and
-         *     history gaps that association is an inference, and inferred traceability is what makes a
-         *     containment list unusable at the moment it matters. There is no time-range join here.
+         *     **Every statement below is keyed by the serial and nothing else.** §3.4a: the per-part
+         *     record is authoritative for the part and is never reconstructed by joining the time
+         *     series on "which part was at S2 at 02:14:07" — with buffers, variable takt and history
+         *     gaps that association is an inference, and inferred traceability is what makes a
+         *     containment list unusable at the moment it matters. There is no time range anywhere in
+         *     this function, and `tests/test_traceability.py` is what fails if one appears.
+         *
+         *     "Station history" here is what happened to the part at each station — S1's creation
+         *     instant, S2's press record, S3's verdict, S4's disposition — and not
+         *     `part_station_events`, which §5.2 says has no source: no event the plant publishes
+         *     carries a station entry or exit instant, and writing the *processing* instant into
+         *     `entered_at` would be exactly the quiet wrong answer this system refuses.
          */
         get: operations["getPart"];
         put?: never;
@@ -74,6 +91,30 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * ComponentOrigin
+         * @description One as-built component of an assembly, and the supplier lot it was drawn from.
+         *
+         *     Everything but the serial and the position is nullable, and null means **unknown**, not
+         *     absent: a component named by an assembly whose own read event lies before the gateway's
+         *     history horizon is one this system knows exists and knows nothing else about. Dropping
+         *     such a component would make §3.5 scenario 7's containment list quietly short, which is
+         *     the one failure mode that matters at the moment a containment list is wanted.
+         */
+        ComponentOrigin: {
+            /** Component Serial */
+            component_serial: string;
+            /** Lane */
+            lane: number | null;
+            /** Lot Code */
+            lot_code: string | null;
+            /** Position */
+            position: number;
+            /** Read At */
+            read_at: string | null;
+            /** Supplier */
+            supplier: string | null;
+        };
+        /**
          * Coverage
          * @description §4.4: without gap markers, missing data is indistinguishable from a quiet machine.
          */
@@ -81,14 +122,39 @@ export interface components {
             /** Gaps */
             gaps: components["schemas"]["Gap"][];
         };
-        /** DefectClassCount */
+        /**
+         * DefectClassCount
+         * @description One class, and how many parts in the window scored at or above the threshold.
+         *
+         *     Not a partition of the rejects: §3.4's six scores are independent and do not sum to 1,
+         *     so a part the model believes carries two defects counts under both. The counts can
+         *     therefore total more than `rejects`, and that is the answer rather than a rounding of it.
+         */
         DefectClassCount: {
             /** Count */
             count: number;
             /** Defect Class */
             defect_class: string;
         };
-        /** Gap */
+        /**
+         * Disposition
+         * @description How the part left the line, and why. Absent while the part is still on it.
+         */
+        Disposition: {
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** Disposition */
+            disposition: string;
+            /** Reason */
+            reason: string | null;
+        };
+        /**
+         * Gap
+         * @description §4.4: without gap markers, missing data is indistinguishable from a quiet machine.
+         */
         Gap: {
             /**
              * From Ts
@@ -108,27 +174,26 @@ export interface components {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
         };
-        /** InspectionStats */
-        InspectionStats: {
-            /** By Defect Class */
-            by_defect_class: components["schemas"]["DefectClassCount"][];
-            coverage: components["schemas"]["Coverage"];
-            /** Rejects */
-            rejects: number;
-            /** Sample Serials */
-            sample_serials: string[];
-            /** Total */
-            total: number;
-            window: components["schemas"]["Window"];
-        };
-        /** Part */
-        Part: {
-            /** Assembly Serial */
-            assembly_serial: string;
+        /**
+         * Inspection
+         * @description §3.4's verdict for this part, or absent if the part has not been inspected.
+         *
+         *     `defect_classes` and `confidences` are parallel arrays over **every** class the
+         *     classifier scores, on good parts too — a good part is six low scores, not an absent
+         *     vector. `confidence` is the confidence in the OK/NOK verdict and is not one of them;
+         *     reading the vector as a distribution is the measured defect that once reported a good
+         *     part as 27 % confident and ~30 % misaligned.
+         *
+         *     Both arrays are nullable because M1 wrote rows before the vector existed. Null is
+         *     "this row predates the widened event", not "this part scored nothing".
+         */
+        Inspection: {
             /** Confidence */
             confidence: number | null;
-            /** Defect Class */
-            defect_class: string | null;
+            /** Confidences */
+            confidences: number[] | null;
+            /** Defect Classes */
+            defect_classes: string[] | null;
             /** Image Url */
             image_url: string | null;
             /** Model Version */
@@ -142,6 +207,90 @@ export interface components {
             source_ts: string;
             /** Station */
             station: string;
+        };
+        /**
+         * InspectionStats
+         * @description Counts over a window, with everything needed to tell a real answer from an empty one.
+         *
+         *     `by_defect_class` and `rejects_without_class` together account for every reject, and
+         *     neither is readable without the other. They do not sum to `rejects` — a part scoring
+         *     high on two classes appears twice in the breakdown — but `rejects_without_class` is
+         *     exactly the part of `rejects` the breakdown cannot explain, so an empty breakdown beside
+         *     a non-zero `rejects` now says *which* it is: 30 rejects and 30 unclassified is a
+         *     measurement, and 30 rejects and 0 unclassified with an empty breakdown is impossible.
+         */
+        InspectionStats: {
+            /** By Defect Class */
+            by_defect_class: components["schemas"]["DefectClassCount"][];
+            coverage: components["schemas"]["Coverage"];
+            /** Defect Class Threshold */
+            defect_class_threshold: number;
+            /** Rejects */
+            rejects: number;
+            /** Rejects Without Class */
+            rejects_without_class: number;
+            /** Sample Serials */
+            sample_serials: string[];
+            /** Total */
+            total: number;
+            window: components["schemas"]["Window"];
+        };
+        /**
+         * Part
+         * @description §14's end-to-end trace of one serial, every section read by that serial alone.
+         *
+         *     A section that is empty or null is a section this system has no row for, and the part
+         *     is answered anyway. The two shapes that produces are both ordinary rather than
+         *     exceptional: a part between S2 and S3 has no verdict yet, and an assembly created
+         *     before the gateway's history horizon has no creation instant, no carrier and no
+         *     genealogy, because the one event carrying all three arrived before the gateway did.
+         */
+        Part: {
+            /** Assembly Serial */
+            assembly_serial: string;
+            /** Carrier Id */
+            carrier_id: number | null;
+            /** Created At */
+            created_at: string | null;
+            disposition: components["schemas"]["Disposition"] | null;
+            /** Genealogy */
+            genealogy: components["schemas"]["ComponentOrigin"][];
+            inspection: components["schemas"]["Inspection"] | null;
+            /** Process Curves */
+            process_curves: components["schemas"]["ProcessCurve"][];
+            /** Process Values */
+            process_values: components["schemas"]["ProcessValue"][];
+        };
+        /**
+         * ProcessCurve
+         * @description D6's force–distance curve for this part, as the samples the press recorded.
+         *
+         *     The thing the two scalars cannot reconstruct: two presses reach the same peak at the
+         *     same final position by different routes, and the route is the diagnosis (§3.4a).
+         */
+        ProcessCurve: {
+            /** Samples */
+            samples: number[];
+            /** Signal */
+            signal: string;
+            /** Station */
+            station: string;
+        };
+        /**
+         * ProcessValue
+         * @description One number a station recorded against this serial at the instant of production.
+         *
+         *     The signal is the name the plant's own event carries (`PeakForce`), which is not
+         *     always the name of the historised stream beside it (`JoiningForcePeak`). Nothing
+         *     between the plant and here translates the two, so nothing can translate them wrongly.
+         */
+        ProcessValue: {
+            /** Signal */
+            signal: string;
+            /** Station */
+            station: string;
+            /** Value */
+            value: number;
         };
         /** ValidationError */
         ValidationError: {

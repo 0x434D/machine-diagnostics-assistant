@@ -226,7 +226,33 @@ async def _compose(
         )
     ]
 
-    if isinstance(classes, list) and classes:
+    # §3.4's six scores are independent and do not sum to 1, so the breakdown is not a
+    # partition of the rejects: a part the model believes carries two defects is counted
+    # under both, and a reject no class reached the threshold for is counted under none.
+    # Emitting the counts alone as `basis: "measured"` states a number under a semantics
+    # the reader is never given -- so the threshold and the remainder travel with them, and
+    # the remainder is what makes an empty breakdown readable rather than silent.
+    # Not defaulted the way the counts above are: a count has a true zero and a threshold
+    # does not, so `stats.get(k, 0)` here would put a threshold this service never counted
+    # at into a sentence marked `basis: "measured"`. Absent, the two findings below have no
+    # statable semantics at all, so they are withheld and the withholding is said out loud.
+    # `bool` is a subclass of `int`, so an unguarded isinstance would let `True` through and
+    # render it as the threshold the counts were taken at.
+    raw_threshold = stats.get("defect_class_threshold")
+    threshold = (
+        raw_threshold
+        if isinstance(raw_threshold, int | float)
+        and not isinstance(raw_threshold, bool)
+        else None
+    )
+    unaccounted = int(str(stats.get("rejects_without_class", 0)))
+    if threshold is None:
+        if classes or unaccounted:
+            caveats.append(
+                "The analysis service did not say which score threshold its defect "
+                "breakdown counted at, so the breakdown is not reported."
+            )
+    elif isinstance(classes, list) and classes:
         breakdown = ", ".join(
             f"{entry['defect_class']} {entry['count']}"
             for entry in classes
@@ -234,7 +260,22 @@ async def _compose(
         )
         findings.append(
             Finding(
-                statement=f"By defect class: {breakdown}.",
+                statement=(
+                    f"By defect class, counting every class scoring {threshold} or above "
+                    f"— so a part with two defects is counted twice: {breakdown}."
+                ),
+                basis="measured",
+                citations=[],
+            )
+        )
+
+    if threshold is not None and unaccounted:
+        findings.append(
+            Finding(
+                statement=(
+                    f"{unaccounted} of those {rejects} rejects had no class scoring "
+                    f"{threshold} or above, so the breakdown does not explain them."
+                ),
                 basis="measured",
                 citations=[],
             )

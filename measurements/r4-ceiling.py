@@ -36,6 +36,8 @@ from asyncua import Client, Server, ua
 from asyncua.common.events import Event
 from simulator.address_space import build_address_space
 from simulator.config import Settings
+from simulator.events import INSPECTION_RESULT
+from simulator.inspection_client import DEFECT_CLASSES
 from simulator.render import render_part
 
 OUTPUT = Path(__file__).parent / "r4-ceiling.json"
@@ -144,7 +146,10 @@ async def probe_one(multiple: int, image: bytes, width: int, height: int) -> Run
     await server.init()
     server.set_endpoint("opc.tcp://127.0.0.1:0/ceiling")
     idx = await server.register_namespace("http://machine-agent/plant")
-    space = await build_address_space(server, idx, Settings().buffer_capacity)
+    settings = Settings()
+    space = await build_address_space(
+        server, idx, settings.buffer_capacity, settings.joining_distance_nominal
+    )
 
     capture = _StatusCodeCapture()
     asyncua_logger = logging.getLogger("asyncua")
@@ -160,17 +165,21 @@ async def probe_one(multiple: int, image: bytes, width: int, height: int) -> Run
             async with client:
                 catcher = _EventCatcher()
                 sub = await client.create_subscription(100, catcher)
-                await sub.subscribe_events(space.inspection.node, [space.event_type])
+                await sub.subscribe_events(
+                    space.inspection.node, [space.event_types[INSPECTION_RESULT.name]]
+                )
                 # One publish cycle's worth of settling before triggering: a
                 # subscription whose first publish interval hasn't elapsed yet can
                 # miss an event raised immediately after subscribe_events returns.
                 await asyncio.sleep(0.1)
 
-                event_gen = space.inspection.require_event_generator()
+                event_gen = space.inspection.generators[INSPECTION_RESULT.name]
                 ev = event_gen.event
                 ev.AssemblySerial = PART_ID
+                ev.CarrierId = 1
                 ev.Disposition = "reject"
-                ev.DefectClass = DEFECT
+                ev.DefectClasses = list(DEFECT_CLASSES)
+                ev.Confidences = [0.8 if c == DEFECT else 0.05 for c in DEFECT_CLASSES]
                 ev.Confidence = 0.5
                 ev.ModelVersion = "r4-ceiling-probe"
                 ev.Image = image

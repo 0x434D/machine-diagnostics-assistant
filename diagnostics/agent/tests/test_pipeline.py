@@ -10,7 +10,7 @@ from agent.pipeline import Progress, resolve_window, run, stream
 from agent.providers_scripted import DISCLOSURE, ScriptedProvider
 from agent.tools import AnalysisClient
 
-from .fakes import FakeAnalysis
+from .fakes import FakeAnalysis, stats
 
 NOW = datetime(2026, 9, 12, 14, 30, tzinfo=UTC)
 
@@ -100,6 +100,117 @@ async def test_an_answer_reports_real_counts_and_cites_a_real_serial(
     assert "30" in answer.answer_markdown
     assert answer.findings[0].citations[0].id == "A-00000007"
     assert all(finding.basis == "measured" for finding in answer.findings)
+
+
+async def test_the_defect_breakdown_carries_the_semantics_it_was_counted_under(
+    fake_analysis: FakeAnalysis,
+) -> None:
+    """A count stated as `basis: "measured"` under a rule the reader is not given is a
+    number that will be read as something else.
+
+    §3.4's six scores are independent and do not sum to 1, so the breakdown is not a
+    partition of the rejects — a part with two defects is counted twice. The threshold it
+    was counted at is in the response for exactly this reason, and dropping it here would
+    put the endpoint's one consumer back where the endpoint was.
+    """
+    answer = await run(
+        "how many rejects in the last hour?",
+        "s1",
+        settings=Settings(),
+        analysis=_client(fake_analysis),
+        provider=ScriptedProvider(),
+        now=NOW,
+    )
+
+    breakdown = next(f for f in answer.findings if "defect class" in f.statement)
+    assert "0.5 or above" in breakdown.statement
+    assert "counted twice" in breakdown.statement
+
+
+async def test_a_breakdown_with_no_threshold_is_withheld_rather_than_stated() -> None:
+    """The threshold is the semantics, not a decoration on it.
+
+    Read with `stats.get(key)` and no default, an absent key reached the reader as
+    "counting every class scoring None or above", marked `basis: "measured"` — a sentence
+    with no meaning presented as a measurement. Defaulting it to 0 the way the counts
+    beside it are defaulted would be worse: that is a threshold the service never counted
+    at, and the number under it would be wrong rather than missing.
+    """
+    without = stats(total=600, rejects=30, gaps=[], rejects_without_class=12)
+    del without["defect_class_threshold"]
+
+    answer = await run(
+        "how many rejects in the last hour?",
+        "s1",
+        settings=Settings(),
+        analysis=_client(FakeAnalysis(without)),
+        provider=ScriptedProvider(),
+        now=NOW,
+    )
+
+    assert not any("or above" in f.statement for f in answer.findings)
+    assert any("did not say which score threshold" in c for c in answer.caveats)
+    # The counts that need no threshold to mean something are still answered.
+    assert any("600 parts were inspected" in f.statement for f in answer.findings)
+
+
+async def test_a_boolean_is_not_mistaken_for_a_threshold() -> None:
+    """`bool` is a subclass of `int`, so the isinstance guard above admits `True` unless it
+    says otherwise — and "counting every class scoring True or above" is the same sentence
+    with no meaning that the guard was added to stop."""
+    lying = stats(total=600, rejects=30, gaps=[])
+    lying["defect_class_threshold"] = True
+
+    answer = await run(
+        "how many rejects in the last hour?",
+        "s1",
+        settings=Settings(),
+        analysis=_client(FakeAnalysis(lying)),
+        provider=ScriptedProvider(),
+        now=NOW,
+    )
+
+    assert not any("True or above" in f.statement for f in answer.findings)
+    assert any("did not say which score threshold" in c for c in answer.caveats)
+
+
+async def test_rejects_no_class_explains_are_reported_rather_than_left_out() -> None:
+    """§3.5 scenario 6 is a window of exactly these: every class present and every one of
+    them decayed below the threshold. Silently, that window reads as "no defects seen"
+    while the line scraps parts."""
+    answer = await run(
+        "how many rejects in the last hour?",
+        "s1",
+        settings=Settings(),
+        analysis=_client(
+            FakeAnalysis(
+                stats(total=600, rejects=30, gaps=[], rejects_without_class=12)
+            )
+        ),
+        provider=ScriptedProvider(),
+        now=NOW,
+    )
+
+    unaccounted = next(f for f in answer.findings if "no class scoring" in f.statement)
+    assert "12 of those 30 rejects" in unaccounted.statement
+    assert unaccounted.basis == "measured"
+
+
+async def test_a_window_the_breakdown_fully_explains_says_nothing_extra(
+    fake_analysis: FakeAnalysis,
+) -> None:
+    """The other direction: on an ordinary window nothing is unaccounted for, and a finding
+    claiming otherwise would be noise the reader has to learn to ignore."""
+    answer = await run(
+        "how many rejects in the last hour?",
+        "s1",
+        settings=Settings(),
+        analysis=_client(fake_analysis),
+        provider=ScriptedProvider(),
+        now=NOW,
+    )
+
+    assert not any("no class scoring" in f.statement for f in answer.findings)
 
 
 async def test_a_scripted_answer_says_it_was_not_produced_by_a_model(

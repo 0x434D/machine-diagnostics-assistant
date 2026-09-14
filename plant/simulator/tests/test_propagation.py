@@ -135,7 +135,7 @@ async def test_s3_starves_exactly_when_b2_3_drains_and_not_before() -> None:
     as the number 30.
     """
     settings = Settings()
-    line, _ = await build_running_line(settings)
+    line, _clock, _nodes = await build_running_line(settings)
     await _settle(line)
 
     held_at, levels_at_stop = await _hold_s2_in_execute(line, "propagation proof")
@@ -189,7 +189,7 @@ async def test_s4_starves_after_s3_and_not_at_the_same_time() -> None:
     first occurrences would be comparing one station's permanent stop against another's
     passing one.
     """
-    line, _ = await build_running_line(Settings())
+    line, _clock, _nodes = await build_running_line(Settings())
     await _settle(line)
     await _hold_s2_in_execute(line, "propagation proof")
 
@@ -227,7 +227,7 @@ async def test_s2_itself_is_held_rather_than_suspended() -> None:
     operator, amber for one waiting on someone else -- so a line that lost the
     distinction would still draw, in one colour, and read as four equal faults.
     """
-    line, _ = await build_running_line(Settings())
+    line, _clock, _nodes = await build_running_line(Settings())
     await _settle(line)
     await _hold_s2_in_execute(line, "propagation proof")
     for _ in range(_DRAIN_CEILING):
@@ -260,7 +260,7 @@ async def test_the_line_settles_where_3_1_says_it_does() -> None:
        further up the line a station sits, the more it waits.
     """
     settings = Settings()
-    line, _ = await build_running_line(settings)
+    line, _clock, _nodes = await build_running_line(settings)
     peaks = await _settle(line)
 
     census: dict[tuple[str, str], int] = {}

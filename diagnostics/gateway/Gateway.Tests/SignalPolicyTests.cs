@@ -8,6 +8,13 @@ public sealed class SignalPolicyTests
 {
     private const string MinimalJson = "{}";
 
+    /// <summary>The four types §4.1 adds in M2b. None of them carries an image.</summary>
+    private static readonly string[] ImagelessEventTypes =
+    [
+        "ComponentReadEventType", "AssemblyCreatedEventType", "PartProcessedEventType",
+        "PartCompletedEventType",
+    ];
+
     /// <summary>The three noisy floats §4.1 gives S1, S2 and S4, and nothing else.</summary>
     private static readonly string[] DeadbandedSignals =
     [
@@ -160,6 +167,63 @@ public sealed class SignalPolicyTests
         // find out at boot rather than from deadbands that quietly stopped applying.
         var missing = Path.Join(Path.GetTempPath(), "no-such-policy-" + Path.GetRandomFileName());
         Assert.Throws<FileNotFoundException>(() => SignalPolicy.Load(missing));
+    }
+
+    [Fact]
+    public void TheShippedPolicyPagesEveryEventTypeTheLineHas()
+    {
+        // D4: the page size is per event type because what one page weighs is what its events
+        // carry. Only §3.4's verdict carries image bytes, and it is the only one that still
+        // has to be read 25 at a time -- at 25 the other four would cost ~2,500 round trips
+        // over a 33 h history on S1 and ~800 on S2 and S4, where 33 do.
+        var policy = SignalPolicy.Parse(RealJson);
+
+        Assert.Equal(25, policy.ForEvent("InspectionResultEventType").PageSize);
+        Assert.All(
+            ImagelessEventTypes,
+            type => Assert.True(
+                policy.ForEvent(type).PageSize >= 2_000,
+                $"{type} carries no images and is paged as if it did"));
+    }
+
+    [Fact]
+    public void EveryEventPageStaysUnderTheCeilingWhereTruncationStopsBeingDetectable()
+    {
+        // A read returning HistoryBackfill.SilentTruncationCeiling values cannot be told from
+        // one the server cut off there, and ClassifyPage cannot see it because the page is not
+        // full to what was asked for. A page size at or above the ceiling therefore fails
+        // every window it is used on -- which is loud, but it is a boot-time loud that belongs
+        // here instead.
+        var policy = SignalPolicy.Parse(RealJson);
+
+        Assert.All(
+            policy.KnownEventTypes,
+            type => Assert.True(
+                policy.ForEvent(type).PageSize < HistoryBackfill.SilentTruncationCeiling,
+                $"{type} is paged at or above the silent-truncation ceiling"));
+    }
+
+    [Fact]
+    public void AnEventTypeNobodyNamedIsPagedRatherThanSkipped()
+    {
+        // The event half of the fail-open rule. Event types are discovered from the plant's
+        // own GeneratesEvent references, so this file will meet ones it does not name.
+        Assert.Equal(
+            SignalPolicy.DefaultEventPageSize,
+            SignalPolicy.Parse(MinimalJson).ForEvent("SomeTypeNobodyPlanned").PageSize);
+    }
+
+    [Fact]
+    public void AnEventEntryCarryingASignalsKeyIsRefused()
+    {
+        // The key set stays closed on this side too. `subscribe` and `deadband` mean nothing
+        // for an event stream -- §3.4's history has no off switch and an event has no
+        // magnitude to compare -- so one written here is a misunderstanding an operator has
+        // to learn about at boot rather than a setting that silently does nothing.
+        Assert.Throws<JsonException>(() => SignalPolicy.Parse(
+            """{ "events": { "PartCompletedEventType": { "subscribe": false } } }"""));
+        Assert.Throws<JsonException>(() => SignalPolicy.Parse(
+            """{ "events": { "PartCompletedEventType": { "page_size": 0 } } }"""));
     }
 
     [Fact]

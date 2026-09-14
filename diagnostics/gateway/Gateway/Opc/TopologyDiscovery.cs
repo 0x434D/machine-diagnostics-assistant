@@ -7,12 +7,20 @@ namespace Gateway.Opc;
 /// <summary>One historised variable under a station, with the data type the server declares.</summary>
 public sealed record DiscoveredSignal(string Name, NodeId NodeId, BuiltInType Type);
 
+/// <summary>
+/// One event type a station declares it generates, as browsed. The browse name is what the
+/// gateway matches its own table of §4.1's types against; the NodeId is what an event's own
+/// <c>EventType</c> field carries, and is how two types on one station are told apart.
+/// </summary>
+public sealed record DiscoveredEventType(string TypeName, NodeId NodeId);
+
 public sealed record DiscoveredStation(
     string Code,
     string Name,
     NodeId NodeId,
     IReadOnlyList<DiscoveredSignal> Signals,
-    bool EmitsEvents);
+    bool EmitsEvents,
+    IReadOnlyList<DiscoveredEventType> EventTypes);
 
 /// <summary>
 /// A buffer between two stations. <paramref name="Upstream"/> and <paramref name="Downstream"/>
@@ -248,6 +256,29 @@ public static class TopologyDiscovery
         await transaction.CommitAsync(ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// One browsed variable as a stream to ingest, or null where the plant says it keeps no
+    /// history of it.
+    ///
+    /// <para>A node the plant declares live-only is the plant saying not to store it (M2
+    /// design D12): three of S1's children restate what an event already carries
+    /// authoritatively, and historising them would be the second, weaker copy §3.4a warns
+    /// about. Subscribed and backfilled anyway, they are three streams with no history to
+    /// read and no row in the plant's own ledger to reconcile against — which shows up
+    /// nowhere in <c>make check</c>, because the plant's browse-count test asserts the
+    /// plant's tree and stays green whatever this gateway does with it.</para>
+    ///
+    /// <para><b>Only an explicit false drops a stream.</b> A server that does not answer the
+    /// attribute at all has said nothing, and losing a whole stream on silence is the one
+    /// outcome §5.1 refuses — the same asymmetry the signal policy's fail-open default
+    /// has.</para>
+    /// </summary>
+    public static DiscoveredSignal? HistorisedSignal(
+        string name, NodeId node, DataValue dataType, DataValue historizing) =>
+        !StatusCode.IsBad(historizing.StatusCode) && historizing.Value is false
+            ? null
+            : new DiscoveredSignal(name, node, BuiltInTypeOf(dataType));
+
     private static async Task<IReadOnlyList<DiscoveredStation>> DiscoverStationsAsync(
         ISession session, CancellationToken ct)
     {
@@ -262,16 +293,29 @@ public static class TopologyDiscovery
                 .Where(node => node.NodeClass == NodeClass.Variable)
                 .ToList();
 
-            var types = await ReadAsync(
+            // Both attributes in one read per variable pair, interleaved, because two reads
+            // over the same node set is two round trips and two chances for the results to
+            // be paired up by index against different lists.
+            var attributes = await ReadAsync(
                 session,
-                [.. variables.Select(v => Attribute(v.NodeId, Attributes.DataType))],
+                [
+                    .. variables.SelectMany(v => new[]
+                    {
+                        Attribute(v.NodeId, Attributes.DataType),
+                        Attribute(v.NodeId, Attributes.Historizing),
+                    }),
+                ],
                 ct).ConfigureAwait(false);
 
             var signals = new List<DiscoveredSignal>(variables.Count);
             for (var i = 0; i < variables.Count; i++)
             {
-                signals.Add(new DiscoveredSignal(
-                    variables[i].Name, variables[i].NodeId, BuiltInTypeOf(types[i])));
+                if (HistorisedSignal(
+                        variables[i].Name, variables[i].NodeId,
+                        attributes[(2 * i) + 0], attributes[(2 * i) + 1]) is { } signal)
+                {
+                    signals.Add(signal);
+                }
             }
 
             var (code, name) = SplitBrowseName(child.Name);
@@ -281,10 +325,33 @@ public static class TopologyDiscovery
                 NodeId: child.NodeId,
                 Signals: signals,
                 EmitsEvents: await EmitsEventsAsync(session, child.NodeId, ct)
+                    .ConfigureAwait(false),
+                EventTypes: await EventTypesAsync(session, child.NodeId, ct)
                     .ConfigureAwait(false)));
         }
 
         return stations;
+    }
+
+    /// <summary>
+    /// Which event types a station declares it generates, per the server's own
+    /// <c>GeneratesEvent</c> references rather than per a table saying S1 emits two.
+    ///
+    /// <para>This is what makes one filter per station possible: a station's whole event
+    /// stream is read through one monitored item — asyncua historises events per emitting
+    /// node, not per type — so the select clauses have to cover exactly the types that
+    /// station has, and the decoder has to be able to tell them apart afterwards.</para>
+    /// </summary>
+    private static async Task<IReadOnlyList<DiscoveredEventType>> EventTypesAsync(
+        ISession session, NodeId station, CancellationToken ct)
+    {
+        // GeneratesEvent is not a hierarchical reference, so this cannot ride on the browse
+        // that finds a station's variables.
+        var references = await BrowseAsync(
+            session, station, ReferenceTypeIds.GeneratesEvent, NodeClass.ObjectType, ct)
+            .ConfigureAwait(false);
+
+        return [.. references.Select(node => new DiscoveredEventType(node.Name, node.NodeId))];
     }
 
     private static async Task<IReadOnlyList<DiscoveredBuffer>> DiscoverBuffersAsync(
@@ -310,6 +377,13 @@ public static class TopologyDiscovery
             var upstream = Required(children, child.Name, UpstreamVariable);
             var downstream = Required(children, child.Name, DownstreamVariable);
 
+            // No Historizing here, and the rule is station variables only: a buffer publishes
+            // exactly one stream, §4.1 historises it, and D12's argument for a live-only node
+            // — that an authoritative event already carries the same fact — has no buffer
+            // counterpart, because no event carries a level. A buffer the plant stopped
+            // historising would be read and reconciled against nothing, which is the failure
+            // the station check exists for; it is left out because the check would be
+            // guarding against a shape §4.1 does not have, not because levels are exempt.
             var values = await ReadAsync(
                 session,
                 [
@@ -430,8 +504,32 @@ public static class TopologyDiscovery
 
     private sealed record ChildNode(string Name, NodeId NodeId, NodeClass NodeClass);
 
-    private static async Task<IReadOnlyList<ChildNode>> BrowseChildrenAsync(
-        ISession session, NodeId parent, CancellationToken ct)
+    private static Task<IReadOnlyList<ChildNode>> BrowseChildrenAsync(
+        ISession session, NodeId parent, CancellationToken ct) =>
+        BrowseAsync(
+            session, parent, ReferenceTypeIds.HierarchicalReferences,
+            NodeClass.Object | NodeClass.Variable, ct);
+
+    /// <summary>
+    /// Every reference of one kind from one node, to the end of the list.
+    /// </summary>
+    /// <remarks>
+    /// <para><b>An empty answer has to be an answer, not a failure this cannot see.</b> A
+    /// browse that fails returns no references, which reads exactly like a node that has
+    /// none — and since <see cref="EventTypesAsync"/> a station with no event types is a
+    /// hard startup failure, so a transient browse error would take down a gateway that
+    /// could have ingested all 25 variable streams. The status is checked here for the same
+    /// reason the attribute read below checks its own: it is the difference between "this
+    /// plant has nothing" and "this gateway was told nothing".</para>
+    ///
+    /// <para>The continuation point is followed for the other half of it. A server that caps
+    /// references per browse hands back the rest behind one, and ignoring it discovers fewer
+    /// signals and fewer event types with nothing raised — which is the same silent shortfall
+    /// <c>ClassifyPage</c> exists for, one service over.</para>
+    /// </remarks>
+    private static async Task<IReadOnlyList<ChildNode>> BrowseAsync(
+        ISession session, NodeId parent, NodeId referenceType, NodeClass nodeClasses,
+        CancellationToken ct)
     {
         var response = await session.BrowseAsync(
             null,
@@ -442,23 +540,60 @@ public static class TopologyDiscovery
                 {
                     NodeId = parent,
                     BrowseDirection = BrowseDirection.Forward,
-                    ReferenceTypeId = ReferenceTypeIds.HierarchicalReferences,
+                    ReferenceTypeId = referenceType,
                     IncludeSubtypes = true,
-                    NodeClassMask = (uint)(NodeClass.Object | NodeClass.Variable),
+                    NodeClassMask = (uint)nodeClasses,
                     ResultMask = (uint)BrowseResultMask.All,
                 },
             ],
             ct).ConfigureAwait(false);
 
+        var result = Answered(response.Results, parent, referenceType);
+
         // Browse order, not dictionary order: it is the order the plant declares its stations
         // in, which is what anyone holding UaExpert sees. Line order comes from the buffers.
-        return
-        [
-            .. response.Results[0].References.Select(reference => new ChildNode(
+        var children = new List<ChildNode>();
+        while (true)
+        {
+            children.AddRange(result.References.Select(reference => new ChildNode(
                 reference.BrowseName.Name,
                 ExpandedNodeId.ToNodeId(reference.NodeId, session.NamespaceUris),
-                reference.NodeClass)),
-        ];
+                reference.NodeClass)));
+
+            if (result.ContinuationPoint is not { Length: > 0 } continuationPoint)
+            {
+                return children;
+            }
+
+            var next = await session
+                .BrowseNextAsync(null, false, [continuationPoint], ct).ConfigureAwait(false);
+            result = Answered(next.Results, parent, referenceType);
+        }
+    }
+
+    /// <exception cref="ServiceResultException">
+    /// the server answered the browse with nothing, or with a bad status. A short result set
+    /// left unchecked surfaces later as an IndexOutOfRangeException naming neither the node
+    /// nor the reference type.
+    /// </exception>
+    private static BrowseResult Answered(
+        BrowseResultCollection results, NodeId parent, NodeId referenceType)
+    {
+        if (results.Count != 1)
+        {
+            throw new ServiceResultException(
+                StatusCodes.BadUnexpectedError,
+                $"browsing {referenceType} from {parent} returned {results.Count} results for "
+                + "one description");
+        }
+
+        return !StatusCode.IsBad(results[0].StatusCode)
+            ? results[0]
+            : throw new ServiceResultException(
+                results[0].StatusCode.Code,
+                $"browsing {referenceType} from {parent} returned {results[0].StatusCode}; an "
+                + "empty reference list from a failed browse is indistinguishable from a node "
+                + "that has none");
     }
 
     private static async Task<short> StationIdAsync(

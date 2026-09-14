@@ -24,9 +24,13 @@ export async function fetchPart(serial: string): Promise<Part> {
   return (await response.json()) as Part;
 }
 
-/** §3.4: a good part has no image, and that is not a missing value. */
+/** §3.4: a good part has no image, and that is not a missing value.
+ *
+ * `inspection` is null for a part that has not reached S3 — the ordinary state of every
+ * serial between the press and the camera — which is a third case and not an image. */
 export function imageUrl(part: Part): string | null {
-  return part.image_url === null ? null : `${ANALYSIS}${part.image_url}`;
+  const url = part.inspection?.image_url ?? null;
+  return url === null ? null : `${ANALYSIS}${url}`;
 }
 
 /**

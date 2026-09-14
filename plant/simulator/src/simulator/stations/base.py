@@ -21,6 +21,8 @@ from typing import ClassVar, Protocol
 
 from simulator.carriers import Carrier
 from simulator.config import Settings
+from simulator.events import EventType
+from simulator.identity import Assembly
 from simulator.line import PartState
 from simulator.packml import State
 
@@ -30,7 +32,22 @@ class PartOutcome:
     """One part's inspection verdict, as the vision system itself reported it."""
 
     disposition: str  # "good" | "reject"
+    # The classifier's named reason for a reject, None for a good part. Not on the
+    # inspection event -- §5.2's widened `inspection_results` has no scalar class --
+    # but it is what `PartCompletedEvent.Reason` carries into `part_dispositions`.
     defect_class: str | None
+    # §3.4's six independent per-class scores and the names they belong to, as parallel
+    # tuples. Both, rather than the scores alone: the defect vocabulary already exists
+    # twice in this repository because the two uv workspaces may not import each other,
+    # and a vector whose key is agreed privately somewhere else is a vector that gets
+    # decoded against the wrong names with nothing raised. Paired here so the two cannot
+    # be re-derived apart downstream.
+    defect_classes: tuple[str, ...]
+    confidences: tuple[float, ...]
+    # §3.4: confidence in the OK/NOK *verdict*, never in a class. A good part is
+    # confidently good while every entry in `confidences` scores low; reading the
+    # vector as a distribution is the measured defect that reported a good part as
+    # 27 % confident and ~30 % misaligned.
     confidence: float
     image: bytes | None  # §3.4: only rejects carry their image
     # The classifier's own advertised version -- not settings.model_version, which
@@ -41,11 +58,6 @@ class PartOutcome:
 
 
 ProduceFn = Callable[[str, datetime], Awaitable[PartOutcome]]
-
-
-def serial_for(index: int) -> str:
-    """M2b replaces this with serials created at S1."""
-    return f"A-{index:08d}"
 
 
 class StationNodes(Protocol):
@@ -59,7 +71,34 @@ class StationNodes(Protocol):
     # variant type, which is where an integer counter becomes a UInt32.
     async def write(self, signal: str, at: datetime, value: float | str) -> None: ...
 
-    async def trigger_event(self, at: datetime, fields: dict[str, object]) -> None: ...
+    # D12's live-only variables. A separate method rather than a flag on `write`,
+    # because the ledger counts one of them and must not count the other.
+    async def write_live(
+        self, signal: str, at: datetime, value: float | str
+    ) -> None: ...
+
+    async def trigger_event(
+        self, event: EventType, at: datetime, fields: dict[str, object]
+    ) -> None: ...
+
+
+def require_assembly(part: PartState, carrier: Carrier, station: str) -> Assembly:
+    """The assembly S1 created on this carrier. Raises ValueError if there is none.
+
+    Shared by the three stations downstream of S1 rather than written three times,
+    and raising rather than substituting a placeholder for the same reason S4 already
+    refuses a part with no disposition: a part nobody can name cannot be pressed
+    against its serial, inspected against it or sorted by it, and publishing an event
+    under a made-up or empty serial is the quiet wrong answer §14's traceability line
+    exists to rule out.
+    """
+    if part.assembly is None:
+        raise ValueError(
+            f"the part on carrier {carrier.carrier_id} reached {station} with no "
+            "assembly: S1 did not create one, and an event published against a serial "
+            "nobody issued is a traceability record that points at nothing"
+        )
+    return part.assembly
 
 
 def clamp_level(value: float) -> float:

@@ -29,6 +29,7 @@ from simulator.carriers import Carrier, CarrierPool
 from simulator.clock import Phase, SimulatedClock
 from simulator.config import Settings
 from simulator.historian import LedgerWriter
+from simulator.identity import Assembly
 from simulator.packml import Command, State, StateMachine, SuspendReason
 
 CARRIER_RETURN = "carrier-return"
@@ -83,19 +84,28 @@ class StationCycle(Protocol):
 
 @dataclass
 class PartState:
-    """What is known about the part riding a carrier, while it rides.
+    """The assembly riding a carrier, and what the line has learned about it.
 
     Keyed by carrier id on the Line rather than stored in the buffers, because that
     is what a real line does -- the carrier has a tag and the part is whatever is
-    currently on it. S3 writes the disposition; S4 reads it to drive GoodCount and
-    RejectCount (§4.1), which is the only cross-station fact M2a needs.
+    currently on it. S1 creates the assembly and puts it here; S2 presses against its
+    serial; S3 writes the disposition and the reason; S4 reads all three.
 
-    M2b replaces this with a real assembly serial and its genealogy. It is kept this
-    thin on purpose: anything richer here would be M2b's data model arriving early
-    and unvalidated.
+    **Three fields, and each is one an event needs.** `assembly` is §3.1's identity
+    with its as-built components, and it is what makes S2's press and S4's sorting
+    record the serial they actually handled rather than the one a later time-join
+    would guess at -- §3.4a's rule. `disposition` and `reason` are §5.2's
+    `part_dispositions` row, carried from the station that decided them to the station
+    that publishes them. Nothing else belongs here: the process values are published
+    where they are measured, and the Line never reads any of this.
     """
 
+    assembly: Assembly | None = None
     disposition: str | None = None
+    # The classifier's named reason for a reject, empty for a good part. A plain str
+    # rather than `str | None`, because "no reason" and "not inspected yet" are not the
+    # same state and `disposition is None` is already the second one.
+    reason: str = ""
 
 
 class BufferLevel(NamedTuple):

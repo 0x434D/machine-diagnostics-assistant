@@ -6,16 +6,28 @@ import pytest
 import pytest_asyncio
 from asyncua import Node, Server
 from conftest import new_server
-from simulator.address_space import AddressSpace, build_address_space, publish_clock
+from simulator.address_space import (
+    AddressSpace,
+    build_address_space,
+    historised_streams,
+    publish_clock,
+)
 from simulator.clock import Phase, SimulatedClock
 from simulator.config import ClockConfig, Settings
-from simulator.events import EVENT_FIELDS
-from simulator.historian import Ledger, attach_historian
+from simulator.events import (
+    ASSEMBLY_CREATED,
+    COMPONENT_READ,
+    INSPECTION_RESULT,
+    PART_COMPLETED,
+    PART_PROCESSED,
+    EventType,
+)
+from simulator.historian import Ledger, _table_name, attach_historian
 
 # §4.1's tree as a reader of the spec would write it down, kept apart from the tables
 # that build it: asserting the served tree against address_space.STATION_SIGNALS would
 # compare the code to itself and pass through any edit to it.
-_STATION_VARIABLES = {
+_HISTORISED_VARIABLES = {
     "S1_Feeding": {
         "State",
         "StateReason",
@@ -43,14 +55,51 @@ _STATION_VARIABLES = {
     },
 }
 
+_LIVE_VARIABLES = {
+    "S1_Feeding": {"Lane1_Lot", "Lane2_Lot", "CurrentAssemblySerial"},
+    "S2_Joining": set[str](),
+    "S3_Inspection": set[str](),
+    "S4_Outfeed": set[str](),
+}
+"""D12's three, written down from §4.1 rather than read off STATION_LIVE_SIGNALS, for
+the same reason the historised table above is."""
+
 _BUFFER_VARIABLES = {"Level", "Capacity", "UpstreamStation", "DownstreamStation"}
+
+_EVENT_FIELD_ORDER: dict[EventType, list[str]] = {
+    COMPONENT_READ: ["ComponentSerial", "Lane", "LotCode", "Supplier"],
+    ASSEMBLY_CREATED: ["AssemblySerial", "ComponentSerials", "CarrierId"],
+    PART_PROCESSED: ["AssemblySerial", "Curve", "PeakForce", "JoiningDistance"],
+    INSPECTION_RESULT: [
+        "AssemblySerial",
+        "CarrierId",
+        "Disposition",
+        "DefectClasses",
+        "Confidences",
+        "Confidence",
+        "ModelVersion",
+        "Image",
+    ],
+    PART_COMPLETED: ["AssemblySerial", "Disposition", "Reason"],
+}
+"""The wire format, as literals.
+
+Written out rather than derived from each `EventType.field_names`: comparing the
+server's order against a list built from the table that produced it is tautological --
+swap two entries and both sides move together. A literal here is the only way a
+reorder actually fails a test, and the order is what every positional decode
+downstream depends on.
+"""
 
 
 async def _build() -> tuple[Server, AddressSpace]:
     server = new_server()
     await server.init()
     idx = await server.register_namespace("http://machine-agent/plant")
-    return server, await build_address_space(server, idx, Settings().buffer_capacity)
+    settings = Settings()
+    return server, await build_address_space(
+        server, idx, settings.buffer_capacity, settings.joining_distance_nominal
+    )
 
 
 async def _children(node: Node) -> set[str]:
@@ -108,14 +157,25 @@ async def test_buffers_name_the_stations_they_sit_between(space: AddressSpace) -
 
 
 @pytest.mark.asyncio
-async def test_m2b_nodes_are_absent_rather_than_holding_constants(
+async def test_d12_nodes_are_in_the_tree_and_out_of_the_history(
     space: AddressSpace,
 ) -> None:
-    """§13's standard: nothing in a milestone is faked. Lots and assembly serials
-    arrive in M2b with the data that makes them change."""
+    """D12: `Lane1_Lot`, `Lane2_Lot` and `CurrentAssemblySerial` are readable live and
+    never historised, because `ComponentReadEvent` and `AssemblyCreatedEvent` carry the
+    same facts authoritatively and a historised second copy invites the time-join
+    §3.4a forbids.
+
+    Both halves, because each alone is satisfiable by the wrong tree: absent from
+    `historised` is also true of a node nobody built, and present in `live` is also
+    true of a node that is historised as well.
+    """
     s1 = space.stations["S1_Feeding"]
-    assert "Lane1_Lot" not in s1.historised
-    assert "CurrentAssemblySerial" not in s1.historised
+    assert set(s1.live) == _LIVE_VARIABLES["S1_Feeding"]
+    assert set(s1.live) & set(s1.historised) == set()
+    for owner, signal, *_ in historised_streams(space):
+        assert (owner, signal) not in {
+            ("S1_Feeding", name) for name in _LIVE_VARIABLES["S1_Feeding"]
+        }
 
 
 @pytest.mark.asyncio
@@ -165,21 +225,30 @@ async def test_topology_is_browsable_under_line_stations() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_served_tree_browses_to_twenty_five_streams_and_nine_static() -> None:
+async def test_the_served_tree_browses_to_twenty_five_streams_ten_static_three_live() -> (
+    None
+):
     """§4.1's count, read off the server a gateway meets rather than off the dataclass
     that built it.
 
     `test_the_tree_carries_exactly_twenty_five_historised_streams` sums
     `len(nodes.historised)`, and every assertion keyed on `historised` shares that
-    blind spot: add `Lane1_Lot` to S1 as a variable that is simply left out of
-    `historised` and all of them stay green, while a gateway browsing S1 sees seven
-    variables and §13's "nothing in a milestone is faked" is broken. This walks the
-    tree instead, so what is asserted is what is served.
+    blind spot: a variable simply left out of `historised` keeps all of them green
+    while a gateway browsing S1 sees it anyway. This walks the tree instead, so what is
+    asserted is what is served.
 
-    34 variables: 25 historised streams (every station variable, plus one `Level` per
-    buffer) and nine static topology nodes read on connect. §4.1's own total is 37 --
-    the three missing are `Lane1_Lot`, `Lane2_Lot` and `CurrentAssemblySerial`, which
-    M2b brings with the data that makes them change.
+    38 variables, and the split is the point: 25 historised streams (every station
+    signal, plus one `Level` per buffer), ten static nodes read on connect -- the
+    buffers' three apiece and `Press/StrokeLength`, §3.4a's curve axis -- and D12's
+    three live-only ones on S1.
+
+    **Those three are station children, and `TopologyDiscovery.DiscoverStationsAsync`
+    takes every Variable child of a station as a signal to subscribe to without ever
+    reading the `Historizing` attribute.** So the gateway will discover 28 streams
+    against a plant that historises 25 and a ledger with 25 rows in it, and reconcile
+    three streams that can have no rows at all. Task 6 is where that is fixed, and this
+    count is where it shows. `Press/StrokeLength` sits outside Stations precisely to
+    avoid being a 26th; §4.1 puts these three on S1, so they cannot.
     """
     server, space = await _build()
     line = await server.nodes.objects.get_child([f"{space.idx}:Line"])
@@ -189,7 +258,10 @@ async def test_the_served_tree_browses_to_twenty_five_streams_and_nine_static() 
         (await station.read_browse_name()).Name: await _children(station)
         for station in await stations.get_children()
     }
-    assert served_stations == _STATION_VARIABLES
+    assert served_stations == {
+        code: names | _LIVE_VARIABLES[code]
+        for code, names in _HISTORISED_VARIABLES.items()
+    }
 
     buffers = await line.get_child([f"{space.idx}:Buffers"])
     served_buffers = {
@@ -198,71 +270,65 @@ async def test_the_served_tree_browses_to_twenty_five_streams_and_nine_static() 
     }
     assert served_buffers == dict.fromkeys(("B1_2", "B2_3", "B3_4"), _BUFFER_VARIABLES)
 
+    press = await line.get_child([f"{space.idx}:Press"])
+    assert await _children(press) == {"StrokeLength"}
+
     # Only Level is historised on a buffer; Capacity, UpstreamStation and
-    # DownstreamStation are the static nine.
-    historised = sum(len(names) for names in served_stations.values())
+    # DownstreamStation are nine of the ten statics, and the press's stroke is the
+    # tenth.
+    live = sum(len(names) for names in _LIVE_VARIABLES.values())
+    historised = sum(len(names) for names in served_stations.values()) - live
     historised += len(served_buffers)
     static = sum(len(names) - 1 for names in served_buffers.values())
-    assert (historised, static) == (25, 9)
-    assert historised + static == 34
+    static += len(await _children(press))
+    assert (historised, static, live) == (25, 10, 3)
+    assert historised + static + live == 38
 
 
-@pytest.mark.asyncio
-async def test_event_type_carries_an_image_field(space: AddressSpace) -> None:
-    props = {
-        (await p.read_browse_name()).Name
-        for p in await space.event_type.get_properties()
-    }
-    assert {
-        "AssemblySerial",
-        "Disposition",
-        "DefectClass",
-        "Confidence",
-        "Image",
-    } <= props
+async def _properties(event_type: Node) -> list[str]:
+    return [
+        (await p.read_browse_name()).Name for p in await event_type.get_properties()
+    ]
 
 
 @pytest.mark.asyncio
 async def test_custom_event_fields_decode_first_and_in_declared_order(
     space: AddressSpace,
 ) -> None:
-    """Nothing pins EVENT_FIELDS' order against how the server actually hands the
-    properties back -- reordering it would silently mis-assign every column
-    Tasks 8 and 10 decode by position. get_properties() also returns
-    BaseEventType's own inherited fields (13 of them); this only pins that our six
-    lead, in the order EVENT_FIELDS declares.
+    """The wire format, for all five event types. An event notification is a positional
+    `EventFieldList` matching the SelectClauses asked for, so a reordered field table
+    silently re-assigns every column Task 6 decodes by position.
 
-    Asserted against a literal name list, not [name for name, _ in EVENT_FIELDS]:
-    comparing the server's order against a list *derived from EVENT_FIELDS itself*
-    is tautological -- swap two entries in EVENT_FIELDS and both sides move
-    together, so the assertion still passes. A literal here is the only way a
-    reorder of EVENT_FIELDS actually fails this test.
+    `get_properties()` also returns BaseEventType's own inherited fields (13 of them);
+    this pins only that ours lead, in the declared order. Asserted against literals for
+    the reason `_EVENT_FIELD_ORDER` records.
     """
-    names = [
-        (await p.read_browse_name()).Name
-        for p in await space.event_type.get_properties()
-    ]
-    assert names[: len(EVENT_FIELDS)] == [
-        "AssemblySerial",
-        "Disposition",
-        "DefectClass",
-        "Confidence",
-        "ModelVersion",
-        "Image",
-    ]
+    for event, expected in _EVENT_FIELD_ORDER.items():
+        names = await _properties(space.event_types[event.name])
+        assert names[: len(expected)] == expected, event.name
 
 
 @pytest.mark.asyncio
-async def test_only_the_inspection_station_can_trigger_an_event(
+async def test_the_four_new_event_types_carry_no_image(space: AddressSpace) -> None:
+    """§3.4: only rejects carry an image, and only from S3. Task 4's per-event-type page
+    sizing (D4) rests on this being true rather than merely intended -- paging an
+    imageless stream at S3's 25 costs ~3,200 round trips where 80 would do."""
+    for event in _EVENT_FIELD_ORDER:
+        carries = "Image" in await _properties(space.event_types[event.name])
+        assert carries == (event is INSPECTION_RESULT), event.name
+
+
+@pytest.mark.asyncio
+async def test_a_station_refuses_an_event_type_it_does_not_emit(
     space: AddressSpace,
 ) -> None:
-    """§4.1 gives all four stations an event type; M2a builds the one whose payload
-    exists. The other three must fail loudly rather than silently drop an event --
-    Task 7 wires four stations through one Protocol, and three of them have no
-    generator to trigger."""
-    with pytest.raises(ValueError, match="emits no events"):
+    """§4.1 gives each event type exactly one emitting station. A station handed
+    another's must fail loudly rather than drop it: every station now has a generator,
+    so a mistyped event type would otherwise reach a real `trigger` on the wrong node
+    and be attributed to the wrong station for the rest of the run."""
+    with pytest.raises(ValueError, match="does not emit"):
         await space.stations["S1_Feeding"].trigger_event(
-            datetime(2026, 9, 13, tzinfo=UTC), {}
+            INSPECTION_RESULT, datetime(2026, 9, 13, tzinfo=UTC), {}
         )
 
 
@@ -271,8 +337,9 @@ async def test_an_event_missing_a_field_is_refused(space: AddressSpace) -> None:
     """EventGenerator reuses one Event object across every trigger, so a field left
     out keeps the previous event's value and goes out as if it were this one's -- a
     defect class attributed to the wrong serial, with nothing raised."""
-    with pytest.raises(ValueError, match="EVENT_FIELDS"):
+    with pytest.raises(ValueError, match="InspectionResultEventType"):
         await space.stations["S3_Inspection"].trigger_event(
+            INSPECTION_RESULT,
             datetime(2026, 9, 13, tzinfo=UTC),
             {"AssemblySerial": "A-00000001"},
         )
@@ -287,7 +354,10 @@ async def test_clock_is_a_sibling_of_stations_with_exactly_three_variables() -> 
     server, space = await _build()
     line = await server.nodes.objects.get_child([f"{space.idx}:Line"])
 
-    assert await _children(line) == {"Clock", "Stations", "Buffers"}
+    assert await _children(line) == {"Clock", "Stations", "Buffers", "Press"}
+
+    press = await line.get_child([f"{space.idx}:Press"])
+    assert await _children(press) == {"StrokeLength"}
 
     clock = await line.get_child([f"{space.idx}:Clock"])
     assert await _children(clock) == {"SimulatedTime", "Phase", "Speed"}
@@ -366,9 +436,10 @@ async def test_simulated_time_is_utc_aware_and_tracks_clock_now() -> None:
 @pytest.mark.asyncio
 async def test_clock_nodes_are_not_historized(tmp_path: Path) -> None:
     """Reconciliation covers the historised streams and nothing else (see
-    build_address_space's comment on the Clock object). Historising the clock too
-    would change those counts, which is exactly the defect this guards against: the
-    historian's own handler set, not a count that could stay right by accident.
+    build_address_space's comment on the Clock object). Historising the clock -- or
+    D12's three live-only nodes -- would change those counts, which is exactly the
+    defect this guards against: the historian's own handler set, not a count that could
+    stay right by accident.
 
     Asserted as a size and an absence rather than against `historised_streams`, which
     is the enumeration the historian attaches from -- comparing the two would compare
@@ -387,12 +458,52 @@ async def test_clock_nodes_are_not_historized(tmp_path: Path) -> None:
     )
 
     historized = set(server.iserver.history_manager._handlers)
-    # §4.1's 25 streams plus S3's event node, which is historised as an emitting
-    # object rather than as a variable and so is the twenty-sixth handler.
-    assert len(historized) == 26
-    assert space.inspection.node in historized
+    # §4.1's 25 streams plus the four emitting station nodes: event history is
+    # attached to the emitting object rather than to a variable, and one node's
+    # handler covers every event type it emits.
+    assert len(historized) == 29
+    assert {space.stations[code].node for code in _HISTORISED_VARIABLES} <= historized
+    s1 = space.stations["S1_Feeding"]
+    assert set(s1.live.values()) & historized == set()
     assert {
         space.clock_time,
         space.clock_phase,
         space.clock_speed,
     } & historized == set()
+
+
+@pytest.mark.asyncio
+async def test_every_event_type_historises_with_all_its_columns(
+    tmp_path: Path,
+) -> None:
+    """M1's ORDER MATTERS defect, five times over.
+
+    `get_event_generator` adds the GeneratesEvent reference that `historize_node_event`
+    later reads to decide which event types get columns; a generator created after it
+    yields an event table with no columns for that type and no error anywhere --
+    asyncua's own `historize_event` docstring says adding an event type afterwards is
+    unsupported and that the table has to be deleted by hand.
+
+    Read out of sqlite rather than off the generators, because the generators existing
+    is exactly what the defect leaves intact: the table's columns are the only place
+    the ordering shows. Column names are the event fields' *display* names, so this
+    also pins that S1's two event types share one table without colliding -- two
+    same-named fields on one emitting node would collapse to one column, or fail the
+    CREATE TABLE inside HistorySQLite's own `except aiosqlite.Error`.
+    """
+    server, space = await _build()
+    storage = await attach_historian(
+        server,
+        space,
+        tmp_path / "h.db",
+        1000,
+        datetime(2026, 9, 12, tzinfo=UTC),
+        Ledger(),
+    )
+
+    for event, expected in _EVENT_FIELD_ORDER.items():
+        nodes = space.stations[event.station]
+        table = _table_name(storage, nodes.node.nodeid)
+        async with storage._db.execute(f'PRAGMA table_info("{table}")') as cursor:
+            columns = {row[1] for row in await cursor.fetchall()}
+        assert set(expected) <= columns, event.name

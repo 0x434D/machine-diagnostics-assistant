@@ -25,15 +25,19 @@ scenario engine directly rather than needing a channel back in.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
+from dataclasses import dataclass
+from datetime import datetime
 from typing import Final, TypedDict
 
 import uvicorn
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
 
 from simulator.clock import SimulatedClock
 from simulator.config import Settings
 from simulator.line import Line
 from simulator.packml import State
+from simulator.stations.base import PartOutcome, ProduceFn
 
 PRODUCING: Final = "producing"
 WAITING_ON_OTHERS: Final = "waiting-on-others"
@@ -128,6 +132,29 @@ class BufferView(TypedDict):
     downstream_browse_name: str
 
 
+class PartView(TypedDict):
+    """One part on §3.7's strip, newest first.
+
+    `image_url` is a path on this server rather than the image itself. A reject's PNG is
+    ~110 kB (R4's median at the shipped configuration), the strip holds up to
+    `Settings.hmi_recent_parts` of them and a frame goes out every
+    `hmi_interval_seconds` -- so inlining them would put megabytes on the socket every
+    second for pictures the browser already has. `null` is a good part, which §3.4 says
+    carries no image at all; it is a fact rather than a missing value.
+
+    The path is relative to this server, and the screen is served from an origin that
+    forwards `/api/plant/*` here, so the frontend is what joins the two. Same split as
+    `useLineSnapshot`'s socket URL, for the same reason: the proxy prefix is the
+    browser's business and this process does not know it.
+    """
+
+    serial: str
+    at: str
+    disposition: str
+    reason: str
+    image_url: str | None
+
+
 class LineSnapshot(TypedDict):
     """The frame `/snapshot` and `/ws` both serve.
 
@@ -143,9 +170,91 @@ class LineSnapshot(TypedDict):
     written_wall: str
     stations: list[StationView]
     buffers: list[BufferView]
+    parts: list[PartView]
 
 
-def line_snapshot(line: Line, clock: SimulatedClock) -> LineSnapshot:
+@dataclass(frozen=True)
+class InspectedPart:
+    """One part as the vision system reported it, kept only for the screen.
+
+    Not a `PartState`: that carries what the *line* needs to move a part along and
+    nothing else, and the image in particular has no business riding a carrier. This is
+    the screen's own record, and the only thing in the plant that keeps an image after
+    the event carrying it has been published.
+    """
+
+    serial: str
+    at: datetime
+    disposition: str
+    reason: str
+    image: bytes | None
+
+
+class RecentParts:
+    """The last few parts the line inspected, for §3.7's strip.
+
+    **Bounded, and that is the whole design.** A run generates ~19,800 parts and rebuilds
+    33 h of history on every boot at 700x, so anything remembering all of them would grow
+    without limit in a process that is otherwise flat. A `deque` with a `maxlen` drops the
+    oldest record -- and the image it holds -- as the next one arrives.
+
+    Fed by wrapping the inspection call rather than by a station writing here. S3 already
+    has every field on this record, and the wrapper is applied where the line is composed,
+    so no station gains a screen-shaped dependency and the four of them stay testable
+    without one.
+    """
+
+    def __init__(self, keep: int) -> None:
+        self._parts: deque[InspectedPart] = deque(maxlen=keep)
+
+    def watching(self, produce: ProduceFn) -> ProduceFn:
+        """`produce`, with every verdict it returns remembered as the strip's newest part."""
+
+        async def remembering(part_id: str, at: datetime) -> PartOutcome:
+            outcome = await produce(part_id, at)
+            self._parts.append(
+                InspectedPart(
+                    serial=part_id,
+                    at=at,
+                    disposition=outcome.disposition,
+                    # The classifier's named reason for a reject, empty for a good part --
+                    # the same convention `PartState.reason` carries to S4, so the strip
+                    # and `part_dispositions` say the same word about the same part.
+                    reason=outcome.defect_class or "",
+                    image=outcome.image,
+                )
+            )
+            return outcome
+
+        return remembering
+
+    def views(self) -> list[PartView]:
+        """Newest first, which is the order a strip of the last parts is read in."""
+        return [
+            PartView(
+                serial=part.serial,
+                at=part.at.isoformat(),
+                disposition=part.disposition,
+                reason=part.reason,
+                image_url=None if part.image is None else f"/parts/{part.serial}/image",
+            )
+            for part in reversed(self._parts)
+        ]
+
+    def image(self, serial: str) -> bytes | None:
+        """The stored image for `serial`, or None once it has fallen off the strip.
+
+        None covers three different things -- a good part, a serial this run never saw,
+        and a reject the strip has forgotten -- and the caller answers all three the same
+        way, because the screen only ever asks for an image the frame it is drawing says
+        exists.
+        """
+        return next((part.image for part in self._parts if part.serial == serial), None)
+
+
+def line_snapshot(
+    line: Line, clock: SimulatedClock, recent: RecentParts
+) -> LineSnapshot:
     """Everything the screen draws, in one frame.
 
     Stations and buffers are lists rather than objects keyed by code because the screen
@@ -181,11 +290,14 @@ def line_snapshot(line: Line, clock: SimulatedClock) -> LineSnapshot:
             )
             for buffer in line.buffers
         ],
+        "parts": recent.views(),
     }
 
 
-def build_app(line: Line, clock: SimulatedClock, settings: Settings) -> FastAPI:
-    """The screen's three endpoints, reading the live `line` and `clock`.
+def build_app(
+    line: Line, clock: SimulatedClock, settings: Settings, recent: RecentParts
+) -> FastAPI:
+    """The screen's four endpoints, reading the live `line`, `clock` and strip.
 
     `/snapshot` and `/ws` serve the same payload, so a frame the screen renders and one
     a human curls are the same object -- there is no second rendering to disagree.
@@ -196,13 +308,27 @@ def build_app(line: Line, clock: SimulatedClock, settings: Settings) -> FastAPI:
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
+    # response_class, so FastAPI does not wrap the bytes in JSON. Rejects only (§3.4),
+    # and only while the part is still on the strip -- this is the screen's thumbnail
+    # source and not an archive. The archive is `inspection_images` one stack over, and
+    # it is reached through the diagnostics API, not through here.
+    @app.get("/parts/{serial}/image", response_class=Response)
+    async def part_image(serial: str) -> Response:
+        image = recent.image(serial)
+        if image is None:
+            # 404 rather than an empty 200: the screen asks only for images a frame said
+            # exist, so an empty body here would be a blank thumbnail with nothing
+            # anywhere saying why.
+            return Response(status_code=404)
+        return Response(content=image, media_type="image/png")
+
     # response_model=None: FastAPI would otherwise build a pydantic model from the
     # annotation and re-validate every frame against it. `LineSnapshot` is the payload's
     # own definition and `tests/test_hmi.py` is what asserts it, so a second schema
     # derived from the first would cost a validation per frame and add no check.
     @app.get("/snapshot", response_model=None)
     async def snapshot() -> LineSnapshot:
-        return line_snapshot(line, clock)
+        return line_snapshot(line, clock, recent)
 
     @app.websocket("/ws")
     async def stream(socket: WebSocket) -> None:
@@ -211,7 +337,7 @@ def build_app(line: Line, clock: SimulatedClock, settings: Settings) -> FastAPI:
             while True:
                 # Sent before the first sleep, so a screen that has just connected
                 # draws the line rather than an empty page for one interval.
-                await socket.send_json(line_snapshot(line, clock))
+                await socket.send_json(line_snapshot(line, clock, recent))
                 await asyncio.sleep(settings.hmi_interval_seconds)
         except WebSocketDisconnect:
             # The one exception here with a real recovery: a closed tab is not a
@@ -223,7 +349,9 @@ def build_app(line: Line, clock: SimulatedClock, settings: Settings) -> FastAPI:
     return app
 
 
-async def serve(line: Line, clock: SimulatedClock, settings: Settings) -> None:
+async def serve(
+    line: Line, clock: SimulatedClock, settings: Settings, recent: RecentParts
+) -> None:
     """Run the HMI server until cancelled. Belongs in `server.main`'s TaskGroup.
 
     `access_log=False`: the screen reconnects on every reload and holds an open
@@ -238,7 +366,7 @@ async def serve(line: Line, clock: SimulatedClock, settings: Settings) -> None:
     socket first.
     """
     config = uvicorn.Config(
-        build_app(line, clock, settings),
+        build_app(line, clock, settings, recent),
         host=settings.hmi_server_host,
         port=settings.hmi_server_port,
         log_level="warning",

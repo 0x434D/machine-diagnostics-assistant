@@ -1,3 +1,4 @@
+using System.Globalization;
 using Gateway.Ingest;
 using Npgsql;
 using Testcontainers.PostgreSql;
@@ -266,7 +267,7 @@ public sealed class PostgresWriterTests : IAsyncLifetime
             SampleEvent("A-1", reject: false, image: null),
         ]);
 
-        foreach (var stream in new[] { "S3.TaktTime", "B1_2.Level", "S3.InspectionResult" })
+        foreach (var stream in new[] { "S3.TaktTime", "B1_2.Level", "S3.Events" })
         {
             await _writer.RecordBackfillWindowAsync(
                 window, Instant, stream, rowsReturned: 1, pages: 1, durationMs: 10);
@@ -659,16 +660,23 @@ public sealed class PostgresWriterTests : IAsyncLifetime
     [Fact]
     public async Task ApplyingTheSchemaTwiceLeavesWhatIsAlreadyThere()
     {
-        // It runs at every boot, against a database that already holds M1's tables and now
-        // M2a's. The IF NOT EXISTS clauses are the whole of that guarantee, and an unapplied
-        // one only shows up against a live database.
+        // It runs at every boot, against a database that already holds M1's tables, M2a's and
+        // now M2b's. The IF NOT EXISTS clauses are the whole of that guarantee, and an
+        // unapplied one only shows up against a live database. The ALTERs matter most: a
+        // second ADD COLUMN without IF NOT EXISTS is a boot failure on every restart.
         await SeedTopologyAsync();
-        await _writer.WriteBatchAsync([SampleBufferLevel("B2_3", Instant, 3)]);
+        await _writer.WriteBatchAsync([
+            SampleBufferLevel("B2_3", Instant, 3),
+            AssemblyCreated("A-00000080", ["C-1-00000080"], Instant),
+            SampleEvent("A-00000080", reject: false, image: null, Instant, carrierId: 7),
+        ]);
 
         await PostgresWriter.ApplySchemaAsync(_postgres.GetConnectionString());
 
         Assert.Single(await QueryAsync("SELECT 1 FROM buffer_levels"));
         Assert.Equal(4, await CountAsync("stations"));
+        Assert.Single(await QueryAsync("SELECT 1 FROM genealogy"));
+        Assert.Single(await QueryAsync("SELECT defect_classes FROM inspection_results"));
     }
 
     [Fact]
@@ -725,27 +733,423 @@ public sealed class PostgresWriterTests : IAsyncLifetime
         Assert.Equal(0, await CountAsync("raw_events"));
     }
 
+    [Fact]
+    public async Task AnAssemblyIsBuiltFromTheComponentsItsOwnEventNames()
+    {
+        // §3.4a's as-built structure, recorded at the instant of production rather than
+        // reconstructed from "which components were at S1 around then".
+        await _writer.WriteBatchAsync([
+            ComponentRead("C-1-00000001", lane: 1, "L-2305", Instant),
+            ComponentRead("C-2-00000001", lane: 2, "L-2306", Instant),
+            AssemblyCreated("A-00000001", ["C-1-00000001", "C-2-00000001"], Instant),
+        ]);
+
+        var rows = await QueryAsync(
+            "SELECT component_serial, position FROM genealogy "
+            + "WHERE assembly_serial = 'A-00000001' ORDER BY position");
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal("C-1-00000001", rows[0]["component_serial"]);
+        Assert.Equal((short)0, rows[0]["position"]);
+        Assert.Equal("C-2-00000001", rows[1]["component_serial"]);
+        Assert.Equal((short)1, rows[1]["position"]);
+    }
+
+    [Fact]
+    public async Task TheGenealogyLandsWhicheverOrderTheTwoIdentityEventsArriveIn()
+    {
+        // THE ordering case. genealogy references assemblies and components, and nothing
+        // orders the events that fill them: the backfill reads one node at a time, a 200-record
+        // drain batch can split a cycle in half, and the two S1 types share a page boundary
+        // like any other rows. A foreign key that could not be satisfied here would raise a
+        // PostgresException, which QueueDrain retries with nothing acked — one record
+        // retried for ever, ingest stalled, the queue growing. Same failure M2a's nullable
+        // to_state was the answer to.
+        await _writer.WriteBatchAsync([
+            AssemblyCreated("A-00000002", ["C-1-00000002", "C-2-00000002"], Instant),
+        ]);
+        await _writer.WriteBatchAsync([
+            ComponentRead("C-2-00000002", lane: 2, "L-2306", Instant),
+            ComponentRead("C-1-00000002", lane: 1, "L-2305", Instant),
+        ]);
+
+        // The link is there from the first batch, and the component rows it pointed at fill
+        // in from the second rather than being replaced by it.
+        Assert.Equal(2, (await QueryAsync(
+            "SELECT 1 FROM genealogy WHERE assembly_serial = 'A-00000002'")).Count);
+
+        var component = Assert.Single(await QueryAsync(
+            "SELECT c.lane, c.read_at, l.lot_code, l.supplier FROM components c "
+            + "JOIN component_lots l ON l.id = c.lot_id WHERE c.serial = 'C-1-00000002'"));
+        Assert.Equal((short)1, component["lane"]);
+        Assert.Equal("L-2305", component["lot_code"]);
+        Assert.Equal("SUP-01", component["supplier"]);
+    }
+
+    [Fact]
+    public async Task AComponentNamedByAnAssemblyAndNeverReadSaysSoRatherThanBlockingTheBatch()
+    {
+        // The horizon case for components: a component drawn before this gateway's history
+        // starts is named by the assembly that used it and by nothing else. The row records
+        // that it exists and claims nothing about where it came from.
+        await _writer.WriteBatchAsync([
+            AssemblyCreated("A-00000003", ["C-1-00000003"], Instant),
+        ]);
+
+        var row = Assert.Single(await QueryAsync(
+            "SELECT lot_id, lane, read_at FROM components WHERE serial = 'C-1-00000003'"));
+        Assert.Equal(DBNull.Value, row["lot_id"]);
+        Assert.Equal(DBNull.Value, row["lane"]);
+        Assert.Equal(DBNull.Value, row["read_at"]);
+    }
+
+    [Fact]
+    public async Task APartCreatedBeforeTheHorizonStillStoresEverythingAfterIt()
+    {
+        // The case no arrival order can fix, and the reason the parent row is created on
+        // demand rather than required. Three buffers of five carriers means up to fifteen
+        // assemblies are in flight at any instant, so on every boot the first backfill
+        // window holds press records, verdicts and dispositions for parts whose
+        // AssemblyCreatedEvent is on the far side of the horizon and will never arrive.
+        await SeedTopologyAsync();
+        await _writer.WriteBatchAsync([
+            PartProcessed("A-00000004", Instant, [10.0, 20.0, 30.0]),
+            SampleEvent("A-00000004", reject: false, image: null, Instant, carrierId: 3),
+            PartCompleted("A-00000004", "good", reason: null, Instant),
+        ]);
+
+        var assembly = Assert.Single(await QueryAsync(
+            "SELECT created_at, carrier_id FROM assemblies WHERE serial = 'A-00000004'"));
+        Assert.Equal(DBNull.Value, assembly["created_at"]);
+        Assert.Equal(DBNull.Value, assembly["carrier_id"]);
+
+        Assert.Equal(2, await CountAsync("part_process_values"));
+        Assert.Equal(1, await CountAsync("part_process_curves"));
+        Assert.Equal(1, await CountAsync("part_dispositions"));
+    }
+
+    [Fact]
+    public async Task AVerdictOnItsOwnStillPutsThePartOnTheLine()
+    {
+        // inspection_results.assembly_serial is the one per-part key with NO foreign key to
+        // assemblies, so a verdict whose part has no row there fails nothing and nothing says
+        // so. It happens whenever a run ends between S3 and S4 -- the backfill's `to` boundary
+        // is a wall-clock instant and the part is mid-line. §14's trace starts from
+        // assemblies, so the part would be omitted from its own history rather than answered
+        // with the verdict that is sitting right there.
+        await SeedTopologyAsync();
+        await _writer.WriteBatchAsync([
+            SampleEvent("A-00000090", reject: true, new byte[8], Instant, carrierId: 9),
+        ]);
+
+        var assembly = Assert.Single(await QueryAsync(
+            "SELECT created_at FROM assemblies WHERE serial = 'A-00000090'"));
+        Assert.Equal(DBNull.Value, assembly["created_at"]);
+    }
+
+    [Fact]
+    public async Task ACreationEventFillsInTheStubAnEarlierStationLeft()
+    {
+        // The other half: the horizon row is a row still being filled in, not a dead end.
+        // A backfill that reaches further back on a later run — or a window read out of
+        // order — completes it in place rather than leaving two truths about one part.
+        await SeedTopologyAsync();
+        await _writer.WriteBatchAsync([PartProcessed("A-00000005", Instant, [1.0, 2.0])]);
+        await _writer.WriteBatchAsync([
+            AssemblyCreated("A-00000005", ["C-1-00000005"], Instant.AddSeconds(-12), carrierId: 4),
+        ]);
+
+        var row = Assert.Single(await QueryAsync(
+            "SELECT created_at, carrier_id FROM assemblies WHERE serial = 'A-00000005'"));
+        Assert.Equal(Instant.AddSeconds(-12), row["created_at"]);
+        Assert.Equal((short)4, row["carrier_id"]);
+    }
+
+    [Fact]
+    public async Task TheCarrierTableFillsFromTheEventsThatNameOne()
+    {
+        // M2a created carriers empty because §4.1 exposes no carrier node. The assembly and
+        // the verdict both carry the id, and both reference the table, so both have to be
+        // able to create the row — M2c's scenario 4 groups defects on exactly this column.
+        await SeedTopologyAsync();
+        await _writer.WriteBatchAsync([
+            AssemblyCreated("A-00000006", ["C-1-00000006"], Instant, carrierId: 11),
+        ]);
+        await _writer.WriteBatchAsync([
+            SampleEvent("A-00000007", reject: true, new byte[8], Instant, carrierId: 12),
+        ]);
+
+        Assert.Equal(
+            [(short)11, (short)12],
+            (await QueryAsync("SELECT id FROM carriers ORDER BY id")).Select(r => r["id"]));
+    }
+
+    [Fact]
+    public async Task ALotIsLoadedAtTheEarliestDrawSeenWhicheverOrderTheDrawsArriveIn()
+    {
+        // §5.2's component_lots.loaded_at is the instant of the lot's first draw, which is
+        // MIN(Time) over its component reads. A backfill subdivides a truncated window and
+        // re-reads it from the start, and windows are walked forwards while a reconnect
+        // re-reads older ones, so "first seen" is not "earliest".
+        await _writer.WriteBatchAsync([
+            ComponentRead("C-1-00000010", lane: 1, "L-2400", Instant.AddMinutes(5)),
+        ]);
+        await _writer.WriteBatchAsync([
+            ComponentRead("C-1-00000011", lane: 1, "L-2400", Instant),
+        ]);
+        await _writer.WriteBatchAsync([
+            ComponentRead("C-1-00000012", lane: 1, "L-2400", Instant.AddMinutes(9)),
+        ]);
+
+        var row = Assert.Single(await QueryAsync(
+            "SELECT loaded_at, depleted_at FROM component_lots WHERE lot_code = 'L-2400'"));
+        Assert.Equal(Instant, row["loaded_at"]);
+        Assert.Equal(DBNull.Value, row["depleted_at"]);
+    }
+
+    [Fact]
+    public async Task TwoLanesOnTheSameLotCodeAreTwoLots()
+    {
+        // §5.2 keys component_lots on (lot_code, lane). The plant issues lot codes from one
+        // counter shared by both lanes so the pair never collides today, but a plant that
+        // reused a code on the other lane would otherwise put two lanes' components on one
+        // lot row and make lane-level containment unanswerable.
+        await _writer.WriteBatchAsync([
+            ComponentRead("C-1-00000020", lane: 1, "L-2500", Instant),
+            ComponentRead("C-2-00000020", lane: 2, "L-2500", Instant),
+        ]);
+
+        Assert.Equal(2, await CountAsync("component_lots"));
+    }
+
+    [Fact]
+    public async Task RepeatedComponentReadsDoNotAdvanceTheLotSequence()
+    {
+        // component_lots.id is a SMALLSERIAL and a history holds ~39,600 component reads
+        // against ~80 lots. ON CONFLICT evaluates nextval before it detects the
+        // conflict, so an upsert per record would burn the 32,767 range and fail every write
+        // after it — the same defect M1 measured on stations at 55,956 records.
+        for (var i = 0; i < 200; i++)
+        {
+            await _writer.WriteBatchAsync([
+                ComponentRead($"C-1-{i:D8}", lane: 1, "L-2600", Instant.AddSeconds(i)),
+            ]);
+        }
+
+        Assert.Equal(1, await CountAsync("component_lots"));
+
+        await using var connection = new NpgsqlConnection(_postgres.GetConnectionString());
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(
+            "SELECT last_value FROM component_lots_id_seq", connection);
+        Assert.True(
+            Convert.ToInt64(await command.ExecuteScalarAsync()) <= 2,
+            "the lot id sequence advanced per component read");
+    }
+
+    [Fact]
+    public async Task ALotLearnedByAFailedBatchIsNotTakenOnTrustByTheRetry()
+    {
+        // The cache rule, one table further on. The id comes from an INSERT inside the open
+        // transaction and SMALLSERIAL does not roll back with it, so a cached id would name a
+        // row that no longer exists and every later component read would fail its foreign key
+        // against a component_lots table that never had it.
+        await Assert.ThrowsAnyAsync<Exception>(() => _writer.WriteBatchAsync([
+            ComponentRead("C-1-00000030", lane: 1, "L-2700", Instant),
+            MalformedEvent("S3"),
+        ]));
+
+        await _writer.WriteBatchAsync([ComponentRead("C-1-00000030", lane: 1, "L-2700", Instant)]);
+
+        Assert.Equal(1, await CountAsync("component_lots"));
+        Assert.Equal(1, await CountAsync("components"));
+    }
+
+    [Fact]
+    public async Task ThePressCurveIsOneRowOfSamplesRatherThanOneRowPerSample()
+    {
+        // D6: the curve, not the two scalars, is what separates a press problem from a
+        // material problem — and the plant samples it 51 times per part, which as rows would
+        // be 51 per part against one time series row.
+        await SeedTopologyAsync();
+        var curve = Enumerable.Range(0, 51).Select(i => i * 82.3).ToArray();
+
+        await _writer.WriteBatchAsync([PartProcessed("A-00000040", Instant, curve)]);
+
+        var row = Assert.Single(await QueryAsync(
+            "SELECT samples FROM part_process_curves WHERE assembly_serial = 'A-00000040'"));
+        Assert.Equal(curve, (double[])row["samples"]);
+
+        var values = await QueryAsync(
+            "SELECT signal, value FROM part_process_values "
+            + "WHERE assembly_serial = 'A-00000040' ORDER BY signal");
+        Assert.Equal(["JoiningDistance", "PeakForce"], values.Select(v => v["signal"]));
+    }
+
+    [Fact]
+    public async Task TheVerdictStoresEveryClassScoreIncludingOnAGoodPart()
+    {
+        // §3.4 needs six independent scores that do not sum to 1, on every part. A good part
+        // is six low scores rather than an absent vector, and scenario 6's "confidence decayed
+        // across all classes" is only a question the history can answer if the low ones are
+        // recorded too.
+        await SeedTopologyAsync();
+        await _writer.WriteBatchAsync([
+            SampleEvent("A-00000050", reject: false, image: null, Instant, carrierId: 5),
+        ]);
+
+        var row = Assert.Single(await QueryAsync(
+            "SELECT defect_classes, confidences, confidence, carrier_id, defect_class "
+            + "FROM inspection_results WHERE assembly_serial = 'A-00000050'"));
+
+        Assert.Equal(6, ((string[])row["defect_classes"]).Length);
+        Assert.Equal(6, ((double[])row["confidences"]).Length);
+        Assert.Equal(0.87, row["confidence"]);
+        Assert.Equal((short)5, row["carrier_id"]);
+
+        // M1's scalar column, deliberately no longer written: the widened event carries no
+        // single class, and an argmax taken here would be this gateway deciding which defect
+        // a part has. Task 7 moves /inspection/stats off it.
+        Assert.Equal(DBNull.Value, row["defect_class"]);
+    }
+
+    [Fact]
+    public async Task OnlyARejectLeavesTheLineWithAReason()
+    {
+        // The plant sends an empty reason for a good part because the field is not optional
+        // on the wire. Stored as text it would make every good part look like a condition
+        // with a nameless cause — the same claim the empty StateReason makes one table over.
+        await SeedTopologyAsync();
+        await _writer.WriteBatchAsync([
+            PartCompleted("A-00000060", "good", reason: null, Instant),
+            PartCompleted("A-00000061", "reject", "misalignment", Instant),
+        ]);
+
+        var rows = await QueryAsync(
+            "SELECT assembly_serial, disposition, reason FROM part_dispositions "
+            + "ORDER BY assembly_serial");
+        Assert.Equal(DBNull.Value, rows[0]["reason"]);
+        Assert.Equal("misalignment", rows[1]["reason"]);
+    }
+
+    [Fact]
+    public async Task AnEventTypeWithNoWritePathFailsRatherThanIngestingIntoNothing()
+    {
+        // A plant that gains a sixth event type must not be ingested into raw_events alone
+        // while /reconcile counts it read and every derived table stays empty. Loud is the
+        // only honest answer, and it is the answer the whole ingest path gives.
+        var unknown = new IngestRecord(
+            Kind: "event", NodeId: "ns=2;i=9", SourceTs: Instant, ServerTs: Instant,
+            StatusCode: 0,
+            PayloadJson: """{"Station":"S3","EventType":"ToolChangeEventType"}""",
+            ImageBytes: null);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _writer.WriteBatchAsync([unknown]));
+
+        Assert.Contains("ToolChangeEventType", exception.Message, StringComparison.Ordinal);
+        Assert.Equal(0, await CountAsync("raw_events"));
+    }
+
+    [Fact]
+    public async Task ACarrierIdTooLargeForItsColumnIsRefusedRatherThanWrapped()
+    {
+        // The node is UInt32 and the column is SMALLINT. A plain narrowing cast turns 70,000
+        // into a negative carrier id just as quietly as it turned a large buffer capacity
+        // into a negative one, and M2c's scenario 4 groups defects on exactly this column.
+        var record = new IngestRecord(
+            Kind: "event", NodeId: "ns=2;i=5", SourceTs: Instant, ServerTs: Instant,
+            StatusCode: 0,
+            PayloadJson: """
+                {"Station":"S1","EventType":"AssemblyCreatedEventType",
+                 "AssemblySerial":"A-00000070","ComponentSerials":[],"CarrierId":70000}
+                """,
+            ImageBytes: null);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => _writer.WriteBatchAsync([record]));
+
+        Assert.Contains("70000", exception.Message, StringComparison.Ordinal);
+    }
+
     private static IngestRecord SampleDataChange(string signal, DateTime ts, double value) => new(
         Kind: "datachange", NodeId: "ns=2;i=7", SourceTs: ts, ServerTs: ts, StatusCode: 0,
         PayloadJson: $$"""{"Station":"S3","Signal":"{{signal}}","Value":{{value}}}""",
         ImageBytes: null);
 
-    private static IngestRecord SampleEvent(string serial, bool reject, byte[]? image) => new(
-        Kind: "event", NodeId: "ns=2;i=9", SourceTs: Instant, ServerTs: Instant, StatusCode: 0,
+    private static IngestRecord SampleEvent(string serial, bool reject, byte[]? image) =>
+        SampleEvent(serial, reject, image, Instant, carrierId: 7);
+
+    /// <summary>
+    /// §3.4's verdict at D11's widened shape: six parallel class scores on every event,
+    /// good ones included, and the scalar verdict confidence beside them.
+    /// </summary>
+    private static IngestRecord SampleEvent(
+        string serial, bool reject, byte[]? image, DateTime at, int carrierId) => new(
+        Kind: "event", NodeId: "ns=2;i=9", SourceTs: at, ServerTs: at, StatusCode: 0,
         PayloadJson: $$"""
-            {"Station":"S3","AssemblySerial":"{{serial}}","Disposition":"{{(reject ? "reject" : "good")}}",
-             "DefectClass":{{(reject ? "\"gap\"" : "null")}},"Confidence":0.87,"ModelVersion":"sim-1"}
+            {"Station":"S3","EventType":"InspectionResultEventType",
+             "AssemblySerial":"{{serial}}","CarrierId":{{carrierId}},
+             "Disposition":"{{(reject ? "reject" : "good")}}",
+             "DefectClasses":["gap","crack","misalignment","missing_part","scratch","contamination"],
+             "Confidences":{{(reject
+                 ? "[0.91,0.04,0.07,0.02,0.05,0.03]"
+                 : "[0.04,0.02,0.03,0.01,0.05,0.02]")}},
+             "Confidence":0.87,"ModelVersion":"sim-1"}
             """,
         ImageBytes: image);
 
     /// <summary>
-    /// An event with no assembly serial, which violates inspection_results' primary key. A
-    /// genuinely malformed record rather than a test-only failure switch, so a test using it
-    /// cannot pass while the real failure path is broken.
+    /// An inspection event with no assembly serial — the one column inspection_results keys
+    /// on. A genuinely malformed record rather than a test-only failure switch, so a test
+    /// using it cannot pass while the real failure path is broken.
     /// </summary>
     private static IngestRecord MalformedEvent(string station) => new(
         Kind: "event", NodeId: "ns=2;i=9", SourceTs: Instant, ServerTs: Instant, StatusCode: 0,
-        PayloadJson: $$"""{"Station":"{{station}}","ModelVersion":"sim-1"}""",
+        PayloadJson:
+            $$"""{"Station":"{{station}}","EventType":"InspectionResultEventType","ModelVersion":"sim-1"}""",
+        ImageBytes: null);
+
+    /// <summary>One component off one lane, and the lot it came from.</summary>
+    private static IngestRecord ComponentRead(
+        string serial, int lane, string lotCode, DateTime at, string supplier = "SUP-01") => new(
+        Kind: "event", NodeId: "ns=2;i=5", SourceTs: at, ServerTs: at, StatusCode: 0,
+        PayloadJson: $$"""
+            {"Station":"S1","EventType":"ComponentReadEventType","ComponentSerial":"{{serial}}",
+             "Lane":{{lane}},"LotCode":"{{lotCode}}","Supplier":"{{supplier}}"}
+            """,
+        ImageBytes: null);
+
+    /// <summary>The assembly S1 creates, and the components it was built from, as built.</summary>
+    private static IngestRecord AssemblyCreated(
+        string serial, IReadOnlyList<string> components, DateTime at, int carrierId = 7) => new(
+        Kind: "event", NodeId: "ns=2;i=5", SourceTs: at, ServerTs: at, StatusCode: 0,
+        PayloadJson: $$"""
+            {"Station":"S1","EventType":"AssemblyCreatedEventType","AssemblySerial":"{{serial}}",
+             "ComponentSerials":[{{string.Join(",", components.Select(c => $"\"{c}\""))}}],
+             "CarrierId":{{carrierId}}}
+            """,
+        ImageBytes: null);
+
+    /// <summary>§3.4a's press record, against the serial.</summary>
+    private static IngestRecord PartProcessed(
+        string serial, DateTime at, IReadOnlyList<double> curve) => new(
+        Kind: "event", NodeId: "ns=2;i=6", SourceTs: at, ServerTs: at, StatusCode: 0,
+        PayloadJson: $$"""
+            {"Station":"S2","EventType":"PartProcessedEventType","AssemblySerial":"{{serial}}",
+             "Curve":[{{string.Join(",", curve.Select(v => v.ToString("R", CultureInfo.InvariantCulture)))}}],
+             "PeakForce":4187.4,"JoiningDistance":8.012}
+            """,
+        ImageBytes: null);
+
+    /// <summary>How the part left the line, and why.</summary>
+    private static IngestRecord PartCompleted(
+        string serial, string disposition, string? reason, DateTime at) => new(
+        Kind: "event", NodeId: "ns=2;i=8", SourceTs: at, ServerTs: at, StatusCode: 0,
+        PayloadJson: $$"""
+            {"Station":"S4","EventType":"PartCompletedEventType","AssemblySerial":"{{serial}}",
+             "Disposition":"{{disposition}}"{{(reason is null ? "" : $",\"Reason\":\"{reason}\"")}}}
+            """,
         ImageBytes: null);
 
     /// <summary>A string-valued data change: State and StateReason, which signals cannot hold.</summary>

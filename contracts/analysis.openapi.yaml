@@ -7,6 +7,50 @@
 # Regenerate with: make contract
 components:
   schemas:
+    ComponentOrigin:
+      description: "One as-built component of an assembly, and the supplier lot it was drawn from.\n\n\
+        Everything but the serial and the position is nullable, and null means **unknown**, not\nabsent:\
+        \ a component named by an assembly whose own read event lies before the gateway's\nhistory horizon\
+        \ is one this system knows exists and knows nothing else about. Dropping\nsuch a component would\
+        \ make \xA73.5 scenario 7's containment list quietly short, which is\nthe one failure mode that\
+        \ matters at the moment a containment list is wanted."
+      properties:
+        component_serial:
+          title: Component Serial
+          type: string
+        lane:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Lane
+        lot_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lot Code
+        position:
+          title: Position
+          type: integer
+        read_at:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: Read At
+        supplier:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Supplier
+      required:
+      - component_serial
+      - position
+      - lane
+      - read_at
+      - lot_code
+      - supplier
+      title: ComponentOrigin
+      type: object
     Coverage:
       description: "\xA74.4: without gap markers, missing data is indistinguishable from a quiet machine."
       properties:
@@ -20,6 +64,10 @@ components:
       title: Coverage
       type: object
     DefectClassCount:
+      description: "One class, and how many parts in the window scored at or above the threshold.\n\n\
+        Not a partition of the rejects: \xA73.4's six scores are independent and do not sum to 1,\nso\
+        \ a part the model believes carries two defects counts under both. The counts can\ntherefore total\
+        \ more than `rejects`, and that is the answer rather than a rounding of it."
       properties:
         count:
           title: Count
@@ -32,7 +80,29 @@ components:
       - count
       title: DefectClassCount
       type: object
+    Disposition:
+      description: How the part left the line, and why. Absent while the part is still on it.
+      properties:
+        at:
+          format: date-time
+          title: At
+          type: string
+        disposition:
+          title: Disposition
+          type: string
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+      required:
+      - at
+      - disposition
+      - reason
+      title: Disposition
+      type: object
     Gap:
+      description: "\xA74.4: without gap markers, missing data is indistinguishable from a quiet machine."
       properties:
         from_ts:
           format: date-time
@@ -60,52 +130,34 @@ components:
           type: array
       title: HTTPValidationError
       type: object
-    InspectionStats:
+    Inspection:
+      description: "\xA73.4's verdict for this part, or absent if the part has not been inspected.\n\n\
+        `defect_classes` and `confidences` are parallel arrays over **every** class the\nclassifier scores,\
+        \ on good parts too \u2014 a good part is six low scores, not an absent\nvector. `confidence`\
+        \ is the confidence in the OK/NOK verdict and is not one of them;\nreading the vector as a distribution\
+        \ is the measured defect that once reported a good\npart as 27 % confident and ~30 % misaligned.\n\
+        \nBoth arrays are nullable because M1 wrote rows before the vector existed. Null is\n\"this row\
+        \ predates the widened event\", not \"this part scored nothing\"."
       properties:
-        by_defect_class:
-          items:
-            $ref: '#/components/schemas/DefectClassCount'
-          title: By Defect Class
-          type: array
-        coverage:
-          $ref: '#/components/schemas/Coverage'
-        rejects:
-          title: Rejects
-          type: integer
-        sample_serials:
-          items:
-            type: string
-          title: Sample Serials
-          type: array
-        total:
-          title: Total
-          type: integer
-        window:
-          $ref: '#/components/schemas/Window'
-      required:
-      - window
-      - total
-      - rejects
-      - by_defect_class
-      - sample_serials
-      - coverage
-      title: InspectionStats
-      type: object
-    Part:
-      properties:
-        assembly_serial:
-          title: Assembly Serial
-          type: string
         confidence:
           anyOf:
           - type: number
           - type: 'null'
           title: Confidence
-        defect_class:
+        confidences:
           anyOf:
-          - type: string
+          - items:
+              type: number
+            type: array
           - type: 'null'
-          title: Defect Class
+          title: Confidences
+        defect_classes:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Defect Classes
         image_url:
           anyOf:
           - type: string
@@ -125,15 +177,164 @@ components:
           title: Station
           type: string
       required:
-      - assembly_serial
       - source_ts
       - station
       - result
-      - defect_class
+      - defect_classes
+      - confidences
       - confidence
       - model_version
       - image_url
+      title: Inspection
+      type: object
+    InspectionStats:
+      description: "Counts over a window, with everything needed to tell a real answer from an empty one.\n\
+        \n`by_defect_class` and `rejects_without_class` together account for every reject, and\nneither\
+        \ is readable without the other. They do not sum to `rejects` \u2014 a part scoring\nhigh on two\
+        \ classes appears twice in the breakdown \u2014 but `rejects_without_class` is\nexactly the part\
+        \ of `rejects` the breakdown cannot explain, so an empty breakdown beside\na non-zero `rejects`\
+        \ now says *which* it is: 30 rejects and 30 unclassified is a\nmeasurement, and 30 rejects and\
+        \ 0 unclassified with an empty breakdown is impossible."
+      properties:
+        by_defect_class:
+          items:
+            $ref: '#/components/schemas/DefectClassCount'
+          title: By Defect Class
+          type: array
+        coverage:
+          $ref: '#/components/schemas/Coverage'
+        defect_class_threshold:
+          title: Defect Class Threshold
+          type: number
+        rejects:
+          title: Rejects
+          type: integer
+        rejects_without_class:
+          title: Rejects Without Class
+          type: integer
+        sample_serials:
+          items:
+            type: string
+          title: Sample Serials
+          type: array
+        total:
+          title: Total
+          type: integer
+        window:
+          $ref: '#/components/schemas/Window'
+      required:
+      - window
+      - total
+      - rejects
+      - by_defect_class
+      - defect_class_threshold
+      - rejects_without_class
+      - sample_serials
+      - coverage
+      title: InspectionStats
+      type: object
+    Part:
+      description: "\xA714's end-to-end trace of one serial, every section read by that serial alone.\n\
+        \nA section that is empty or null is a section this system has no row for, and the part\nis answered\
+        \ anyway. The two shapes that produces are both ordinary rather than\nexceptional: a part between\
+        \ S2 and S3 has no verdict yet, and an assembly created\nbefore the gateway's history horizon\
+        \ has no creation instant, no carrier and no\ngenealogy, because the one event carrying all three\
+        \ arrived before the gateway did."
+      properties:
+        assembly_serial:
+          title: Assembly Serial
+          type: string
+        carrier_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Carrier Id
+        created_at:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: Created At
+        disposition:
+          anyOf:
+          - $ref: '#/components/schemas/Disposition'
+          - type: 'null'
+        genealogy:
+          items:
+            $ref: '#/components/schemas/ComponentOrigin'
+          title: Genealogy
+          type: array
+        inspection:
+          anyOf:
+          - $ref: '#/components/schemas/Inspection'
+          - type: 'null'
+        process_curves:
+          items:
+            $ref: '#/components/schemas/ProcessCurve'
+          title: Process Curves
+          type: array
+        process_values:
+          items:
+            $ref: '#/components/schemas/ProcessValue'
+          title: Process Values
+          type: array
+      required:
+      - assembly_serial
+      - created_at
+      - carrier_id
+      - genealogy
+      - process_values
+      - process_curves
+      - inspection
+      - disposition
       title: Part
+      type: object
+    ProcessCurve:
+      description: "D6's force\u2013distance curve for this part, as the samples the press recorded.\n\
+        \nThe thing the two scalars cannot reconstruct: two presses reach the same peak at the\nsame final\
+        \ position by different routes, and the route is the diagnosis (\xA73.4a)."
+      properties:
+        samples:
+          items:
+            type: number
+          title: Samples
+          type: array
+        signal:
+          title: Signal
+          type: string
+        station:
+          title: Station
+          type: string
+      required:
+      - station
+      - signal
+      - samples
+      title: ProcessCurve
+      type: object
+    ProcessValue:
+      description: 'One number a station recorded against this serial at the instant of production.
+
+
+        The signal is the name the plant''s own event carries (`PeakForce`), which is not
+
+        always the name of the historised stream beside it (`JoiningForcePeak`). Nothing
+
+        between the plant and here translates the two, so nothing can translate them wrongly.'
+      properties:
+        signal:
+          title: Signal
+          type: string
+        station:
+          title: Station
+          type: string
+        value:
+          title: Value
+          type: number
+      required:
+      - station
+      - signal
+      - value
+      title: ProcessValue
       type: object
     ValidationError:
       properties:
@@ -183,7 +384,14 @@ openapi: 3.1.0
 paths:
   /inspection/stats:
     get:
-      description: Counts over a closed window, with the gaps that make them incomplete.
+      description: "Counts over a closed window, with the gaps that make them incomplete.\n\n**The breakdown\
+        \ reads \xA73.4's score vector, not a scalar class.** It grouped by\n`inspection_results.defect_class`\
+        \ until M2b Task 7, and by then nothing filled that\ncolumn: the plant sends `DefectClasses`,\
+        \ the gateway's select clause named the old\nscalar, asyncua maps a select clause it cannot resolve\
+        \ to `Variant(None)` rather than\nerroring, the writer resolves that to `DBNull`, and `defect_class\
+        \ IS NOT NULL` then\nemptied the group-by. No exception and no 500 \u2014 `by_defect_class: []`\
+        \ beside a correct\n`total` and `rejects`, which is a silently empty answer to \"which defects\
+        \ are we\nseeing\" and the exact failure \xA71 exists to prevent."
       operationId: inspectionStats
       parameters:
       - in: query
@@ -216,11 +424,17 @@ paths:
       summary: Inspection Stats
   /parts/{serial}:
     get:
-      description: "Reads the per-part record directly.\n\n\xA73.4a: that record is authoritative for\
-        \ the part and is never reconstructed by joining\nthe time series on \"which part was at S3 at\
-        \ 02:14:07\" \u2014 with buffers, variable takt and\nhistory gaps that association is an inference,\
-        \ and inferred traceability is what makes a\ncontainment list unusable at the moment it matters.\
-        \ There is no time-range join here."
+      description: "\xA714's trace: genealogy, what each station recorded, the verdict and the disposition.\n\
+        \n**Every statement below is keyed by the serial and nothing else.** \xA73.4a: the per-part\n\
+        record is authoritative for the part and is never reconstructed by joining the time\nseries on\
+        \ \"which part was at S2 at 02:14:07\" \u2014 with buffers, variable takt and history\ngaps that\
+        \ association is an inference, and inferred traceability is what makes a\ncontainment list unusable\
+        \ at the moment it matters. There is no time range anywhere in\nthis function, and `tests/test_traceability.py`\
+        \ is what fails if one appears.\n\n\"Station history\" here is what happened to the part at each\
+        \ station \u2014 S1's creation\ninstant, S2's press record, S3's verdict, S4's disposition \u2014\
+        \ and not\n`part_station_events`, which \xA75.2 says has no source: no event the plant publishes\n\
+        carries a station entry or exit instant, and writing the *processing* instant into\n`entered_at`\
+        \ would be exactly the quiet wrong answer this system refuses."
       operationId: getPart
       parameters:
       - in: path

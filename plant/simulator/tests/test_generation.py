@@ -22,7 +22,7 @@ from typing import NamedTuple
 import pytest
 from asyncua import Server, ua
 from asyncua.server.history_sql import HistorySQLite
-from conftest import new_server
+from conftest import STATION_CODES, new_server
 from simulator.address_space import (
     AddressSpace,
     build_address_space,
@@ -36,6 +36,8 @@ from simulator.historian import (
     attach_historian,
     register_timestamp_converter,
 )
+from simulator.identity import LotSchedule
+from simulator.inspection_client import DEFECT_CLASSES
 from simulator.line import Line, run_catchup, run_live
 from simulator.server import build_line
 from simulator.stations.base import PartOutcome, ProduceFn
@@ -58,6 +60,10 @@ async def _stub_produce(part_id: str, _ts: datetime) -> PartOutcome:
     return PartOutcome(
         disposition="reject" if reject else "good",
         defect_class="gap" if reject else None,
+        defect_classes=tuple(DEFECT_CLASSES),
+        confidences=tuple(
+            0.88 if reject and name == "gap" else 0.03 for name in DEFECT_CLASSES
+        ),
         confidence=0.91,
         image=b"\x89PNG" + b"\x00" * 4096 if reject else None,
         model_version="stub-1",
@@ -88,7 +94,9 @@ async def _build_plant(
     server = new_server()
     await server.init()
     idx = await server.register_namespace("http://machine-agent/plant")
-    space = await build_address_space(server, idx, settings.buffer_capacity)
+    space = await build_address_space(
+        server, idx, settings.buffer_capacity, settings.joining_distance_nominal
+    )
 
     ledger = Ledger()
     storage = await attach_historian(
@@ -100,7 +108,9 @@ async def _build_plant(
         ledger,
     )
     writer = LedgerWriter(space, ledger)
-    line = build_line(writer, settings, produce)
+    line = build_line(
+        writer, settings, produce, LotSchedule(settings, clock.history_start)
+    )
     return Plant(server, space, line, writer, ledger, storage)
 
 
@@ -145,17 +155,52 @@ async def test_every_stream_reconciles_exactly(tmp_path: Path) -> None:
     assert set(ledger.rows) == streams
 
     expected = dict(ledger.rows)
-    expected[("S3_Inspection", "InspectionResult")] = ledger.events
+    # One event key per emitting station, because the historian stores one table per
+    # emitting node and every one of §4.1's four stations emits.
+    for code in STATION_CODES:
+        expected[(code, "Events")] = ledger.events.get(code, 0)
     assert counts == expected
 
-    # The two counts this test knows independently of the ledger. S3 inspects every
-    # part that reaches it exactly once, so its PartCount stream is one row per part
-    # plus the priming row, and its event stream is one row per part with none.
-    parts = ledger.rows[("S3_Inspection", "PartCount")] - 1
-    assert ledger.events == parts
-    assert parts > 10_000, (
+    # What this test knows independently of the ledger: how many events each station
+    # owes per part, counted off §4.1 rather than off the ledger it is checking.
+    #
+    # **This is the check that catches a station wired to the wrong generator.** The
+    # equality above only says the historian holds what the ledger claims -- and the
+    # ledger counts a trigger wherever it happened, so S2 firing S4's event type would
+    # reconcile perfectly while `part_dispositions` filled from the press. Counting
+    # each station's events against its own part count is what separates the two.
+    #
+    # Each station's part count comes from its own §4.1 counter, one row per part plus
+    # the priming row. S4 has no PartCount: its count is GoodCount + RejectCount, and
+    # only the one that moved is a row (see Ledger.record), so the two sum to it.
+    parts = {
+        code: ledger.rows[(code, "PartCount")] - 1
+        for code in ("S1_Feeding", "S2_Joining", "S3_Inspection")
+    }
+    parts["S4_Outfeed"] = (
+        ledger.rows[("S4_Outfeed", "GoodCount")]
+        + ledger.rows[("S4_Outfeed", "RejectCount")]
+        - 2
+    )
+    # Three per part at S1 -- one ComponentReadEvent per lane and one
+    # AssemblyCreatedEvent -- and one per part at each of the other three. Literals,
+    # not len(LANES) + 1: deriving the multiplier from the constant `load_carrier`
+    # itself iterates would move both sides of the assertion together.
+    assert ledger.events == {
+        "S1_Feeding": 3 * parts["S1_Feeding"],
+        "S2_Joining": parts["S2_Joining"],
+        "S3_Inspection": parts["S3_Inspection"],
+        "S4_Outfeed": parts["S4_Outfeed"],
+    }
+    # The line drains downstream, so a part that reached S1 has not necessarily reached
+    # S4 by the horizon -- but every part S4 completed was created at S1, and the gap
+    # between them is what is sitting in the buffers and on the carriers.
+    assert parts["S1_Feeding"] >= parts["S2_Joining"] >= parts["S3_Inspection"]
+    assert parts["S3_Inspection"] >= parts["S4_Outfeed"] > 0
+
+    assert parts["S3_Inspection"] > 10_000, (
         "the queue cap this test exists for is 10,000 rows per stream; a depth that "
-        f"produces only {parts} parts cannot reach it"
+        f"produces only {parts['S3_Inspection']} parts cannot reach it"
     )
 
     # The line ran to the horizon rather than stopping somewhere inside it: live
@@ -378,7 +423,7 @@ async def test_the_reconciliation_names_the_stream_that_disagrees(
             await run_catchup(plant.line, plant.writer, clock, settings, plant.storage)
 
     message = str(raised.value)
-    assert "on 1 of 26 streams" in message
+    assert "on 1 of 29 streams" in message
     assert "S1_Feeding" not in message, "only the offender is named"
 
 

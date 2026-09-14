@@ -3,7 +3,6 @@ from simulator.stations.base import (
     ProduceFn,
     Station,
     StationNodes,
-    serial_for,
 )
 from simulator.stations.s1_feeding import FeedingStation
 from simulator.stations.s2_joining import JoiningStation
@@ -19,5 +18,4 @@ __all__ = [
     "ProduceFn",
     "Station",
     "StationNodes",
-    "serial_for",
 ]

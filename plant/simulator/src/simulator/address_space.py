@@ -5,15 +5,31 @@ near-identical code paths. Adding a fifth station is a row of data and nothing e
 which is the same claim §4.1 makes about the gateway: topology is described in one
 place and discovered by browsing, never spread across code.
 
-**What the tree counts to: 25 historised streams and nine static nodes.** Six each
-for S1, S2 and S4, four for S3, one `Level` per buffer; the static nine are the
-buffers' `Capacity`, `UpstreamStation` and `DownstreamStation`, read on connect and
-never historised. Every guard in Tasks 9 and 10 is sized against the 25, so a tree
-that counts to 24 or 26 is a tree that disagrees with §4.1.
+**What the tree counts to: 38 variables -- 25 historised streams, ten static nodes and
+three live-only ones.** Six historised each for S1, S2 and S4, four for S3, one `Level`
+per buffer; nine of the statics are the buffers' `Capacity`, `UpstreamStation` and
+`DownstreamStation` and the tenth is `Press/StrokeLength`, all read on connect and
+never historised. Every guard in Tasks 9 and 10 is sized against the 25, so a tree that
+counts to 24 or 26 is a tree that disagrees with §4.1.
 
-`Lane1_Lot`, `Lane2_Lot` and `CurrentAssemblySerial` are in §4.1 and are deliberately
-absent here. They arrive in M2b with the data that makes them change; §13's standard
-is that nothing in a milestone is faked, and a node holding a constant is a fake.
+The three live-only ones are D12's: `Lane1_Lot`, `Lane2_Lot` and
+`CurrentAssemblySerial`, in the tree and readable by the HMI, never historised. The
+events carry the same facts authoritatively (§3.4a), and a historised second copy is
+a weaker one that invites exactly the time-join the spec forbids. **They are station
+children, and a gateway that subscribes to every Variable child of a station without
+reading its `Historizing` attribute will ingest 28 streams against a ledger with 25
+rows in it.** `Press/StrokeLength` sits outside Stations for precisely that reason;
+these three cannot, because §4.1 puts them on S1.
+
+`Press/StrokeLength` is §3.4a's curve axis: the curve is an array of forces with no
+axis of its own, and this is the ram travel that turns a sample index into
+millimetres. It is a sibling of Stations rather than a variable on S2 **because a
+station's variables are what a gateway subscribes to** -- `TopologyDiscovery` takes
+every Variable child of a station as a signal, so a static one there would arrive as a
+26th stream. Published rather than left as a constant in the gateway and another in the
+analysis service: only OPC UA crosses between the stacks, and three private copies of
+one number are three chances to mis-scale every curve downstream with no error
+anywhere.
 
 **A deviation from §4.1's wording, recorded rather than absorbed.** §4.1 says the
 buffer nodes *reference* the stations they sit between. `UpstreamStation` and
@@ -60,7 +76,7 @@ from asyncua import Node, Server, ua
 from asyncua.server import EventGenerator
 
 from simulator.clock import Phase, SimulatedClock
-from simulator.events import EVENT_FIELDS
+from simulator.events import EVENT_TYPES, EventType, event_types_for
 from simulator.packml import State
 
 # §4.1's per-station variables, as data. The signals here are what each station
@@ -94,6 +110,25 @@ A gateway discovers direction from the buffers' Upstream/DownstreamStation, not 
 this, but a Stations folder listing S4 before S1 would be needlessly confusing to
 anyone holding UaExpert."""
 
+STATION_LIVE_SIGNALS: dict[str, tuple[tuple[str, ua.VariantType], ...]] = {
+    "S1_Feeding": (
+        ("Lane1_Lot", ua.VariantType.String),
+        ("Lane2_Lot", ua.VariantType.String),
+        ("CurrentAssemblySerial", ua.VariantType.String),
+    ),
+}
+"""D12's live-only variables: in the tree, written every cycle, never historised.
+
+Keyed by station like STATION_SIGNALS and deliberately not merged into it -- the two
+tables are read by different things (`historised_streams` walks one of them and the
+ledger counts what it writes), and a signal that moved between them by accident would
+either lose its history or gain a second copy of a fact an event already carries.
+
+§4.1 puts all three on S1, which is where both facts are made: the lot a lane is
+drawing from and the serial of the assembly just created. A station with no entry here
+has no live-only variables, which is every station but S1.
+"""
+
 # Every station carries both (§4.1). Separate from the table above because they are
 # the same for all four, and because their VariantType is what makes them
 # un-deadbandable on the gateway side (Task 9's signal policy defaults).
@@ -111,9 +146,14 @@ BUFFERS: tuple[tuple[str, str, str], ...] = (
     ("B3_4", "S3_Inspection", "S4_Outfeed"),
 )
 
+PRESS_FOLDER = "Press"
+CURVE_STROKE_SIGNAL = "StrokeLength"
+"""Where §3.4a's curve axis is published, and under what name."""
+
 INSPECTION_STATION = "S3_Inspection"
-"""The one station §4.1 gives an event type in M2a. The other four event types in
-§4.1's tree arrive with the data they carry, in M2b."""
+"""The station §4.1 gives the inspection event to, named because the historian and
+`AddressSpace.inspection` reach for it directly. The other four event types belong to
+other stations; `events.EVENT_TYPES` is what says which."""
 
 BUFFER_LEVEL_SIGNAL = "Level"
 """The one historised variable a buffer has. Named because the ledger and the
@@ -178,29 +218,24 @@ async def write_at(
 class StationNodeSet:
     """One station's handles. Implements `stations.StationNodes`.
 
-    `historised` is every signal §4.1 asks this station to publish; there is no
-    un-historised station variable in M2a, which is why the name is safe to count
-    against. Historisation itself is attached elsewhere (`historian`), against
-    exactly these nodes.
+    `historised` is every signal §4.1 asks this station to record; `live` is D12's
+    un-historised ones. The split is the whole of what "historised" means here, and
+    `historised_streams` walks only the first -- so a signal in the wrong dict either
+    loses its history or gains a second copy of a fact an event already carries.
+
+    `generators` is keyed by event *type* browse name, because a station may emit more
+    than one (S1 emits two) and the emitting node is the same for both.
     """
 
     code: str
     node: Node
     historised: dict[str, Node]
+    live: dict[str, Node]
     types: dict[str, ua.VariantType]
-    event_gen: EventGenerator | None
-
-    def require_event_generator(self) -> EventGenerator:
-        """Raises ValueError for a station that emits no events."""
-        if self.event_gen is None:
-            raise ValueError(
-                f"{self.code} emits no events: in M2a §4.1's event types exist for "
-                f"{INSPECTION_STATION} only"
-            )
-        return self.event_gen
+    generators: dict[str, EventGenerator]
 
     async def write(self, signal: str, at: datetime, value: float | str) -> None:
-        """Publish one of this station's signals at simulated instant `at`.
+        """Publish one of this station's historised signals at simulated instant `at`.
 
         Raises KeyError if `signal` is not one §4.1 gives this station.
         """
@@ -210,21 +245,43 @@ class StationNodeSet:
         # isinstance(value, float) would miss every counter in the line.
         await write_at(self.historised[signal], self.types[signal], at, value)
 
-    async def trigger_event(self, at: datetime, fields: dict[str, object]) -> None:
-        """Fire this station's event type with `at` as its Time.
+    async def write_live(self, signal: str, at: datetime, value: float | str) -> None:
+        """Publish one of D12's live-only variables. Raises KeyError for a signal this
+        station does not have one of.
 
-        `fields` must name exactly `events.EVENT_FIELDS`. Raises ValueError if it
-        does not, or if this station has no event type.
+        Separate from `write` rather than dispatching inside it, so that a station
+        cannot reach a historised node through the un-counted path or the reverse: the
+        ledger counts every `write` and must count no `write_live`, and a single method
+        deciding by dictionary membership would silently do the wrong one after a typo.
+
+        Still stamped with simulated time. Nothing reads these from history -- there is
+        none -- but a live reader that saw the wall clock here would be reading a
+        different clock from the one every other node on this tree carries.
         """
-        generator = self.require_event_generator()
-        declared = {name for name, _ in EVENT_FIELDS}
+        await write_at(self.live[signal], self.types[signal], at, value)
+
+    async def trigger_event(
+        self, event: EventType, at: datetime, fields: dict[str, object]
+    ) -> None:
+        """Fire one of this station's event types with `at` as its Time.
+
+        `fields` must name exactly `event.fields`. Raises ValueError if it does not, or
+        if `event` is not one this station emits.
+        """
+        generator = self.generators.get(event.name)
+        if generator is None:
+            raise ValueError(
+                f"{self.code} does not emit {event.name}: §4.1 gives it "
+                f"{sorted(self.generators) or 'no event type'}"
+            )
+        declared = set(event.field_names)
         if set(fields) != declared:
             # Not pedantry, and not merely a typo guard. EventGenerator reuses one
             # Event object across every trigger, so a field left out keeps the
             # *previous* event's value and is sent as if it were this one's -- a
             # quiet wrong answer with a defect class attached to the wrong serial.
             raise ValueError(
-                f"{self.code} event fields {sorted(fields)} are not EVENT_FIELDS "
+                f"{self.code} event fields {sorted(fields)} are not {event.name}'s "
                 f"{sorted(declared)}; a missing field is sent as the previous "
                 "event's value, not as absent"
             )
@@ -261,6 +318,7 @@ class AddressSpace:
     idx: int
     line: Node
     clock: Node
+    press_stroke: Node
     clock_time: Node
     clock_phase: Node
     clock_speed: Node
@@ -268,12 +326,11 @@ class AddressSpace:
     buffers_folder: Node
     stations: dict[str, StationNodeSet]
     buffers: dict[str, BufferNodeSet]
-    event_type: Node
+    event_types: dict[str, Node]
 
     @property
     def inspection(self) -> StationNodeSet:
-        """The one station that emits events (§4.1), which the historian needs by
-        name: event history is attached to the emitting node, not to a variable.
+        """S3, which several tests and the image accounting reach for by name.
 
         A property rather than a field so there is one S3 in this object, not a second
         alias of it that could be built wrong. M1's `s3`/`takt`/`part_count`/`event_gen`
@@ -282,6 +339,15 @@ class AddressSpace:
         exactly the confusion a four-station line cannot afford.
         """
         return self.stations[INSPECTION_STATION]
+
+    def emitting_stations(self) -> Iterator[StationNodeSet]:
+        """Every station with at least one event generator, in line order.
+
+        What `attach_historian` historises event history against: event history hangs
+        off the emitting node rather than off a variable, and one node's table holds
+        every event type it emits.
+        """
+        return (nodes for nodes in self.stations.values() if nodes.generators)
 
 
 class HistorisedStream(NamedTuple):
@@ -327,13 +393,16 @@ def initial_value(signal: str, variant_type: ua.VariantType) -> float | str:
 
 
 async def build_address_space(
-    server: Server, idx: int, buffer_capacity: int
+    server: Server, idx: int, buffer_capacity: int, curve_stroke_mm: float
 ) -> AddressSpace:
     """§4.1's tree under Objects/Line, on an initialised but unstarted `server`.
 
     `buffer_capacity` is `Settings.buffer_capacity` -- the same number the `Buffer`
     objects themselves are built with, so the `Capacity` node a gateway reads and the
     capacity the line actually enforces are one configured value, not two.
+    `curve_stroke_mm` is the same idea for §3.4a's curve: the ram travel the samples are
+    spaced across, so the axis a consumer scales with and the axis the press was sampled
+    on cannot be two different numbers.
     """
     objects = server.nodes.objects
     line = await objects.add_object(idx, "Line")
@@ -353,14 +422,22 @@ async def build_address_space(
     )
     clock_speed = await clock.add_variable(idx, "Speed", 1.0, ua.VariantType.Double)
 
-    # create_custom_event_type wants a list, not the tuple EVENT_FIELDS is defined
-    # as elsewhere -- list() here, not a per-element rebuild.
-    event_type = await server.create_custom_event_type(
-        idx,
-        "InspectionResultEventType",
-        ua.ObjectIds.BaseEventType,
-        list(EVENT_FIELDS),
+    # Static, written by add_variable's own initial value and never again -- the same
+    # arrangement as the buffers' topology nodes below, and readable on connect without
+    # the plant running. See this module's docstring for why it is not a child of S2.
+    press = await line.add_object(idx, PRESS_FOLDER)
+    press_stroke = await press.add_variable(
+        idx, CURVE_STROKE_SIGNAL, curve_stroke_mm, ua.VariantType.Double
     )
+
+    # create_custom_event_type wants a list, not the tuple each field table is defined
+    # as elsewhere -- list() here, not a per-element rebuild.
+    event_types = {
+        event.name: await server.create_custom_event_type(
+            idx, event.name, ua.ObjectIds.BaseEventType, list(event.fields)
+        )
+        for event in EVENT_TYPES
+    }
 
     stations_folder = await line.add_object(idx, "Stations")
     stations: dict[str, StationNodeSet] = {}
@@ -374,27 +451,45 @@ async def build_address_space(
             )
             types[name] = variant_type
 
-        event_gen: EventGenerator | None = None
-        if code == INSPECTION_STATION:
-            # ORDER MATTERS. get_event_generator() adds the GeneratesEvent reference
-            # from the emitting node to the event type and sets its EventNotifier bit.
-            # historize_node_event() later reads exactly those GeneratesEvent
-            # references to decide which event types to historise -- so the generator
-            # must exist first, or event history is silently created with no columns.
+        # D12: in the tree, never historised, and so never primed and never counted.
+        # Declared with the same initial_value as everything else so a live reader
+        # before the first cycle sees an empty string rather than whatever asyncua
+        # would have defaulted to.
+        live: dict[str, Node] = {}
+        for name, variant_type in STATION_LIVE_SIGNALS.get(code, ()):
+            live[name] = await station.add_variable(
+                idx, name, initial_value(name, variant_type), variant_type
+            )
+            types[name] = variant_type
+
+        generators: dict[str, EventGenerator] = {}
+        for event in event_types_for(code):
+            # ORDER MATTERS, once per generator and now five times. get_event_generator
+            # adds the GeneratesEvent reference from the emitting node to the event type
+            # and sets its EventNotifier bit. historize_node_event() later reads exactly
+            # those GeneratesEvent references to decide which event types to historise
+            # -- so every generator a station will ever have must exist before it, or
+            # event history is silently created with columns for the types that did
+            # exist and none for the rest. asyncua says as much in historize_event's own
+            # docstring: adding custom events to a source AFTER historising is not
+            # supported, and the table has to be deleted by hand to recover.
             #
             # station.nodeid, not station: get_event_generator's emitting_node is
             # typed NodeId | int. Its implementation does accept a Node
             # (event_generator.py isinstance-checks for one), but that path is missing
             # from the public signature -- passing the NodeId reaches the identical
             # Node internally and satisfies mypy strict either way.
-            event_gen = await server.get_event_generator(event_type, station.nodeid)
+            generators[event.name] = await server.get_event_generator(
+                event_types[event.name], station.nodeid
+            )
 
         stations[code] = StationNodeSet(
             code=code,
             node=station,
             historised=historised,
+            live=live,
             types=types,
-            event_gen=event_gen,
+            generators=generators,
         )
 
     buffers_folder = await line.add_object(idx, "Buffers")
@@ -435,6 +530,7 @@ async def build_address_space(
         idx=idx,
         line=line,
         clock=clock,
+        press_stroke=press_stroke,
         clock_time=clock_time,
         clock_phase=clock_phase,
         clock_speed=clock_speed,
@@ -442,7 +538,7 @@ async def build_address_space(
         buffers_folder=buffers_folder,
         stations=stations,
         buffers=buffers,
-        event_type=event_type,
+        event_types=event_types,
     )
 
 

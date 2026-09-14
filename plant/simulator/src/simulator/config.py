@@ -142,20 +142,113 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
         "S4_Outfeed": 6.00,
     }
 
-    # §4.1's two S2 process signals. Nominal values only -- M2c's scenario 3 drifts
-    # the force down from here, and M2b replaces both with the force-distance curve
-    # they summarise (§3.4a).
-    joining_force_nominal: float = 4200.0  # newtons
-    joining_distance_nominal: float = 12.5  # millimetres
-    # Part-to-part spread around those nominals, ~1 % of force and ~0.2 % of distance.
-    # Not measured -- §3.5's noise model is M2b's, and these exist so the two signals
-    # vary at all (a constant is coalesced away before the historian sees it, the same
-    # reason takt_jitter_sigma above exists). They are settings rather than literals
-    # because M2c's scenario 3 drifts the force against exactly this spread: a drift
-    # smaller than the noise it hides in is not detectable, and that ratio has to be
-    # tunable to make the scenario provable either way.
+    # §4.1's two S2 process signals, which are also the press's own two settings
+    # (§3.4a). The press is **force-clamped at the top and position-stopped at the
+    # bottom** -- the ordinary industrial arrangement: hydraulic relief (or a servo
+    # clamp) caps the load, a hard mechanical stop ends the stroke, and the ram runs to
+    # that stop on every part. So the peak force IS the clamp setting and the joining
+    # distance IS the stop, and neither of them knows anything about the part.
+    #
+    # M2c's scenario 3 drifts the clamp. Nothing drifts the stop.
+    joining_force_nominal: float = 4200.0  # newtons -- the clamp
+    joining_distance_nominal: float = 12.5  # millimetres -- the hard stop
+    # Part-to-part spread on the two, ~1 % of force and ~0.2 % of distance. The force
+    # spread is the clamp's own, because a relief valve does not repeat perfectly; the
+    # distance spread is the position sensor's measurement noise, because a hard stop is
+    # a hard stop. Neither is measured -- they exist so the two streams vary at all (a
+    # constant is coalesced away before the historian sees it, the same reason
+    # takt_jitter_sigma above exists), and because scenario 3 drifts the force against
+    # exactly this spread: a drift smaller than the noise it hides in is not detectable,
+    # and that ratio has to be tunable to make the scenario provable either way.
     joining_force_sigma: float = 40.0  # newtons
     joining_distance_sigma: float = 0.02  # millimetres
+
+    # §3.4a's force-distance curve. THREE knobs, and which fault moves which is the
+    # whole of why the curve is stored:
+    #
+    #   * the clamp force above is the *press's* knob. Scenario 3 drifts it, and it is
+    #     the only one of the three that moves a published scalar.
+    #   * the contact point is the *components'* knob -- an undersized component lets
+    #     the ram travel further before it meets resistance. Scenario 7 moves it, and it
+    #     moves NEITHER published scalar: the clamp still caps the load and the ram
+    #     still runs to the same stop. It is visible only in the shape of the trace.
+    #   * the stiffness is the *material's*: the slope of the rise, and curve-only.
+    #
+    # An earlier draft of this made the peak stiffness x a fixed seating depth, so that
+    # (peak, distance) and (stiffness, contact) were a bijection -- the whole curve was
+    # reconstructible from the two scalars to ~1e-12 N, D6's curve table stored nothing
+    # the scalar table did not, and scenario 7 collapsed into a two-scalar query that
+    # points at the right answer. §3.5 calls scenario 7 the strongest test in the set
+    # precisely because the symptom points at the WRONG cause, so that draft destroyed
+    # the scenario. A summary is a projection and is allowed to lose information;
+    # losing the contact point into the curve is what the projection is for.
+    #
+    # 51 samples over the 12.5 mm stroke is a reading every 0.25 mm of ram travel --
+    # §3.4a's "a few dozen values per part", and enough that the fitted band below holds
+    # five or six points rather than two.
+    curve_samples: int = 51
+    # Where a nominal part first meets resistance, as ram travel from the top of the
+    # stroke. 8.0 mm of the 12.5 mm stroke leaves 4.5 mm for the part to compress in,
+    # which is the headroom a scenario has to move contact later in without the clamp
+    # going unreached.
+    press_contact_nominal_mm: float = 8.0
+    # Part-to-part spread on the contact point: component height varies. This is the
+    # noise scenario 7's shift has to be significant against, so it is the number that
+    # decides whether a bad lot is detectable at all -- and the reason the analysis has
+    # to run a significance test rather than read one part.
+    press_contact_sigma_mm: float = 0.05  # millimetres
+    # How far a nominal part compresses before the clamp takes over. With the clamp it
+    # fixes the nominal stiffness below; 2.0 mm of the 4.5 mm available means the clamp
+    # is reached well before the stop even for a contact point 2 mm late, which is the
+    # geometry `force_distance` refuses to violate.
+    press_compression_mm: float = 2.0
+    # Part-to-part spread on the slope, ~2 % of nominal: material hardness varies.
+    press_stiffness_sigma: float = 40.0  # newtons per millimetre
+    # Load-cell noise, ~0.2 % of the clamp, on **every** sample of the trace. Not
+    # joining_force_sigma, which is the part-to-part spread of the clamp itself; this is
+    # the noise floor within one part's trace. Applying it only to the idle part of the
+    # stroke is what made the earlier draft's inversion exact, and it would leave the
+    # per-part measurement with no spread exactly where §3.5 wants a significance test
+    # to be necessary.
+    curve_noise_sigma: float = 8.0
+    # Which part of the rise `contact_of` fits its line through, as a fraction of the
+    # peak. Below the low edge sit the noise floor and the sample that straddles
+    # contact; above the high edge sits the knee where the clamp takes over and the
+    # force stops climbing. Neither end is on the straight part.
+    curve_fit_band_low: float = 0.2
+    curve_fit_band_high: float = 0.8
+    # How far above the noise floor the band's lower edge must sit, in sigma. Enforced
+    # rather than documented: a noise sample taken for a point on the rise gives a
+    # slightly wrong contact point, not an exception, and a wrong number that looks
+    # right is what this module exists to prevent. At the values above the margin is
+    # ~105 sigma, so this refuses only a configuration that has moved a long way.
+    curve_fit_noise_margin_sigmas: float = 20.0
+
+    @property
+    def press_stiffness_nominal(self) -> float:
+        """Newtons per millimetre of compression.
+
+        Derived, not configured: it is the clamp force reached over
+        press_compression_mm, and configuring it separately would be the same number
+        written twice with nothing keeping the two spellings equal.
+        """
+        return self.joining_force_nominal / self.press_compression_mm
+
+    # §3.1's identity model. Lot size sets how many parts a contaminated lot touches,
+    # which is what M2c's scenario 7 containment list is scored against: too large and
+    # every part is in the lot, too small and the correlation has no power. At the 6 s
+    # takt above, 500 components is 500 parts on one lane -- 50 minutes of production,
+    # so the shipped history depth (ClockConfig.DEFAULT_HISTORY_DEPTH, 33 h) crosses
+    # roughly forty lots per lane and a lot is a period a defect rate can actually be
+    # compared across. Not eighteen hours and twenty lots: that was this comment until
+    # the third place in this repository had to correct the same 18 h to 33 h.
+    #
+    # supplier_count is what makes "which supplier" a question with more than one
+    # answer; the lot is what containment is scored on, and the supplier is what a
+    # §6.4 audit trail reports upwards.
+    lot_size: int = 500
+    lot_code_prefix: str = "L-"
+    supplier_count: int = 3
 
     # §4.1's three fill levels -- S1's two feeder lanes and S4's outfeed. Each is a
     # sawtooth: drawn down (or filled up) by production, reset when an operator
@@ -249,6 +342,15 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # nothing.
     hmi_server_host: str = "0.0.0.0"
     hmi_server_port: int = 8200
+    # How many parts §3.7's strip holds, and therefore how many reject images this
+    # process keeps in memory at once. A screen-width choice, not a statistical one: the
+    # strip shows what just came off the line, and "how many rejects" is answered by S4's
+    # RejectCount and by the diagnostics stack, not by counting thumbnails. At §3.5's
+    # 1.5 % reject rate, twenty parts hold at least one reject about a quarter of the
+    # time -- that is arithmetic on the configured rate, not a measurement -- and twenty
+    # reject images at R4's ~110 kB median is ~2 MB, which is the worst case this bound
+    # exists to cap.
+    hmi_recent_parts: int = 20
 
     # boundary
     endpoint_url: str = "opc.tcp://line-simulator:4840/plant"

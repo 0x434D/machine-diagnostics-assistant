@@ -5,15 +5,28 @@ import { afterEach, expect, test, vi } from "vitest";
 import { CitationChip, RENDERERS } from "../CitationChip";
 import type { Part } from "../api";
 
-const PART: Part = {
-  assembly_serial: "A-00000007",
+const INSPECTION: NonNullable<Part["inspection"]> = {
   source_ts: "2026-09-12T13:41:07Z",
   station: "S3",
   result: "reject",
-  defect_class: "gap",
+  // §3.4's parallel arrays over every class, on good parts too. The panel shows all of
+  // them rather than the one that won: two can be high at once.
+  defect_classes: ["gap", "crack"],
+  confidences: [0.91, 0.04],
   confidence: 0.91,
   model_version: "sim-1",
   image_url: "/parts/A-00000007/image",
+};
+
+const PART: Part = {
+  assembly_serial: "A-00000007",
+  created_at: "2026-09-12T13:41:01Z",
+  carrier_id: 4,
+  genealogy: [],
+  process_values: [],
+  process_curves: [],
+  inspection: INSPECTION,
+  disposition: null,
 };
 
 afterEach(() => {
@@ -36,7 +49,7 @@ test("clicking a citation opens the underlying row", async () => {
   await waitFor(() => {
     expect(screen.getByTestId("evidence-panel")).toBeInTheDocument();
   });
-  expect(await screen.findByText("gap")).toBeInTheDocument();
+  expect(await screen.findByText("gap 0.91 · crack 0.04")).toBeInTheDocument();
   expect(screen.getByRole("img")).toHaveAttribute(
     "src",
     "/api/analysis/parts/A-00000007/image",
@@ -45,12 +58,30 @@ test("clicking a citation opens the underlying row", async () => {
 
 test("a part with no image opens anyway, without a broken one", async () => {
   // §3.4: a good part has no image, and that is not a missing value.
-  stubFetch({ ...PART, result: "ok", defect_class: null, image_url: null });
+  stubFetch({
+    ...PART,
+    inspection: { ...INSPECTION, result: "good", image_url: null },
+  });
   render(<CitationChip citation={{ kind: "part", id: "A-00000007" }} />);
 
   fireEvent.click(screen.getByText("A-00000007"));
 
   expect(await screen.findByTestId("evidence-panel")).toBeInTheDocument();
+  expect(screen.queryByRole("img")).not.toBeInTheDocument();
+});
+
+test("a part that has not reached the camera opens with what is known", async () => {
+  // Not a third failure mode: every serial between the press and the camera is in this
+  // state, and so is every part created before the gateway's history horizon. §14's
+  // trace answers for them rather than omitting them.
+  stubFetch({ ...PART, created_at: null, inspection: null });
+  render(<CitationChip citation={{ kind: "part", id: "A-00000007" }} />);
+
+  fireEvent.click(screen.getByText("A-00000007"));
+
+  expect(await screen.findByTestId("evidence-panel")).toBeInTheDocument();
+  expect(screen.getByText("unknown")).toBeInTheDocument();
+  expect(screen.getByText("not inspected")).toBeInTheDocument();
   expect(screen.queryByRole("img")).not.toBeInTheDocument();
 });
 

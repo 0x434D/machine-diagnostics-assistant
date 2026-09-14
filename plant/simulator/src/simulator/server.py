@@ -31,6 +31,7 @@ from simulator.carriers import CarrierPool
 from simulator.clock import SimulatedClock
 from simulator.config import ClockConfig, Settings
 from simulator.historian import Ledger, LedgerWriter, attach_historian
+from simulator.identity import LotSchedule
 from simulator.inspection_client import InspectionClient
 from simulator.line import Line, run_catchup, run_live
 from simulator.stations import (
@@ -132,13 +133,24 @@ async def build_server(settings: Settings) -> tuple[Server, AddressSpace]:
     server.set_match_discovery_client_ip(False)
 
     idx = await server.register_namespace(NAMESPACE)
-    space = await build_address_space(server, idx, settings.buffer_capacity)
+    space = await build_address_space(
+        server, idx, settings.buffer_capacity, settings.joining_distance_nominal
+    )
     return server, space
 
 
-def build_line(writer: LedgerWriter, settings: Settings, produce: ProduceFn) -> Line:
+def build_line(
+    writer: LedgerWriter,
+    settings: Settings,
+    produce: ProduceFn,
+    schedule: LotSchedule,
+) -> Line:
     """§3.1's line: four stations in line order, the three buffers between them, and
     one circulating carrier pool.
+
+    `schedule` is the lot schedule S1 draws both lanes from. Built by the caller,
+    because its first lot is loaded at the instant the line starts producing and that
+    instant belongs to the clock -- see `main`.
 
     The stations are listed rather than built from `STATION_SIGNALS`: each one is a
     different class and S3 takes the inspection call, so a table would be four rows of
@@ -152,7 +164,7 @@ def build_line(writer: LedgerWriter, settings: Settings, produce: ProduceFn) -> 
     station code in, so the four draw independently and reproducibly (§3.6).
     """
     stations: list[Station] = [
-        FeedingStation(writer.station("S1_Feeding"), settings, settings.seed),
+        FeedingStation(writer.station("S1_Feeding"), settings, settings.seed, schedule),
         JoiningStation(writer.station("S2_Joining"), settings, settings.seed),
         InspectionStation(
             writer.station("S3_Inspection"), settings, settings.seed, produce
@@ -226,7 +238,22 @@ async def main() -> None:
         # however many parts precede them (§3.6, and test_defect_draw_does_not_depend
         # _on_prior_calls). M1 built a second one with `seed ^ 1` because its two
         # generators were separate runs; the queue makes them one.
-        line = build_line(writer, settings, InspectionClient(settings, http).produce)
+        # The first lot on each lane is loaded at the instant the line starts
+        # producing, not at boot: `history_start` is where S1's first draw lands, and
+        # `LotSchedule.lot_at` refuses an instant its windows do not cover -- so a
+        # schedule started later than the line would make every early component's lot
+        # unanswerable.
+        # §3.7's strip, wrapped around the inspection call rather than wired into S3.
+        # The verdict already carries every field the strip shows, including the reject's
+        # image, and wrapping here keeps the four stations free of a dependency on a
+        # screen -- which is also what lets them stay testable without one.
+        recent = hmi.RecentParts(settings.hmi_recent_parts)
+        line = build_line(
+            writer,
+            settings,
+            recent.watching(InspectionClient(settings, http).produce),
+            LotSchedule(settings, clock.history_start),
+        )
         _log(
             "catchup.start",
             endpoint=settings.endpoint_url,
@@ -268,7 +295,7 @@ async def main() -> None:
             # Its own cadence is hmi_interval_seconds, not this one: the status file is
             # read by a human at a shell prompt and the screen is drawn continuously,
             # and one number cannot be right for both.
-            tasks.create_task(hmi.serve(line, clock, settings))
+            tasks.create_task(hmi.serve(line, clock, settings, recent))
             history_end = await run_catchup(line, writer, clock, settings, storage)
             catchup_wall = time.monotonic() - started
             _log(

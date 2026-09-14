@@ -245,14 +245,19 @@ public sealed partial class HistoryBackfill
 
             if (station.EmitsEvents)
             {
-                // Not policy-named. The policy keys on signal names and the event stream is
-                // not a variable, so §3.4's history has no off switch -- the same asymmetry
-                // the live subscription has, stated because the alternative is two files that
-                // look like they disagree.
+                // The policy sets the page size and nothing else. §3.4's event history has no
+                // off switch -- the policy's `subscribe` key names variables and an event
+                // type is not one -- the same asymmetry the live subscription has, stated
+                // because the alternative is two files that look like they disagree.
                 var name = $"{station.Code}.{Subscriptions.EventStream}";
                 discovered.Add(name);
+
+                var spec = EventStreamSpec.For(station);
+                var pageSize = EventPageSize(spec);
                 streams.Add(new BackfillStream(
-                    name, (from, to, ct) => ReadEventPagesAsync(station, from, to, ct)));
+                    name,
+                    (from, to, ct) =>
+                        ReadEventPagesAsync(station, spec, pageSize, from, to, ct)));
             }
         }
 
@@ -283,10 +288,41 @@ public sealed partial class HistoryBackfill
             .ToList();
         if (vanished.Count > 0)
         {
+            // The ledger stores the name this method built when the window was read, so
+            // renaming a constant that feeds it renames nothing already written:
+            // Subscriptions.EventStream went "InspectionResult" -> "Events" in M2b, and
+            // against a ledger written before that, every boot found S3.InspectionResult
+            // missing and threw, for ever. The guard is right to be fatal — it cannot tell
+            // the two cases apart — but "no longer published" alone sends the operator to a
+            // plant that is fine, so the message carries the evidence that can: a name on the
+            // same owner that has never been in the ledger, appearing on the boot another
+            // left it. Evidence, not a verdict — a station can gain one stream and lose a
+            // different one in the same change, and only a reader who knows what the two
+            // carry can tell that from a rename. Streams the owner published all along
+            // distinguish nothing and are left out.
+            var owners = vanished
+                .Select(name => name.Split('.', 2)[0])
+                .ToHashSet(StringComparer.Ordinal);
+            var appeared = discovered
+                .Where(name => owners.Contains(name.Split('.', 2)[0])
+                    && !streamsReadBefore.Contains(name))
+                .Order(StringComparer.Ordinal)
+                .ToList();
+
             throw new InvalidOperationException(
                 $"{vanished.Count} stream(s) this gateway has backfilled before are no longer "
                 + $"published and would be missing from the ledger silently: "
-                + $"{string.Join(", ", vanished)}. {discovered.Count} streams were discovered");
+                + $"{string.Join(", ", vanished)}. {discovered.Count} streams were discovered. "
+                + "The same stations or buffers published for the first time on this boot: "
+                + $"{(appeared.Count > 0 ? string.Join(", ", appeared) : "nothing")}. "
+                + "If one of those is the vanished stream under a new name, this is a rename "
+                + "in this gateway rather than a plant that stopped publishing: "
+                + "backfill_windows.stream holds the name this gateway built when the window "
+                + "was read, so renaming the constant renames nothing already written — "
+                + "update those ledger rows to the new name, or restore the old one. A "
+                + "station can also gain one stream and lose another, so compare what they "
+                + "carry before deciding. With nothing newly published, the plant has "
+                + "stopped.");
         }
 
         // Said out loud for the same reason the subscription says it: a discovered stream that
@@ -362,31 +398,41 @@ public sealed partial class HistoryBackfill
             ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// How many events one read of this stream asks for: the smallest page any type on it is
+    /// given.
+    ///
+    /// <para>The smallest, because one read covers the whole stream — asyncua historises
+    /// events per emitting node, not per type — so a station carrying an imaged type beside
+    /// an unimaged one is bounded by the imaged one's bytes. Today that is S3 alone, at 25;
+    /// S1's two types share a page because neither carries bytes.</para>
+    /// </summary>
+    private int EventPageSize(EventStreamSpec stream) =>
+        stream.Types.Min(type => _policy.ForEvent(type.TypeName).PageSize);
+
     private async Task<PageOutcome> ReadEventPagesAsync(
-        DiscoveredStation station, DateTime from, DateTime to, CancellationToken ct)
+        DiscoveredStation station, EventStreamSpec stream, int pageSize, DateTime from,
+        DateTime to, CancellationToken ct)
     {
         var node = station.NodeId;
         var details = new ExtensionObject(new ReadEventDetails
         {
             StartTime = from,
             EndTime = to,
-            // The one page size the policy does not set. It is forced by image bytes against
-            // the 4 MiB response limit rather than by anything the stream itself is: R4
-            // measured a reject image at up to 110,486 B, so 25 all-reject events is ~2.7 MB.
-            NumValuesPerNode = (uint)_options.HistoryEventPageSize,
+            NumValuesPerNode = (uint)pageSize,
             // The identical filter the live subscription uses. A second filter would be a
             // second statement of the field order, and the order is the decoding contract.
-            Filter = Subscriptions.BuildInspectionFilter(),
+            Filter = stream.BuildFilter(),
         });
 
         return await ReadPagesAsync(
-            node, details, _options.HistoryEventPageSize,
+            node, details, pageSize,
             async result =>
             {
                 var data = (HistoryEvent)ExtensionObject.ToEncodeable(result);
                 foreach (var entry in data.Events)
                 {
-                    await _onRecord(Subscriptions.ToEventRecord(
+                    await _onRecord(stream.Decode(
                         station.Code, node.ToString(), entry.EventFields)).ConfigureAwait(false);
                 }
 

@@ -87,6 +87,37 @@ def _wait_for(predicate_key: str, value: object, timeout_s: int) -> bool:
     return False
 
 
+def _plant_setting(name: str) -> str:
+    """One value of the plant's own `Settings`, read from the plant that is running.
+
+    Every number in this project is configuration, so a literal restated here would make
+    the weekly job red on a plant that had merely been retuned — red for something nobody
+    did, which is how a scheduled job becomes one nobody reads. That is the failure M2a
+    spent a task removing from these same four proofs, and it is not worth reintroducing
+    for the sake of two short strings.
+
+    `exec` into the running container rather than `run` on the image: the image carries
+    the defaults and the container carries what this plant was actually started with.
+
+    :raises AssertionError: the plant answered with nothing, so there is no setting to
+        state the assertions in.
+    """
+    value = _sh(
+        "docker",
+        "exec",
+        PLANT_CONTAINER,
+        "python",
+        "-c",
+        f"from simulator.config import Settings; print(Settings().{name})",
+    )
+    if not value:
+        raise AssertionError(
+            f"the plant did not answer for Settings().{name}; it said:\n"
+            + _container_logs(PLANT_CONTAINER)
+        )
+    return value
+
+
 def _count(table: str) -> int:
     with psycopg.connect(DSN) as conn:
         row = conn.execute(f"SELECT count(*) FROM {table}").fetchone()
@@ -262,7 +293,29 @@ def test_history_read_closes_an_upstream_outage() -> None:
 @pytest.mark.usefixtures("stack")
 def test_the_diagnostics_stack_answers_with_the_plant_shut_down() -> None:
     """§1 row 4, and §2.1's hard requirement. The proof that decides whether the two-stack
-    split is real or decorative: with the plant gone, history still answers."""
+    split is real or decorative: with the plant gone, history still answers.
+
+    M2b's identity chain is asserted here rather than in a test of its own because this is
+    the only thing in the repository that runs a real gateway against a real plant, and it
+    is therefore the only place the two stacks' independent statements of §4.1 are held
+    against each other at all. `make check` cannot: it has no plant.
+
+    **What the lot assertion catches is a value under the wrong key, not a field order.**
+    Both ends address by name -- the gateway builds its SelectClauses from the same list it
+    decodes positionally against, and asyncua resolves each clause with `getattr` -- so
+    reordering either file alone re-orders request and decode together and mis-assigns
+    nothing. What is silent is `s1_feeding.py` publishing `lot.supplier` under `"LotCode"`,
+    or the writer reading the wrong payload key: both are Strings, so nothing decodes
+    wrong, nothing raises, and `/reconcile` agrees, because it compares the event stream
+    against `raw_events` -- written verbatim before any of this is derived. Every component
+    would then record its supplier as its lot code with all three gates green.
+    """
+    # Read while the plant is up, because it is the plant's *configuration* that the
+    # assertions below have to be stated in. The history they then check is answered with
+    # the plant stopped, which is the proof itself.
+    lot_prefix = _plant_setting("lot_code_prefix")
+    curve_samples = int(_plant_setting("curve_samples"))
+
     _sh("docker", "stop", PLANT_CONTAINER)
     try:
         assert _count("inspection_results") > 0
@@ -270,9 +323,44 @@ def test_the_diagnostics_stack_answers_with_the_plant_shut_down() -> None:
             row = conn.execute(
                 "SELECT count(*), min(source_ts), max(source_ts) FROM inspection_results"
             ).fetchone()
+            chain = conn.execute(
+                """
+                SELECT (SELECT count(*) FROM genealogy),
+                       (SELECT count(*) FROM components WHERE lot_id IS NOT NULL),
+                       (SELECT count(*) FROM components
+                         JOIN component_lots ON component_lots.id = components.lot_id
+                         WHERE NOT starts_with(lot_code, %s)
+                            OR starts_with(supplier, %s)),
+                       (SELECT count(*) FROM part_process_curves),
+                       (SELECT count(*) FROM part_process_curves
+                         WHERE cardinality(samples) <> %s),
+                       (SELECT count(*) FROM part_dispositions
+                         WHERE disposition = 'reject'),
+                       (SELECT count(*) FROM part_dispositions
+                         WHERE disposition = 'reject' AND reason IS NULL)
+                """,
+                (lot_prefix, lot_prefix, curve_samples),
+            ).fetchone()
         assert row is not None and row[0] > 0
         assert row[1] is not None and row[2] is not None, (
             "history has no span to answer from"
+        )
+
+        assert chain is not None
+        built, lotted, misfiled, curves, wrong_length, rejects, nameless = chain
+        assert built > 0, "no as-built genealogy survived the plant going away"
+        assert lotted > 0, "no component resolves to a supplier lot"
+        assert misfiled == 0, (
+            f"{misfiled} of {lotted} lotted components have a lot code not starting "
+            f"{lot_prefix!r}, or a supplier that does — §4.1 gives LotCode and Supplier the "
+            "same type, so the two carrying each other's value is silent everywhere else"
+        )
+        assert curves > 0 and wrong_length == 0, (
+            f"{wrong_length} of {curves} press curves are not {curve_samples} samples long"
+        )
+        assert rejects > 0, "no reject was sorted, so no disposition reason was tested"
+        assert nameless == 0, (
+            f"{nameless} of {rejects} rejects were sorted with no reason"
         )
     finally:
         _sh("docker", "start", PLANT_CONTAINER)

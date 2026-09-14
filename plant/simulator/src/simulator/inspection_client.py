@@ -83,13 +83,17 @@ class InspectionClient:
         )
         truth_response.raise_for_status()
 
-        # The request itself carries only what a camera would hand over. carrier_id is
-        # still a placeholder, and no longer for M1's reason -- the carrier pool exists
-        # now and S3 knows which carrier it is looking at. D11 widens
-        # inspection_results to §5.2's shape in M2b, in one ALTER, and the only
-        # question that needs the part-to-carrier link is M2c's scenario 4; plumbing
-        # the real id through a column nothing reads would be M2b's data model
-        # arriving early and unvalidated.
+        # The request itself carries only what a camera would hand over.
+        #
+        # **carrier_id is a placeholder and this signature widens when M2c arrives.**
+        # The real id does reach Postgres -- S3 puts it on `InspectionResultEvent`,
+        # which is §5.2's `inspection_results.carrier_id` -- but it does not reach the
+        # classifier, because `ProduceFn` is `(part_id, sim_ts)` and neither this call
+        # nor `SimulatedClassifier` can see a carrier at all. M2c's scenario 4 wears one
+        # carrier and needs its defect draw keyed on exactly that, so `ProduceFn`, this
+        # method and the constant below all move then. Recorded as a known widening
+        # rather than a settled choice: what is here now is enough for M2b, and it is
+        # not enough for the scenario that needs it.
         response = await self._http.post(
             f"{self._s.inspection_url}/inspect",
             json={
@@ -104,6 +108,14 @@ class InspectionClient:
         return PartOutcome(
             disposition=result["disposition"],
             defect_class=result["defect_class"],
+            # The classifier returns its six scores keyed by class name; the event
+            # carries them as parallel arrays. Ordered here, against this workspace's
+            # copy of the vocabulary, rather than at S3 -- this is the module that owns
+            # the copy, and `_ordered_confidences` refuses a response whose key set is
+            # not the one we know, which is the only place the two copies drifting
+            # apart at runtime could be caught before a vector went out mis-keyed.
+            defect_classes=tuple(DEFECT_CLASSES),
+            confidences=_ordered_confidences(result["confidences"]),
             confidence=result["confidence"],
             # §3.4: only rejected parts carry their image into the OPC UA event.
             image=image if rejected else None,
@@ -112,3 +124,22 @@ class InspectionClient:
             # place that still knows which model actually produced the verdict.
             model_version=result["model_version"],
         )
+
+
+def _ordered_confidences(scored: dict[str, float]) -> tuple[float, ...]:
+    """The classifier's per-class scores in `DEFECT_CLASSES` order.
+
+    Raises ValueError if the classifier scored a different set of classes from the one
+    this workspace knows. Refused rather than filled in with zeros or silently
+    truncated: a vector that is one class short is still a vector, and every entry
+    after the gap would then describe the wrong class for the rest of the milestone
+    with nothing raised anywhere.
+    """
+    if set(scored) != set(DEFECT_CLASSES):
+        raise ValueError(
+            f"the inspection service scored {sorted(scored)}, and this plant's copy of "
+            f"the vocabulary is {sorted(DEFECT_CLASSES)}: the two have drifted, and a "
+            "vector ordered against the wrong names is a defect attributed to the "
+            "wrong class"
+        )
+    return tuple(scored[name] for name in DEFECT_CLASSES)

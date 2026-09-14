@@ -70,26 +70,16 @@ public sealed record GatewayOptions
     public TimeSpan BackfillWindow { get; init; } = TimeSpan.FromHours(1);
 
     /// <summary>
-    /// The event stream needs its own, far smaller page because its rows carry images.
-    /// It is the only page size that is not a signal's: every variable stream is paged at
-    /// <see cref="SignalPolicy"/>'s <c>page_size</c>, because a page size that lived here as
-    /// well would be a second mechanism for one number, free to disagree with the mounted file.
-    /// R4 measured a reject image at up to 110,486 B, so a worst-case page of 25 all-reject
-    /// events is ~2.7 MB against the 4 MiB response limit. At the plan's shared page size of
-    /// 1,000 the response exceeds that limit and the read fails as BadEncodingLimitsExceeded
-    /// — measured against the live plant, not predicted.
-    /// </summary>
-    public int HistoryEventPageSize { get; init; } = 25;
-
-    /// <summary>
     /// How far subdivision may go, for any stream. At a 6 s takt a 30 s window holds ~5 parts
     /// and ~10 buffer moves, far under any page size, so reaching this floor means something
     /// other than volume is wrong and the run fails rather than storing a short window quietly.
     ///
-    /// <para>Measured: against a one-hour window the event stream halves to 1 m 52.5 s, which
-    /// leaves two halvings of headroom and no more. A denser event stream — M2b adds four
-    /// event types — is answered by shortening <see cref="BackfillWindow"/>, not by lowering
-    /// this: the floor is what stops subdivision from hiding a defect that is not volume.</para>
+    /// <para>Measured: against a one-hour window S3's event stream halves to 1 m 52.5 s, which
+    /// leaves two halvings of headroom and no more — at the page of 25 its images force. The
+    /// four event types M2b adds carry none and are paged in the thousands, so their windows
+    /// do not halve at all; a stream that does is answered by shortening
+    /// <see cref="BackfillWindow"/> or by its own page_size, never by lowering this. The floor
+    /// is what stops subdivision from hiding a defect that is not volume.</para>
     /// </summary>
     public TimeSpan MinimumBackfillWindow { get; init; } = TimeSpan.FromSeconds(30);
 
@@ -153,7 +143,6 @@ public sealed record GatewayOptions
                 environment, "GATEWAY_SIGNAL_POLICY", DefaultSignalPolicyPath),
             PostgresConnectionString = Read(environment, "GATEWAY_POSTGRES", ""),
             DrainBatchSize = ReadInt(environment, "GATEWAY_DRAIN_BATCH_SIZE", 200),
-            HistoryEventPageSize = ReadInt(environment, "GATEWAY_HISTORY_EVENT_PAGE_SIZE", 25),
             BackfillWindow = TimeSpan.FromMinutes(
                 ReadWindowLength(environment, "GATEWAY_BACKFILL_WINDOW_MINUTES", 60)),
             MinimumBackfillWindow = TimeSpan.FromSeconds(

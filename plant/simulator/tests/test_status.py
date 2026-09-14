@@ -24,7 +24,7 @@ def _clock(wall: list[datetime]) -> SimulatedClock:
 
 
 def _ledger() -> Ledger:
-    ledger = Ledger(events=6, images=1, image_bytes=4096)
+    ledger = Ledger(events={"S3_Inspection": 6}, images=1, image_bytes=4096)
     for part in range(7):
         # Distinct values, because equal consecutive ones are what the ledger does
         # not count -- a fixture writing the same number seven times would assert
@@ -56,7 +56,9 @@ async def test_the_snapshot_reports_the_phase_and_the_ledger_it_was_taken_at() -
     assert once_live["written_wall"] == wall[0].isoformat()
     assert during_catchup["ledger"] == {
         "rows": {"S3_Inspection.PartCount": 7, "S3_Inspection.TaktTime": 7},
-        "events": 6,
+        # Per emitting station, the way the historian counts them back -- one table
+        # per emitting node, holding every event type that node emits.
+        "events": {"S3_Inspection": 6},
         "images": 1,
         "image_bytes": 4096,
     }
@@ -116,7 +118,7 @@ async def test_the_published_file_is_always_complete_json(tmp_path: Path) -> Non
             while not path.exists():
                 await asyncio.sleep(0.005)
         for _ in range(50):
-            ledger.events += 1
+            ledger.events["S3_Inspection"] = ledger.events.get("S3_Inspection", 0) + 1
             assert json.loads(path.read_text())["phase"] in {"catchup", "live"}
             await asyncio.sleep(0.001)
     finally:
