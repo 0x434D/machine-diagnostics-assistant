@@ -58,15 +58,15 @@ architecture exists for.
 
 While either runs, the chat box is at `http://localhost:5173`. Ask *how many parts were
 rejected in the last hour, and what were the defects?* and click the citation chip under the
-answer: it opens the part it names — serial, timestamp, defect class, confidence and the
-inspection image.
+answer: it opens the part it names — serial, when it was created, the verdict with every
+class the model scored, and the inspection image.
 
 Every published port is read from the environment, so a host that already has something on
 8080 runs `GATEWAY_PORT=18080 make m2a-demo` and nothing else changes.
 
 | | |
 |---|---|
-| `http://localhost:5174` | the plant HMI — the line, its buffers and its PackML states, coloured by cause and consequence |
+| `http://localhost:5174` | the plant HMI — the line, its buffers and its PackML states, coloured by cause and consequence, and a strip of the last parts by serial with a thumbnail on every reject |
 | `http://localhost:5173` | the chat box |
 | `http://localhost:8080/status` | the gateway's state machine, queue depth and backfill progress |
 | `http://localhost:8080/reconcile` | what was read against what is stored, and any recorded gap |
@@ -114,11 +114,14 @@ status field described the session rather than the pipeline. Only mutation found
   little jitter and injects nothing, so **every stop visible today is one you caused by
   hand** — and the only way to cause one is from a test, because the HMI is read-only until
   the fault-injection panel and the ground-truth log that has to record it arrive together.
-- **Serials, genealogy and per-part process values are M2b; the eight scenarios, the alarms
-  and the noise floor are M2c.** A part is a carrier with a disposition today, not a serial
-  with a history, so no containment or traceability question can be asked yet. And without
-  the noise floor there is no "within normal spread" for the analysis to judge against —
-  measured: S4 did not starve once in 40,000 steady-state steps.
+- **Every part has a serial and a history; nothing yet asks a question of them.** M2b gives
+  each part its component serials in supplier lots, a force–distance curve recorded against
+  the serial at the instant of production, the verdict with every class the model scored, and
+  a disposition — and `GET /parts/{serial}` answers with all of it, keyed by the serial and
+  joined to no time range. What is missing is the asking: the eight scenarios, the alarms and
+  the noise floor are M2c, and the containment query that walks a lot back to the serials it
+  reached is M3. Without the noise floor there is no "within normal spread" for the analysis
+  to judge against — measured: S4 did not starve once in 40,000 steady-state steps.
 - **The agent knows one tool and no knowledge base.** One question shape, one citation kind,
   one analysis endpoint. Routing, SOPs and the composer that reads them are M4, and until
   then `basis: hypothesis` is refused structurally rather than discouraged in a prompt —

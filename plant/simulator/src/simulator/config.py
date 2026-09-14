@@ -340,6 +340,15 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # nothing.
     hmi_server_host: str = "0.0.0.0"
     hmi_server_port: int = 8200
+    # How many parts §3.7's strip holds, and therefore how many reject images this
+    # process keeps in memory at once. A screen-width choice, not a statistical one: the
+    # strip shows what just came off the line, and "how many rejects" is answered by S4's
+    # RejectCount and by the diagnostics stack, not by counting thumbnails. At §3.5's
+    # 1.5 % reject rate, twenty parts hold at least one reject about a quarter of the
+    # time -- that is arithmetic on the configured rate, not a measurement -- and twenty
+    # reject images at R4's ~110 kB median is ~2 MB, which is the worst case this bound
+    # exists to cap.
+    hmi_recent_parts: int = 20
 
     # boundary
     endpoint_url: str = "opc.tcp://line-simulator:4840/plant"

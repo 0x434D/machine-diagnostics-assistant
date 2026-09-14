@@ -41,6 +41,27 @@ export interface BufferView {
   downstream_browse_name: string;
 }
 
+/** §3.7's strip: the last parts the line inspected, newest first. */
+export interface PartView {
+  serial: string;
+  /** Simulated time, like every other instant on this screen (§4.2). */
+  at: string;
+  /** `good` or `reject` — the vision system's own verdict, which is also what S4 sorts
+   * on and what reaches `part_dispositions` one stack over. */
+  disposition: Disposition;
+  /** The classifier's named reason for a reject, empty for a good part. */
+  reason: string;
+  /** A path on the simulator's HMI server, or null for a good part — §3.4 gives only
+   * rejects an image, and null here is a fact rather than a missing value. The proxy
+   * prefix is added by the browser side, the same split `useLineSnapshot` makes for the
+   * socket: this path is what the plant knows, and `/api/plant` is what the page knows. */
+  image_url: string | null;
+}
+
+/** The two verdicts `inspection.classifier` returns. The CSS class is derived from this
+ * string, exactly as it is for `Category`. */
+export type Disposition = "good" | "reject";
+
 export interface LineSnapshot {
   phase: string;
   /** Simulated time — what every number on this screen belongs to (§4.2). */
@@ -51,4 +72,5 @@ export interface LineSnapshot {
   written_wall: string;
   stations: StationView[];
   buffers: BufferView[];
+  parts: PartView[];
 }

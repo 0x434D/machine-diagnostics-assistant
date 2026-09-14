@@ -27,6 +27,7 @@ from testcontainers.postgres import PostgresContainer
 from tests.conftest import (
     DECOY_DISTANCE,
     DECOY_FORCE,
+    DEFECT_CLASSES,
     curve_for,
     joining_distance,
     peak_force,
@@ -34,6 +35,10 @@ from tests.conftest import (
 
 TRACED = "A-00000123"
 """One ordinary part, mid-window, with every section of its history filled in."""
+
+CLASSES_SCORED = len(DEFECT_CLASSES)
+"""How many classes ride every verdict. Six, and on good parts too: §3.4's scores are
+independent, so a good part is six low ones rather than an absent vector."""
 
 
 def _value(body: dict[str, object], signal: str) -> float:
@@ -216,17 +221,39 @@ def _statements(log: str) -> list[LoggedStatement]:
 
 
 @pytest.mark.usefixtures("seeded_db")
-def test_the_trace_asks_the_database_for_one_serial_and_never_for_a_time_range(
+def test_any_serial_resolves_to_its_whole_history_with_no_time_range_join(
     client: TestClient, postgres_container: PostgresContainer, seeded_db: str
 ) -> None:
-    """The proof §1 asks for, stated as what the server received.
+    """**M2b's authenticity proof** (§1: every link has a test that would fail if the link
+    were a facade).
 
-    Every statement the trace issues against a per-part table names the serial among its
-    bound parameters, and not one of them compares a time column against anything. A read
-    path that reconstructed the association would have to bind a window instead — that is
-    what a time-range join *is* — so this fails the moment one appears, including in a
-    section added later that nobody thought to write a value assertion for.
+    Take an assembly serial from the database — not one this file chose — and resolve its
+    complete history: two component serials with their supplier lots, the press curve, the
+    inspection verdict with its class vector, the disposition. Then assert what the
+    database was actually asked: every statement the trace issued names that serial among
+    its bound parameters, and not one of them compares a time column against anything.
+
+    The two halves are both load-bearing, and each covers the other's blind spot. The
+    content assertions alone would pass against a read path that rebuilt the association
+    from the time series and happened to guess right; the statement assertions alone would
+    pass against a read path that issued perfectly serial-keyed queries and returned
+    nothing. A facade has to survive both, and a time-range join cannot: it must bind a
+    window instead of a serial, which is what a time-range join *is*.
     """
+    with psycopg.connect(seeded_db) as conn:
+        # "Any serial", asked of the database rather than written here. A part with a full
+        # history, because the ones with a half — the horizon stub and the twins — have
+        # tests of their own above, and this proof is about the complete line.
+        picked = conn.execute(
+            "SELECT a.serial FROM assemblies a"
+            " JOIN genealogy g ON g.assembly_serial = a.serial"
+            " JOIN part_dispositions d ON d.assembly_serial = a.serial"
+            " WHERE a.created_at IS NOT NULL"
+            " GROUP BY a.serial ORDER BY a.serial LIMIT 1"
+        ).fetchone()
+    assert picked is not None, "no assembly in the database has a full history to trace"
+    serial = str(picked[0])
+
     with psycopg.connect(seeded_db) as conn:
         # Database-wide rather than per session, and applied by name rather than to
         # `current_database()`: the service's pool opens a connection of its own, and a SET
@@ -241,7 +268,7 @@ def test_the_trace_asks_the_database_for_one_serial_and_never_for_a_time_range(
 
     before = len(postgres_container.get_logs()[1])
     try:
-        assert client.get(f"/parts/{TRACED}").status_code == 200
+        response = client.get(f"/parts/{serial}")
     finally:
         # Not an exception handler: logging every statement is a setting on a session-scoped
         # container, and leaving it on would bury every later test's output in this one's.
@@ -251,6 +278,27 @@ def test_the_trace_asks_the_database_for_one_serial_and_never_for_a_time_range(
             )
             conn.commit()
 
+    # --- the whole history, section by section ---
+    assert response.status_code == 200
+    part = response.json()
+    index = int(serial.removeprefix("A-"))
+
+    assert part["assembly_serial"] == serial
+    assert part["created_at"] is not None
+    assert [row["component_serial"] for row in part["genealogy"]] == [
+        f"C1-{index:08d}",
+        f"C2-{index:08d}",
+    ]
+    assert all(row["lot_code"] is not None for row in part["genealogy"])
+    assert all(row["supplier"] is not None for row in part["genealogy"])
+    assert _value(part, "PeakForce") == peak_force(index)
+    assert [c["signal"] for c in part["process_curves"]] == ["Curve"]
+    assert part["process_curves"][0]["samples"] == curve_for(index)
+    assert len(part["inspection"]["defect_classes"]) == CLASSES_SCORED
+    assert len(part["inspection"]["confidences"]) == CLASSES_SCORED
+    assert part["disposition"]["disposition"] in {"good", "reject"}
+
+    # --- and what the database was asked for it ---
     issued = _statements(postgres_container.get_logs()[1][before:].decode())
     tables = (
         "assemblies",
@@ -274,7 +322,7 @@ def test_the_trace_asks_the_database_for_one_serial_and_never_for_a_time_range(
     )
 
     for statement in traced:
-        assert TRACED in statement.parameters, (
+        assert serial in statement.parameters, (
             f"a statement in the trace is not keyed by the serial: {statement.sql}"
         )
         assert _TIME_RANGE.search(statement.sql) is None, (

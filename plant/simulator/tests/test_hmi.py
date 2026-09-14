@@ -4,6 +4,7 @@ deliberately not as a rendering."""
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
 
@@ -13,8 +14,15 @@ from conftest import STATION_CODES, build_running_line
 from fastapi.testclient import TestClient
 from simulator.address_space import BUFFERS
 from simulator.config import Settings
-from simulator.hmi import CATEGORIES, build_app, category_for, line_snapshot
+from simulator.hmi import (
+    CATEGORIES,
+    RecentParts,
+    build_app,
+    category_for,
+    line_snapshot,
+)
 from simulator.packml import State
+from simulator.stations.base import PartOutcome
 
 PLANT = Path(__file__).resolve().parents[2]
 HMI = PLANT / "hmi"
@@ -38,7 +46,7 @@ CYCLES = 40
 @pytest.mark.asyncio
 async def test_the_snapshot_carries_every_station_and_every_buffer() -> None:
     line, clock, _nodes = await build_running_line()
-    snapshot = line_snapshot(line, clock)
+    snapshot = line_snapshot(line, clock, RecentParts(Settings().hmi_recent_parts))
     assert [s["browse_name"] for s in snapshot["stations"]] == list(STATION_CODES)
     assert [b["code"] for b in snapshot["buffers"]] == [code for code, _, _ in BUFFERS]
 
@@ -52,7 +60,7 @@ async def test_a_station_is_named_by_its_browse_name_and_the_field_says_so() -> 
     nothing. The name is what keeps the two apart.
     """
     line, clock, _nodes = await build_running_line()
-    snapshot = line_snapshot(line, clock)
+    snapshot = line_snapshot(line, clock, RecentParts(Settings().hmi_recent_parts))
     for station in snapshot["stations"]:
         assert "_" in station["browse_name"]
     # A buffer's own code is NOT split by the gateway -- it stores the browse name whole
@@ -68,7 +76,9 @@ async def test_every_station_shows_its_state_name_beside_its_colour() -> None:
     """ISA-101: colour is never the only channel. `category` decides the colour, so the
     PackML name it stands for has to travel with it or the screen cannot show both."""
     line, clock, _nodes = await build_running_line()
-    for station in line_snapshot(line, clock)["stations"]:
+    for station in line_snapshot(line, clock, RecentParts(Settings().hmi_recent_parts))[
+        "stations"
+    ]:
         assert station["state"] in {state.value for state in State}
         assert station["category"] == category_for(State(station["state"]))
 
@@ -82,7 +92,9 @@ async def test_a_suspended_station_carries_its_reason_to_the_screen() -> None:
         await line.step()
     s3 = next(
         s
-        for s in line_snapshot(line, clock)["stations"]
+        for s in line_snapshot(line, clock, RecentParts(Settings().hmi_recent_parts))[
+            "stations"
+        ]
         if s["browse_name"] == "S3_Inspection"
     )
     assert s3["category"] == "waiting-on-others"
@@ -97,7 +109,12 @@ async def test_a_held_station_is_a_cause_candidate_and_a_starved_one_is_not() ->
     await line.hold("S2_Joining", clock.history_start, "jam")
     for _ in range(CYCLES):
         await line.step()
-    by_name = {s["browse_name"]: s for s in line_snapshot(line, clock)["stations"]}
+    by_name = {
+        s["browse_name"]: s
+        for s in line_snapshot(line, clock, RecentParts(Settings().hmi_recent_parts))[
+            "stations"
+        ]
+    }
     assert by_name["S2_Joining"]["category"] == "held-by-own-fault"
     assert by_name["S3_Inspection"]["category"] == "waiting-on-others"
 
@@ -119,7 +136,9 @@ async def test_the_buffer_bars_get_the_capacity_they_are_a_fraction_of() -> None
     """A level with no capacity beside it is a number, not a fill bar -- and the
     capacity is `Settings.buffer_capacity`, never a constant in the frontend."""
     line, clock, _nodes = await build_running_line()
-    for buffer in line_snapshot(line, clock)["buffers"]:
+    for buffer in line_snapshot(line, clock, RecentParts(Settings().hmi_recent_parts))[
+        "buffers"
+    ]:
         assert buffer["capacity"] == Settings().buffer_capacity
         assert 0 <= buffer["level"] <= Settings().buffer_capacity
 
@@ -131,7 +150,8 @@ def test_one_payload_reaches_the_screen_over_http_and_over_the_websocket() -> No
     to it.
     """
     line, clock, _nodes = asyncio.run(build_running_line())
-    with TestClient(build_app(line, clock, Settings())) as client:
+    recent = asyncio.run(_strip_with(REJECT, GOOD))
+    with TestClient(build_app(line, clock, Settings(), recent)) as client:
         assert client.get("/health").json() == {"status": "ok"}
         over_http = client.get("/snapshot").json()
         with client.websocket_connect("/ws") as socket:
@@ -141,7 +161,106 @@ def test_one_payload_reaches_the_screen_over_http_and_over_the_websocket() -> No
     # asserting they do not would be asserting the clock had stopped.
     assert over_websocket["stations"] == over_http["stations"]
     assert over_websocket["buffers"] == over_http["buffers"]
+    assert over_websocket["parts"] == over_http["parts"]
     assert over_websocket["phase"] == over_http["phase"]
+
+
+REJECT = PartOutcome(
+    disposition="reject",
+    defect_class="gap",
+    defect_classes=("gap",),
+    confidences=(0.91,),
+    confidence=0.91,
+    image=b"\x89PNG\r\n\x1a\n" + b"x" * 64,
+    model_version="sim-1",
+)
+GOOD = PartOutcome(
+    disposition="good",
+    defect_class=None,
+    defect_classes=("gap",),
+    confidences=(0.03,),
+    confidence=0.97,
+    # §3.4: only rejects carry an image.
+    image=None,
+    model_version="sim-1",
+)
+
+
+async def _strip_with(*outcomes: PartOutcome) -> RecentParts:
+    """A strip fed the way the plant feeds it: through the wrapped inspection call.
+
+    Not by appending to it directly. The wrapper is the only thing that populates this
+    object in the running plant, so a fixture that filled it another way would leave the
+    one path that matters untested.
+    """
+    recent = RecentParts(Settings().hmi_recent_parts)
+    queue = list(outcomes)
+
+    # The two parameters are `ProduceFn`'s and are what `RecentParts.watching` reads off
+    # the call rather than off the result; this stand-in only has to return the verdicts.
+    async def produce(_part_id: str, _at: datetime) -> PartOutcome:
+        return queue.pop(0)
+
+    watched = recent.watching(produce)
+    at = datetime(2026, 9, 13, 6, 9, 48, tzinfo=UTC)
+    for index in range(len(outcomes)):
+        await watched(f"A-{index:08d}", at + timedelta(seconds=6 * index))
+    return recent
+
+
+@pytest.mark.asyncio
+async def test_the_strip_carries_the_last_parts_newest_first() -> None:
+    """§3.7's strip, and the reason it carries serials: the string on this screen is the
+    one the diagnostics stack answers `/parts/{serial}` for."""
+    line, clock, _nodes = await build_running_line()
+    snapshot = line_snapshot(line, clock, await _strip_with(GOOD, REJECT))
+
+    assert [part["serial"] for part in snapshot["parts"]] == [
+        "A-00000001",
+        "A-00000000",
+    ]
+    assert snapshot["parts"][0]["disposition"] == "reject"
+    assert snapshot["parts"][0]["reason"] == "gap"
+    # A good part carries no reason, and an empty string is how that is said -- the same
+    # convention `PartState.reason` uses, so the strip and `part_dispositions` say the
+    # same word about the same part.
+    assert snapshot["parts"][1]["reason"] == ""
+
+
+@pytest.mark.asyncio
+async def test_only_a_reject_offers_an_image_and_it_is_the_one_stored() -> None:
+    """§3.4 gives only rejects an image. The strip carries a path rather than the bytes,
+    because a reject's PNG is ~110 kB and a frame goes out twice a second."""
+    line, clock, _nodes = await build_running_line()
+    recent = await _strip_with(GOOD, REJECT)
+    snapshot = line_snapshot(line, clock, recent)
+
+    assert snapshot["parts"][0]["image_url"] == "/parts/A-00000001/image"
+    assert snapshot["parts"][1]["image_url"] is None
+
+    with TestClient(build_app(line, clock, Settings(), recent)) as client:
+        response = client.get("/parts/A-00000001/image")
+        assert response.status_code == 200
+        assert response.content == REJECT.image
+        # A good part, a serial this run never saw, and a reject that has fallen off the
+        # strip are all answered the same way, and none of them is a blank 200.
+        assert client.get("/parts/A-00000000/image").status_code == 404
+        assert client.get("/parts/A-99999999/image").status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_the_strip_forgets_rather_than_growing_with_the_run() -> None:
+    """A run inspects ~19,800 parts and rebuilds 33 h of history on every boot at 700x.
+    An unbounded strip would hold every reject image of all of it in a process that is
+    otherwise flat, so the bound is the design and not a display detail."""
+    keep = Settings().hmi_recent_parts
+    recent = await _strip_with(*[REJECT] * (keep + 3))
+
+    views = recent.views()
+    assert len(views) == keep
+    # The three that fell off took their images with them, which is the whole point.
+    assert recent.image("A-00000000") is None
+    assert recent.image(views[0]["serial"]) == REJECT.image
 
 
 @needs_the_screen

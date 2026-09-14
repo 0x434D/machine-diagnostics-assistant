@@ -25,6 +25,16 @@
      one layer down, and this is the CSS half of the answer — the other half is
      line.test.tsx, which asserts a rule exists for each of the five. */
   --no-such-category: #ff00ff;
+
+  /* §3.7's strip. Green and red again, and deliberately the same two: a rejected part
+     and a station down for its own fault are both "go and look", and a screen that
+     spoke two colour languages would make a viewer learn both. */
+  --good: #1a7f37;
+  --reject: #b42318;
+
+  /* The same trap as --no-such-category, one strip down: a typo in `.part--reject`
+     would otherwise render as a plausible good part. */
+  --no-such-disposition: #ff00ff;
 }
 
 body {
@@ -112,6 +122,48 @@ ol {
 
 .buffer__level {
   font-variant-numeric: tabular-nums;
+}
+
+.parts {
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(7rem, 1fr);
+  overflow-x: auto;
+}
+
+.parts--empty {
+  color: GrayText;
+  margin: 1.5rem 0;
+}
+
+.part {
+  border-block-start: 6px solid var(--no-such-disposition);
+  display: grid;
+  gap: 0.1rem;
+  padding: 0.5rem 0.75rem;
+}
+
+.part--good {
+  border-color: var(--good);
+}
+
+.part--reject {
+  border-color: var(--reject);
+}
+
+.part__serial {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.part__disposition,
+.part__reason {
+  color: GrayText;
+  font-size: 0.85em;
+}
+
+.part__image {
+  inline-size: 100%;
+  margin-block-start: 0.25rem;
 }
 
 .clock {

@@ -243,10 +243,15 @@ async def main() -> None:
         # `LotSchedule.lot_at` refuses an instant its windows do not cover -- so a
         # schedule started later than the line would make every early component's lot
         # unanswerable.
+        # §3.7's strip, wrapped around the inspection call rather than wired into S3.
+        # The verdict already carries every field the strip shows, including the reject's
+        # image, and wrapping here keeps the four stations free of a dependency on a
+        # screen -- which is also what lets them stay testable without one.
+        recent = hmi.RecentParts(settings.hmi_recent_parts)
         line = build_line(
             writer,
             settings,
-            InspectionClient(settings, http).produce,
+            recent.watching(InspectionClient(settings, http).produce),
             LotSchedule(settings, clock.history_start),
         )
         _log(
@@ -290,7 +295,7 @@ async def main() -> None:
             # Its own cadence is hmi_interval_seconds, not this one: the status file is
             # read by a human at a shell prompt and the screen is drawn continuously,
             # and one number cannot be right for both.
-            tasks.create_task(hmi.serve(line, clock, settings))
+            tasks.create_task(hmi.serve(line, clock, settings, recent))
             history_end = await run_catchup(line, writer, clock, settings, storage)
             catchup_wall = time.monotonic() - started
             _log(
