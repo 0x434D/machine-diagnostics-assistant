@@ -84,6 +84,37 @@ public sealed class ConnectionTests : IDisposable
         Assert.Equal("Sign", GatewayOptions.Default().SecurityMode);
     }
 
+    [Theory]
+    [InlineData("GATEWAY_BACKFILL_WINDOW_MINUTES", "0")]
+    [InlineData("GATEWAY_BACKFILL_WINDOW_MINUTES", "-1")]
+    [InlineData("GATEWAY_BACKFILL_WINDOW_MINUTES", "sixty")]
+    [InlineData("GATEWAY_MINIMUM_BACKFILL_WINDOW_SECONDS", "0")]
+    [InlineData("GATEWAY_MINIMUM_BACKFILL_WINDOW_SECONDS", "-30")]
+    public void AWindowLengthThatCannotMakeProgressIsRefusedAtBoot(string key, string value)
+    {
+        // A backfill window of zero is the one setting here that hangs rather than being
+        // merely wrong: RunAsync steps its windows by BackfillWindow, so a zero-length one
+        // never advances and the backfill spins for ever with nothing logged. Refused where a
+        // missing signal policy is refused -- at boot, naming the value.
+        var exception = Assert.Throws<ArgumentException>(() =>
+            GatewayOptions.FromEnvironment(new Dictionary<string, string?>(StringComparer.Ordinal)
+            {
+                [key] = value,
+            }));
+
+        Assert.Contains(key, exception.Message, StringComparison.Ordinal);
+        Assert.Contains(value, exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AWindowLengthThatIsNotSetKeepsItsDefault()
+    {
+        var options = GatewayOptions.Default();
+
+        Assert.Equal(TimeSpan.FromHours(1), options.BackfillWindow);
+        Assert.Equal(TimeSpan.FromSeconds(30), options.MinimumBackfillWindow);
+    }
+
     [Fact]
     public void StoreRootsFollowThePkiInitLayout()
     {

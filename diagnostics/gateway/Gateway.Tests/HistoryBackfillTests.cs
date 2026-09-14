@@ -364,6 +364,41 @@ public sealed class HistoryBackfillTests
         Assert.True(plant.ReleaseAttempted, "the continuation point was never released");
     }
 
+    [Fact]
+    public async Task AFailedReleaseDoesNotReplaceACancellationTheLoopExitedOnCooperatively()
+    {
+        // The pager's other way out: it stops between pages on the cancellation flag, so
+        // nothing is thrown and the "a release may only be swallowed when something already
+        // failed" rule had nothing to match on -- the release's own exception became what the
+        // caller saw, and the shutdown signal was gone.
+        using var cancellation = new CancellationTokenSource();
+        var plant = new FakeHistorian
+        {
+            OffersContinuation = true,
+            FailRelease = true,
+            CancelAfterFirstPage = cancellation,
+        };
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => RunAsync(
+            plant,
+            [],
+            new AddressSpace(
+                [
+                    new DiscoveredStation(
+                        "S3", "Inspection", plant.Events("S3", Minutes(1)),
+                        [new DiscoveredSignal(
+                            "TaktTime",
+                            plant.Variable("S3.TaktTime", Minutes(0, 10, 20, 30, 40, 50)),
+                            BuiltInType.Double)],
+                        EmitsEvents: true),
+                ],
+                [],
+                PhaseNodeId: null),
+            ct: cancellation.Token));
+
+        Assert.True(plant.ReleaseAttempted, "the continuation point was never released");
+    }
+
     private const int EventPageSize = 3;
 
     private static DateTime[] Minutes(params int[] offsets) =>
@@ -376,7 +411,8 @@ public sealed class HistoryBackfillTests
     private static Task<BackfillReport> RunAsync(
         FakeHistorian plant, List<IngestRecord> written, AddressSpace space,
         string policy = """{ "defaults": { "page_size": 4 } }""",
-        IReadOnlySet<string>? streamsReadBefore = null)
+        IReadOnlySet<string>? streamsReadBefore = null,
+        CancellationToken ct = default)
     {
         var options = GatewayOptions.Default() with
         {
@@ -401,7 +437,7 @@ public sealed class HistoryBackfillTests
             Ts,
             Ts.AddHours(1),
             streamsReadBefore ?? new HashSet<string>(StringComparer.Ordinal),
-            CancellationToken.None);
+            ct);
     }
 
     /// <summary>Distinct SourceTimestamps that reached the writer for one node.</summary>
@@ -440,6 +476,13 @@ public sealed class HistoryBackfillTests
         /// <summary>The session dies mid-window, and the release that follows dies with it.</summary>
         public bool FailAfterFirstPage { get; init; }
 
+        /// <summary>Releasing throws, whatever ended the read.</summary>
+        public bool FailRelease { get; init; }
+
+        /// <summary>Cancelled after the first page, so the pager stops on the flag rather than
+        /// on anything thrown -- the loop's other way out.</summary>
+        public CancellationTokenSource? CancelAfterFirstPage { get; init; }
+
         public bool ReleaseAttempted { get; private set; }
 
         public NodeId Variable(string name, DateTime[] sourceTimestamps)
@@ -469,7 +512,7 @@ public sealed class HistoryBackfillTests
             if (release)
             {
                 ReleaseAttempted = true;
-                return FailAfterFirstPage
+                return FailAfterFirstPage || FailRelease
                     ? throw new ServiceResultException(
                         StatusCodes.BadSessionIdInvalid, "the session is gone")
                     : Task.FromResult(new HistoryReadResult());
@@ -506,10 +549,15 @@ public sealed class HistoryBackfillTests
             var inWindow = all.Skip(offset).Take((int)pageSize).ToList();
             var next = offset + inWindow.Count;
 
-            return Task.FromResult(Page(
+            var page = Page(
                 node,
                 inWindow,
-                OffersContinuation && next < all.Count ? BitConverter.GetBytes(next) : null));
+                OffersContinuation && next < all.Count ? BitConverter.GetBytes(next) : null);
+
+            // After the page is built, so the pager decodes it and then finds the flag set on
+            // the loop condition rather than on the read itself.
+            CancelAfterFirstPage?.Cancel();
+            return Task.FromResult(page);
         }
 
         private HistoryReadResult Page(

@@ -155,9 +155,9 @@ public sealed record GatewayOptions
             DrainBatchSize = ReadInt(environment, "GATEWAY_DRAIN_BATCH_SIZE", 200),
             HistoryEventPageSize = ReadInt(environment, "GATEWAY_HISTORY_EVENT_PAGE_SIZE", 25),
             BackfillWindow = TimeSpan.FromMinutes(
-                ReadInt(environment, "GATEWAY_BACKFILL_WINDOW_MINUTES", 60)),
+                ReadWindowLength(environment, "GATEWAY_BACKFILL_WINDOW_MINUTES", 60)),
             MinimumBackfillWindow = TimeSpan.FromSeconds(
-                ReadInt(environment, "GATEWAY_MINIMUM_BACKFILL_WINDOW_SECONDS", 30)),
+                ReadWindowLength(environment, "GATEWAY_MINIMUM_BACKFILL_WINDOW_SECONDS", 30)),
             HistoryDepth = TimeSpan.FromHours(
                 ReadInt(environment, "GATEWAY_HISTORY_DEPTH_HOURS", 33)),
             MaxByteStringLength = ReadInt(
@@ -178,4 +178,36 @@ public sealed record GatewayOptions
     private static int ReadInt(
         IReadOnlyDictionary<string, string?> environment, string key, int fallback) =>
         int.TryParse(Read(environment, key, string.Empty), out var value) ? value : fallback;
+
+    /// <summary>
+    /// A window length, refused unless it is a positive whole number.
+    ///
+    /// <para>Zero is the one value in this file that cannot make progress rather than merely
+    /// being wrong: <c>HistoryBackfill.RunAsync</c> walks its windows with
+    /// <c>start = start.Add(BackfillWindow)</c>, so a zero-length window never advances and the
+    /// backfill spins for ever, accumulating ledger entries — a hang with no error, which is
+    /// worse than every misconfiguration this file can otherwise produce. Negative is the same
+    /// loop running backwards.</para>
+    ///
+    /// <para>Unparseable is refused too, and unlike the other keys here. The value is a
+    /// length of time that governs whether a truncated stream can be subdivided at all; a typo
+    /// silently becoming the default is the shape §5.1's policy keys were made to fail on.</para>
+    /// </summary>
+    /// <exception cref="ArgumentException">the value is set and is not a positive integer.</exception>
+    private static int ReadWindowLength(
+        IReadOnlyDictionary<string, string?> environment, string key, int fallback)
+    {
+        var raw = Read(environment, key, string.Empty);
+        if (raw.Length == 0)
+        {
+            return fallback;
+        }
+
+        return int.TryParse(raw, out var value) && value > 0
+            ? value
+            : throw new ArgumentException(
+                $"{key} is '{raw}'; a backfill window must be a whole number greater than zero, "
+                + "and a window of zero never advances",
+                nameof(environment));
+    }
 }

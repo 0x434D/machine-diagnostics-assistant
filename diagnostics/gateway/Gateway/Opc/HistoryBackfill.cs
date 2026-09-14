@@ -401,6 +401,16 @@ public sealed partial class HistoryBackfill
             failure = e;
         }
 
+        // The loop's other way out. It stops on the cancellation flag between pages rather
+        // than on a thrown exception, so nothing was raised, `failure` stayed null, the filter
+        // below did not match, and a release that threw took the shutdown path's place after
+        // all — the same defect one exit path over. Cancellation is a failure of this read;
+        // it is recorded as one here so there is exactly one way out of this method.
+        if (failure is null && ct.IsCancellationRequested)
+        {
+            failure = new OperationCanceledException(ct);
+        }
+
         if (continuationPoint is { Length: > 0 })
         {
             // Released on every exit path, cancellation included, or the server's
@@ -423,8 +433,6 @@ public sealed partial class HistoryBackfill
         {
             ExceptionDispatchInfo.Capture(failure).Throw();
         }
-
-        ct.ThrowIfCancellationRequested();
 
         return new PageOutcome(rows, pages, clock.ElapsedMilliseconds, verdict);
     }
