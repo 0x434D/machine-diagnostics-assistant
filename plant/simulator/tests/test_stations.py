@@ -12,6 +12,7 @@ import sys
 from datetime import UTC, datetime
 
 import pytest
+from simulator.address_space import PACKML_SIGNALS, STATION_SIGNALS
 from simulator.carriers import Carrier
 from simulator.config import Settings
 from simulator.line import PartState
@@ -92,17 +93,43 @@ def build_all() -> list[tuple[Station, RecordingNodes]]:
 
 
 @pytest.mark.asyncio
-async def test_every_station_records_its_takt_and_its_part_count() -> None:
-    """§4.1 gives all four the same two, and they are deliberately different in
-    kind -- a noisy float where a deadband is meaningful, and a monotonic counter
-    where one would silently lose parts."""
+async def test_every_station_writes_only_signals_the_tree_gives_it() -> None:
+    """§4.1 fixes each station's variables, and `StationNodeSet.write` raises KeyError
+    for one it was not given -- so a station writing a signal the tree does not carry
+    is a crash on the first cycle of a real boot.
+
+    This is the check that was missing. Its predecessor asserted that all four write
+    `TaktTime` and `PartCount` against a double that accepts any name, and §4.1 gives
+    S4 no `PartCount` at all (its count is `GoodCount` + `RejectCount`): the assertion
+    passed while the shipped wiring could not run one cycle.
+    """
     for station, nodes in build_all():
         # S4 refuses a part nobody inspected, so every station is handed the part it
         # would really receive: only S4's predecessor has already stamped one.
         outfeed = station.code == _CODES[OutfeedStation]
         part = PartState(disposition="good") if outfeed else PartState()
         await station.run_cycle(T0, Carrier(0), part)
-        assert {"TaktTime", "PartCount"} <= nodes.signals()
+        declared = {name for name, _ in PACKML_SIGNALS + STATION_SIGNALS[station.code]}
+        assert nodes.signals() <= declared, station.code
+        # TaktTime is the one signal every station has and every station must write:
+        # it is what makes the takt a measured number rather than a configured one.
+        assert "TaktTime" in nodes.signals(), station.code
+
+
+@pytest.mark.asyncio
+async def test_every_station_publishes_the_parts_it_has_handled() -> None:
+    """Three stations publish a running `PartCount`; S4 publishes the same count as
+    `GoodCount` and `RejectCount`, which sum to it. Either way a part that passes
+    through a station is visible in that station's own numbers -- a station whose
+    counters never moved is one nothing can tell apart from a stopped one."""
+    for station, nodes in build_all():
+        outfeed = station.code == _CODES[OutfeedStation]
+        part = PartState(disposition="good") if outfeed else PartState()
+        await station.run_cycle(T0, Carrier(0), part)
+        counters = (
+            {"GoodCount", "RejectCount"} if outfeed else {station.part_count_signal}
+        )
+        assert counters <= nodes.signals(), station.code
 
 
 @pytest.mark.asyncio

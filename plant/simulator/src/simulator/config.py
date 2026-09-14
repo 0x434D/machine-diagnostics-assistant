@@ -58,7 +58,7 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # historised at all: asyncua's monitored-item filter drops a notification
     # whenever the written value is unchanged, and a bare constant takt (M1, with no
     # noise model yet) means only the very first write is ever historised. See
-    # station_s3._next_takt.
+    # stations.base.Station.next_takt.
     takt_jitter_sigma: float = 0.05
 
     # §3.1's three line defaults. Buffer capacity is the one that matters: it sets how
@@ -145,8 +145,9 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # must give the ~10 ms publish loop a chance to drain before any one stream's
     # backlog gets there. 500 parts is comfortably under the cap even though every
     # part now writes a distinct TaktTime (see takt_jitter_sigma); 0.05 s matches
-    # what was measured to drain a batch that size. See
-    # station_s3.generate_history.
+    # what was measured to drain a batch that size. Re-measured at 25 streams by R5
+    # (measurements/r5-streams.json: 495,000 rows, none dropped). See
+    # line.run_catchup.
     catchup_batch_size: int = 500
     catchup_batch_pause_seconds: float = 0.05
 
@@ -164,8 +165,8 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # which is already incompressible. See measurements/r4-image-sizes.txt.
     image_compress_level: int = 1
     # The classifier's own /inspect response now carries the authoritative
-    # model_version (PartOutcome.model_version) -- this is no longer threaded through
-    # station_s3._emit_part. Kept as the value a non-HTTP stub producer can fall back
+    # model_version (PartOutcome.model_version) -- it is not threaded through the
+    # station. Kept as the value a non-HTTP stub producer can fall back
     # to, and as documentation of the deployment's expected model version.
     model_version: str = "simulated-1"
 

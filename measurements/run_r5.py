@@ -83,7 +83,7 @@ async def measure(
             for stream, node in enumerate(nodes):
                 # The value must differ every write or asyncua's monitored-item
                 # filter coalesces it away before the storage layer sees it -- the
-                # same defect station_s3._next_takt exists to dodge.
+                # same defect stations.base.Station.next_takt exists to dodge.
                 await node.write_value(
                     ua.DataValue(
                         ua.Variant(

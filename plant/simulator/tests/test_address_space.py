@@ -370,9 +370,9 @@ async def test_clock_nodes_are_not_historized(tmp_path: Path) -> None:
     would change those counts, which is exactly the defect this guards against: the
     historian's own handler set, not a count that could stay right by accident.
 
-    M1's historian still attaches exactly S3's two variables and its event node --
-    Task 7 raises that to §4.1's 25 when it deletes station_s3.py -- so the clock's
-    absence is what this asserts, not the size of the set.
+    Asserted as a size and an absence rather than against `historised_streams`, which
+    is the enumeration the historian attaches from -- comparing the two would compare
+    the code to itself.
     """
     server, space = await _build()
 
@@ -387,7 +387,10 @@ async def test_clock_nodes_are_not_historized(tmp_path: Path) -> None:
     )
 
     historized = set(server.iserver.history_manager._handlers)
-    assert historized == {space.takt, space.part_count, space.s3}
+    # §4.1's 25 streams plus S3's event node, which is historised as an emitting
+    # object rather than as a variable and so is the twenty-sixth handler.
+    assert len(historized) == 26
+    assert space.inspection.node in historized
     assert {
         space.clock_time,
         space.clock_phase,

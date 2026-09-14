@@ -1,17 +1,12 @@
 """What every station does identically: keep its own RNG, jitter its takt, write
-TaktTime and PartCount, and publish PackML state with its reason.
+TaktTime, count the parts it has handled, and publish PackML state with its reason.
 
 `StationNodes` is the seam. A station never touches asyncua directly -- it names a
-signal and a value, and Task 6's address space decides which node that is. That is
-what lets the four stations be tested without a server, and it is what will keep the
+signal and a value, and the address space decides which node that is. That is what
+lets the four stations be tested without a server, and it is what keeps the
 `SourceTimestamp` suppression -- a `ua.DateTime` binds as an unsupported sqlite
-parameter type and every row then vanishes with no visible error (station_s3._emit_part
-carries the full account) -- in one place instead of four.
-
-`PartOutcome`, `ProduceFn` and `serial_for` are copies of `station_s3.py`'s rather than
-moves, and `Station.next_takt` duplicates its module-level `_next_takt`. That module
-still owns catch-up and live production until Task 7 folds both into the Line and
-deletes it; the copies go when the original does.
+parameter type and every row then vanishes with no visible error
+(`address_space.write_at` carries the full account) -- in one place instead of four.
 """
 
 from __future__ import annotations
@@ -22,7 +17,7 @@ from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import ClassVar, Protocol
 
 from simulator.carriers import Carrier
 from simulator.config import Settings
@@ -32,12 +27,7 @@ from simulator.packml import State
 
 @dataclass(frozen=True)
 class PartOutcome:
-    """One part's inspection verdict, as the vision system itself reported it.
-
-    A copy of M1's `station_s3.PartOutcome`, field for field, until Task 7 deletes
-    that module. The two are separate types meanwhile, so nothing may pass one where
-    the other is expected.
-    """
+    """One part's inspection verdict, as the vision system itself reported it."""
 
     disposition: str  # "good" | "reject"
     defect_class: str | None
@@ -94,6 +84,21 @@ function, wedging the event loop with no error, timeout, or log."""
 class Station(ABC):
     """Four implementations, in this package. That is what justifies the base class
     existing at all (CLAUDE.md)."""
+
+    part_count_signal: ClassVar[str | None] = "PartCount"
+    """Which §4.1 variable this station publishes its running part count as.
+
+    Three of the four have a `PartCount`. S4 has none: it publishes the same count as
+    `GoodCount` and `RejectCount`, which sum to it, and publishing both would be one
+    number on the wire twice -- so it sets this to None and writes the pair itself,
+    where the disposition deciding which of the two moves is in hand.
+
+    Stated here rather than left implicit because it was implicit and wrong: this base
+    wrote `PartCount` for all four, `StationNodeSet.write` raises KeyError for a signal
+    §4.1 does not give a station, and nothing found it until Task 7 wired the real
+    address space to the real stations -- the station tests write through a double that
+    accepts any name, which is exactly the shape of test that cannot see this.
+    """
 
     def __init__(self, nodes: StationNodes, settings: Settings, seed: int) -> None:
         """Raises ValueError if `settings` names no takt for this station's code.
@@ -210,7 +215,8 @@ class Station(ABC):
             if self._previous_takt is None
             else self._previous_takt,
         )
-        await self._nodes.write("PartCount", at, self._part_count)
+        if self.part_count_signal is not None:
+            await self._nodes.write(self.part_count_signal, at, self._part_count)
         await self.on_part(at, carrier, part)
 
     @abstractmethod

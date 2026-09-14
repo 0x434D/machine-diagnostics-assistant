@@ -20,12 +20,27 @@ from asyncua.crypto.truststore import TrustStore
 from asyncua.crypto.validator import CertificateValidator, CertificateValidatorOptions
 
 from simulator import status
-from simulator.address_space import AddressSpace, build_address_space, publish_clock
+from simulator.address_space import (
+    BUFFERS,
+    AddressSpace,
+    build_address_space,
+    publish_clock,
+)
+from simulator.buffers import Buffer
+from simulator.carriers import CarrierPool
 from simulator.clock import SimulatedClock
 from simulator.config import ClockConfig, Settings
-from simulator.historian import Ledger, attach_historian
+from simulator.historian import Ledger, LedgerWriter, attach_historian
 from simulator.inspection_client import InspectionClient
-from simulator.station_s3 import generate_history, run_live
+from simulator.line import Line, run_catchup, run_live
+from simulator.stations import (
+    FeedingStation,
+    InspectionStation,
+    JoiningStation,
+    OutfeedStation,
+    ProduceFn,
+    Station,
+)
 
 NAMESPACE = "http://machine-agent/plant"
 
@@ -121,6 +136,36 @@ async def build_server(settings: Settings) -> tuple[Server, AddressSpace]:
     return server, space
 
 
+def build_line(writer: LedgerWriter, settings: Settings, produce: ProduceFn) -> Line:
+    """§3.1's line: four stations in line order, the three buffers between them, and
+    one circulating carrier pool.
+
+    The stations are listed rather than built from `STATION_SIGNALS`: each one is a
+    different class and S3 takes the inspection call, so a table would be four rows of
+    data and a four-way branch. Two guards make the spelling safe anyway --
+    `LedgerWriter.station` raises for a code §4.1's tree does not carry, and
+    `Station.__init__` raises for one the settings name no takt for -- and `Line`
+    itself refuses a buffer whose published upstream/downstream disagree with where it
+    is placed here.
+
+    Every station is seeded from the same `settings.seed`; `Station.__init__` folds the
+    station code in, so the four draw independently and reproducibly (§3.6).
+    """
+    stations: list[Station] = [
+        FeedingStation(writer.station("S1_Feeding"), settings, settings.seed),
+        JoiningStation(writer.station("S2_Joining"), settings, settings.seed),
+        InspectionStation(
+            writer.station("S3_Inspection"), settings, settings.seed, produce
+        ),
+        OutfeedStation(writer.station("S4_Outfeed"), settings, settings.seed),
+    ]
+    buffers = [
+        Buffer(buffer_id, settings.buffer_capacity, upstream, downstream)
+        for buffer_id, upstream, downstream in BUFFERS
+    ]
+    return Line(stations, buffers, CarrierPool(settings.carrier_count))
+
+
 async def main() -> None:
     # WARNING at the root, INFO only for this module. asyncua logs the full decoded
     # PublishResult -- every notification, every field -- at INFO, which at catch-up
@@ -165,11 +210,18 @@ async def main() -> None:
         clock.history_start - timedelta(seconds=settings.takt_seconds),
         ledger,
     )
+    writer = LedgerWriter(space, ledger)
 
     async with (
         server,
         httpx.AsyncClient(timeout=settings.inspection_timeout_seconds) as http,
     ):
+        # One client for both phases: its verdict for a part is a pure function of
+        # (seed, part_id), so catch-up and live cannot shift each other's draws
+        # however many parts precede them (§3.6, and test_defect_draw_does_not_depend
+        # _on_prior_calls). M1 built a second one with `seed ^ 1` because its two
+        # generators were separate runs; the queue makes them one.
+        line = build_line(writer, settings, InspectionClient(settings, http).produce)
         _log(
             "catchup.start",
             endpoint=settings.endpoint_url,
@@ -193,7 +245,7 @@ async def main() -> None:
         # running?" for two and a half minutes while it was running.
         async with asyncio.TaskGroup() as tasks:
             tasks.create_task(
-                status.publish(status.STATUS_FILE, clock, settings, ledger)
+                status.publish(status.STATUS_FILE, clock, settings, ledger, line)
             )
             # Same cadence as the status writer above, started alongside it rather
             # than on a second timer -- see address_space.publish_clock. This is
@@ -202,19 +254,15 @@ async def main() -> None:
             tasks.create_task(
                 publish_clock(space, clock, settings.status_interval_seconds)
             )
-            history_end = await generate_history(
-                space,
-                clock,
-                settings,
-                InspectionClient(settings, http).produce,
-                ledger,
-                storage,
-            )
+            history_end = await run_catchup(line, writer, clock, settings, storage)
             catchup_wall = time.monotonic() - started
             _log(
                 "catchup.done",
-                takt=ledger.takt,
-                part_count=ledger.part_count,
+                # Per stream, not a total: a total that is short says only that
+                # something was lost, and at 25 streams the next question is always
+                # which one. run_catchup has already refused to return if these
+                # disagree with the historian.
+                rows=ledger.rows_by_name(),
                 events=ledger.events,
                 images=ledger.images,
                 image_bytes=ledger.image_bytes,
@@ -244,21 +292,9 @@ async def main() -> None:
                 takt_seconds=settings.takt_seconds,
             )
 
-            # A second inspection client with a distinguishing seed, mirroring
-            # run_live's own `settings.seed ^ 1`: without it, changing the configured
-            # history depth would change how many defect draws catch-up consumes and so
-            # shift what live production produces for the same seed (§3.6).
-            tasks.create_task(
-                run_live(
-                    space,
-                    clock,
-                    settings,
-                    InspectionClient(settings, http, seed=settings.seed ^ 1).produce,
-                    ledger,
-                    start_index=ledger.events,
-                    start_ts=history_end,
-                )
-            )
+            # No start instant and no re-seeding: live continues the same queue, whose
+            # next due cycle is the `history_end` logged above (see run_live).
+            tasks.create_task(run_live(line, writer, clock, settings))
 
 
 if __name__ == "__main__":

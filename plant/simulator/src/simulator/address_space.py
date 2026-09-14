@@ -33,10 +33,10 @@ station has written anything, and nothing short of not historising the stream av
 it. The choice is therefore only between a truthful priming row and a false one, so
 every value declared below is one the plant is genuinely in before its driver runs:
 `Aborted` with no reason for PackML, zero for every counter, level and float.
-Task 7 owns the other half -- it must write each of the 25 once with a deliberate
-simulated `SourceTimestamp` *before* attaching the historian (M1's `attach_historian`
-does exactly this for its two), or the row lands stamped with the real wall clock,
-and its ledger must count 25 rows no generator produced.
+`historian.attach_historian` owns the other half: it rewrites each of the 25 with a
+deliberate simulated `SourceTimestamp` *before* historising them, or the row lands
+stamped with the real wall clock, and it counts all 25 into the ledger because no
+generator produced them.
 
 **A write is not a row.** asyncua's monitored-item filter drops a notification whose
 value equals the previous one, so a stream is historised only where it actually
@@ -44,14 +44,17 @@ changes. S4 writes `GoodCount` and `RejectCount` on every part but only one of t
 moves; `State` and `StateReason` repeat for as long as a station stays put; a buffer
 `Level` written every cycle repeats whenever the level does. A ledger that counts
 writes over-counts every one of those. `TaktTime` is the one exemption, and only
-because `Station.next_takt` resamples until the value differs.
+because `Station.next_takt` resamples until the value differs. `historian.Ledger`
+applies that same rule, which is what makes its count comparable to the historian's.
 """
 
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import NamedTuple
 
 from asyncua import Node, Server, ua
 from asyncua.server import EventGenerator
@@ -112,6 +115,10 @@ INSPECTION_STATION = "S3_Inspection"
 """The one station §4.1 gives an event type in M2a. The other four event types in
 §4.1's tree arrive with the data they carry, in M2b."""
 
+BUFFER_LEVEL_SIGNAL = "Level"
+"""The one historised variable a buffer has. Named because the ledger and the
+reconciliation key streams by it and a buffer's own node set does not spell it."""
+
 BUFFER_LEVEL_TYPE = ua.VariantType.UInt32
 """A buffer holds a whole number of carriers and can never hold fewer than none.
 
@@ -142,13 +149,15 @@ the module docstring), so it would be a fake with a row of its own."""
 _BOOTSTRAP_TIME = datetime(1970, 1, 1, tzinfo=UTC)
 
 
-async def _write_at(
+async def write_at(
     node: Node, variant_type: ua.VariantType, at: datetime, value: float | str
 ) -> None:
     """Write `value` to `node` with `at` as its SourceTimestamp.
 
-    The only place in this module that sets a node's value after build time, so the
-    suppression below is carried once rather than at every call site.
+    The only place in the simulator that sets a historised node's value -- stations
+    write through `StationNodeSet.write`, buffers through `BufferNodeSet.write_level`
+    and the historian's priming through this directly -- so the suppression below is
+    carried once rather than at four call sites saying the same measured thing.
     """
     # SourceTimestamp= carries a suppression for the reason M1 measured and wrote
     # down: DataValue types the field as ua.DateTime, a datetime subclass asyncua's
@@ -199,7 +208,7 @@ class StationNodeSet:
         # type of `value`: PartCount, GoodCount and RejectCount arrive as `int`
         # through a parameter PEP 484 types `float`, so anything dispatching on
         # isinstance(value, float) would miss every counter in the line.
-        await _write_at(self.historised[signal], self.types[signal], at, value)
+        await write_at(self.historised[signal], self.types[signal], at, value)
 
     async def trigger_event(self, at: datetime, fields: dict[str, object]) -> None:
         """Fire this station's event type with `at` as its Time.
@@ -244,7 +253,7 @@ class BufferNodeSet:
 
     async def write_level(self, at: datetime, level: int) -> None:
         """Publish this buffer's fill at simulated instant `at`."""
-        await _write_at(self.level, BUFFER_LEVEL_TYPE, at, level)
+        await write_at(self.level, BUFFER_LEVEL_TYPE, at, level)
 
 
 @dataclass(frozen=True)
@@ -261,30 +270,54 @@ class AddressSpace:
     buffers: dict[str, BufferNodeSet]
     event_type: Node
 
-    # M1 handles. station_s3.py still owns catch-up and live production and still
-    # addresses S3's two variables and its event generator directly, and M1's
-    # historian still primes and historises exactly those; Task 7 folds both into the
-    # Line and deletes station_s3.py, and these four go with it. They are properties
-    # rather than fields so there is one S3 in this object, not a second alias of it
-    # that could be built wrong.
     @property
-    def s3(self) -> Node:
-        return self.stations[INSPECTION_STATION].node
+    def inspection(self) -> StationNodeSet:
+        """The one station that emits events (§4.1), which the historian needs by
+        name: event history is attached to the emitting node, not to a variable.
 
-    @property
-    def takt(self) -> Node:
-        return self.stations[INSPECTION_STATION].historised["TaktTime"]
-
-    @property
-    def part_count(self) -> Node:
-        return self.stations[INSPECTION_STATION].historised["PartCount"]
-
-    @property
-    def event_gen(self) -> EventGenerator:
-        return self.stations[INSPECTION_STATION].require_event_generator()
+        A property rather than a field so there is one S3 in this object, not a second
+        alias of it that could be built wrong. M1's `s3`/`takt`/`part_count`/`event_gen`
+        handles were the same idea for a tree with one station in it; they went with
+        `station_s3.py`, because a handle naming S3's TaktTime as *the* TaktTime is
+        exactly the confusion a four-station line cannot afford.
+        """
+        return self.stations[INSPECTION_STATION]
 
 
-def _initial_value(signal: str, variant_type: ua.VariantType) -> float | str:
+class HistorisedStream(NamedTuple):
+    """One of §4.1's 25 historised streams, keyed the way the ledger keys it.
+
+    `owner` is a station browse name or a buffer id -- the two kinds of thing §4.1
+    gives a historised variable to. It is half the key because `S1_Feeding.TaktTime`
+    and `S2_Joining.TaktTime` are two streams, and a count that merged them would
+    reconcile perfectly while one of them lost every row.
+    """
+
+    owner: str
+    signal: str
+    node: Node
+    variant_type: ua.VariantType
+
+
+def historised_streams(space: AddressSpace) -> Iterator[HistorisedStream]:
+    """Every variable the historian records, stations in line order then buffers.
+
+    One enumeration behind three lists that must name the same 25 nodes -- what is
+    primed, what is historised, and what is counted back out of the historian -- so
+    they cannot drift apart. A stream primed but not historised has a row in the
+    ledger and none in the database; historised but not primed has the reverse, with
+    a wall-clock timestamp on it.
+    """
+    for nodes in space.stations.values():
+        for signal, node in nodes.historised.items():
+            yield HistorisedStream(nodes.code, signal, node, nodes.types[signal])
+    for buffer_id, buffer_nodes in space.buffers.items():
+        yield HistorisedStream(
+            buffer_id, BUFFER_LEVEL_SIGNAL, buffer_nodes.level, BUFFER_LEVEL_TYPE
+        )
+
+
+def initial_value(signal: str, variant_type: ua.VariantType) -> float | str:
     """What a variable declares before anything writes to it -- and historises once.
 
     Raises KeyError for a variant type with no declared zero, which is the right
@@ -337,7 +370,7 @@ async def build_address_space(
         types: dict[str, ua.VariantType] = {}
         for name, variant_type in PACKML_SIGNALS + signals:
             historised[name] = await station.add_variable(
-                idx, name, _initial_value(name, variant_type), variant_type
+                idx, name, initial_value(name, variant_type), variant_type
             )
             types[name] = variant_type
 
@@ -374,7 +407,16 @@ async def build_address_space(
         buffers[buffer_id] = BufferNodeSet(
             buffer_id=buffer_id,
             node=buffer,
-            level=await buffer.add_variable(idx, "Level", 0, BUFFER_LEVEL_TYPE),
+            # Through initial_value like every station signal, rather than a literal
+            # 0: the historian primes this node from that same function, and a
+            # declaration that disagreed with the priming value would historise two
+            # rows where §4.1 has one stream starting at one value.
+            level=await buffer.add_variable(
+                idx,
+                BUFFER_LEVEL_SIGNAL,
+                initial_value(BUFFER_LEVEL_SIGNAL, BUFFER_LEVEL_TYPE),
+                BUFFER_LEVEL_TYPE,
+            ),
             # The static three. Written here by add_variable's own initial value and
             # never again, which is what makes them readable on connect without the
             # plant running -- §4.1's "topology is discovered, not configured".

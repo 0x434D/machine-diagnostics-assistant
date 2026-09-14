@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import override
+from typing import ClassVar, override
 
 from simulator.carriers import Carrier
 from simulator.config import Settings
@@ -12,6 +12,10 @@ from simulator.stations.base import Station, StationNodes, clamp_level
 
 
 class OutfeedStation(Station):
+    # §4.1 gives S4 no PartCount: GoodCount and RejectCount are its part count, and
+    # they sum to it. See Station.part_count_signal.
+    part_count_signal: ClassVar[str | None] = None
+
     def __init__(self, nodes: StationNodes, settings: Settings, seed: int) -> None:
         super().__init__(nodes, settings, seed)
         self._good = 0

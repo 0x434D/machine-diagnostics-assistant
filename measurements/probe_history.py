@@ -54,7 +54,7 @@ async def probe(written: int, page: int, port: int) -> int:
                     ua.Variant(6.0 + i * 0.001, ua.VariantType.Double),
                     # DataValue types this as ua.DateTime, a datetime subclass asyncua's
                     # runtime never constructs -- it assigns plain datetimes throughout.
-                    # Same suppression and same reason as simulator/station_s3.py.
+                    # Same suppression and same reason as simulator.address_space.write_at.
                     SourceTimestamp=base + timedelta(seconds=TAKT_SECONDS * i),  # type: ignore[arg-type]
                 )
             )

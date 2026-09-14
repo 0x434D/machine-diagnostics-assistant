@@ -160,20 +160,21 @@ async def probe_one(multiple: int, image: bytes, width: int, height: int) -> Run
             async with client:
                 catcher = _EventCatcher()
                 sub = await client.create_subscription(100, catcher)
-                await sub.subscribe_events(space.s3, [space.event_type])
+                await sub.subscribe_events(space.inspection.node, [space.event_type])
                 # One publish cycle's worth of settling before triggering: a
                 # subscription whose first publish interval hasn't elapsed yet can
                 # miss an event raised immediately after subscribe_events returns.
                 await asyncio.sleep(0.1)
 
-                ev = space.event_gen.event
+                event_gen = space.inspection.require_event_generator()
+                ev = event_gen.event
                 ev.AssemblySerial = PART_ID
                 ev.Disposition = "reject"
                 ev.DefectClass = DEFECT
                 ev.Confidence = 0.5
                 ev.ModelVersion = "r4-ceiling-probe"
                 ev.Image = image
-                await space.event_gen.trigger(
+                await event_gen.trigger(
                     time_attr=datetime.now(UTC), message="r4 ceiling probe"
                 )
 
