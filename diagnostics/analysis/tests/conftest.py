@@ -382,7 +382,11 @@ def _seed_parts(url: str) -> None:
             for position, (lane, lot_code) in enumerate(
                 zip((1, 2), _lot_for(index), strict=True)
             ):
-                component = f"C{lane}-{index:08d}"
+                # `simulator.identity.component_serial`'s spelling, separators included.
+                # The lane is a field of the serial there so a containment query can read
+                # it back off one, and a fixture that ran the two together would pin a
+                # prefix no lane query can split.
+                component = f"C-{lane}-{index:08d}"
                 _insert_component(conn, component, lots[lot_code], lane, created_at)
                 _insert_genealogy(conn, serial, component, position)
 
@@ -408,7 +412,7 @@ def _seed_twins(conn: Connection, stations: dict[str, int]) -> None:
     for twin, carrier in (("A-TWIN-1", 3), ("A-TWIN-2", 4)):
         _insert_assembly(conn, twin, TWIN_INSTANT, carrier)
         for position, lane in enumerate((1, 2)):
-            component = f"C{lane}-{twin}"
+            component = f"C-{lane}-{twin}"
             _insert_component(conn, component, None, lane, TWIN_INSTANT)
             _insert_genealogy(conn, twin, component, position)
 
@@ -439,10 +443,10 @@ def _seed_stubs(
     _insert_disposition(conn, "A-HORIZON", BEFORE_THE_WINDOW + TAKT, 3, False)
 
     _insert_assembly(conn, "A-STUBLOT", BEFORE_THE_WINDOW, 1)
-    _insert_component(conn, "C1-STUB", None, None, None)
-    _insert_genealogy(conn, "A-STUBLOT", "C1-STUB", 0)
-    _insert_component(conn, "C2-STUBLOT", lots["LOT-B1"], 2, BEFORE_THE_WINDOW)
-    _insert_genealogy(conn, "A-STUBLOT", "C2-STUBLOT", 1)
+    _insert_component(conn, "C-1-STUB", None, None, None)
+    _insert_genealogy(conn, "A-STUBLOT", "C-1-STUB", 0)
+    _insert_component(conn, "C-2-STUBLOT", lots["LOT-B1"], 2, BEFORE_THE_WINDOW)
+    _insert_genealogy(conn, "A-STUBLOT", "C-2-STUBLOT", 1)
 
 
 @pytest.fixture

@@ -110,12 +110,12 @@ def test_two_parts_made_at_the_same_instant_keep_their_own_histories(
 
     assert first["created_at"] == second["created_at"]
     assert [row["component_serial"] for row in first["genealogy"]] == [
-        "C1-A-TWIN-1",
-        "C2-A-TWIN-1",
+        "C-1-A-TWIN-1",
+        "C-2-A-TWIN-1",
     ]
     assert [row["component_serial"] for row in second["genealogy"]] == [
-        "C1-A-TWIN-2",
-        "C2-A-TWIN-2",
+        "C-1-A-TWIN-2",
+        "C-2-A-TWIN-2",
     ]
     assert _value(first, "PeakForce") != _value(second, "PeakForce")
 
@@ -166,7 +166,7 @@ def test_a_component_with_no_read_event_stays_in_its_assembly(
     that looks single-component and a lot recall that misses it."""
     genealogy = client.get("/parts/A-STUBLOT").json()["genealogy"]
 
-    assert [row["component_serial"] for row in genealogy] == ["C1-STUB", "C2-STUBLOT"]
+    assert [row["component_serial"] for row in genealogy] == ["C-1-STUB", "C-2-STUBLOT"]
     assert genealogy[0]["lot_code"] is None
     assert genealogy[0]["lane"] is None
     assert genealogy[0]["read_at"] is None
@@ -286,8 +286,8 @@ def test_any_serial_resolves_to_its_whole_history_with_no_time_range_join(
     assert part["assembly_serial"] == serial
     assert part["created_at"] is not None
     assert [row["component_serial"] for row in part["genealogy"]] == [
-        f"C1-{index:08d}",
-        f"C2-{index:08d}",
+        f"C-1-{index:08d}",
+        f"C-2-{index:08d}",
     ]
     assert all(row["lot_code"] is not None for row in part["genealogy"])
     assert all(row["supplier"] is not None for row in part["genealogy"])

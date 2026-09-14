@@ -101,6 +101,10 @@ def test_a_good_parts_low_scores_are_not_defects_it_has(client: TestClient) -> N
     classes above the threshold would report 600-odd of each."""
     body = client.get("/inspection/stats", params=WINDOW).json()
 
+    # `all` over an empty list is true, so the guard below passed unchanged against a
+    # breakdown that had stopped reporting anything at all -- measured under the
+    # scalar-`defect_class` facade, which is the defect this milestone exists to remove.
+    assert body["by_defect_class"]
     assert all(row["count"] < 10 for row in body["by_defect_class"])
 
 
@@ -150,8 +154,8 @@ def test_a_serial_answers_with_every_section_of_its_history(
     assert body["created_at"] is not None
     assert body["carrier_id"] is not None
     assert [row["component_serial"] for row in body["genealogy"]] == [
-        "C1-00000007",
-        "C2-00000007",
+        "C-1-00000007",
+        "C-2-00000007",
     ]
     assert {row["signal"] for row in body["process_values"]} == {
         "PeakForce",
