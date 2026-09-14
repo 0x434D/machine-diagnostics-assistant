@@ -50,3 +50,14 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+# Registered so `make verify`'s `-m authenticity` selects rather than warns.
+#
+# Deliberately WITHOUT diagnostics/analysis's `addopts = -m 'not authenticity'`. That
+# exclusion exists because those proofs stop and start real containers and take
+# minutes; the plant's propagation proof runs a `Line` in process in a few seconds, so
+# excluding it from the gate would cost nothing and lose the one test that would fail
+# if §3.1's whole propagation claim stopped being true. It runs in `make check` and is
+# also what `make verify` selects.
+markers = ["authenticity: §1's proofs (make verify), in process here"]
