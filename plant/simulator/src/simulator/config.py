@@ -238,8 +238,10 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # which is what M2c's scenario 7 containment list is scored against: too large and
     # every part is in the lot, too small and the correlation has no power. At the 6 s
     # takt above, 500 components is 500 parts on one lane -- 50 minutes of production,
-    # so an 18 h history crosses roughly twenty lots per lane and a lot is a period a
-    # defect rate can actually be compared across.
+    # so the shipped history depth (ClockConfig.DEFAULT_HISTORY_DEPTH, 33 h) crosses
+    # roughly forty lots per lane and a lot is a period a defect rate can actually be
+    # compared across. Not eighteen hours and twenty lots: that was this comment until
+    # the third place in this repository had to correct the same 18 h to 33 h.
     #
     # supplier_count is what makes "which supplier" a question with more than one
     # answer; the lot is what containment is scored on, and the supplier is what a

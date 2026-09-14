@@ -121,10 +121,12 @@ ALTER TABLE inspection_results ADD COLUMN IF NOT EXISTS confidences DOUBLE PRECI
 ALTER TABLE inspection_results ADD COLUMN IF NOT EXISTS positions TEXT[];
 
 -- defect_class is M1's and is deliberately left in place and left unfilled. The widened
--- event carries no scalar class, so from here every row's defect_class is NULL — and
--- analysis.routes_inspection still groups by it, which is why the column cannot be dropped
--- in this migration without taking that endpoint's schema with it. Task 7 moves the
--- endpoint to defect_classes and is what makes the column droppable.
+-- event carries no scalar class, so from here every row's defect_class is NULL. It is kept
+-- only for the rows M1 wrote, which still carry a scalar class and are the only history a
+-- database upgraded in place holds for the window before this migration ran; dropping the
+-- column would delete them. Nothing reads it any more — analysis.routes_inspection grouped
+-- by it when this comment was first written, and moved to defect_classes in the same
+-- milestone — so the column is droppable whenever pre-M2b history stops being worth keeping.
 --
 -- positions has no source either: §3.4's classifier reports no defect positions yet. It is
 -- here because D11 widens this table once.
