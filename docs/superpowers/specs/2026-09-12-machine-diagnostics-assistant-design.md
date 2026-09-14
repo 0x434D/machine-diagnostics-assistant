@@ -599,6 +599,7 @@ assemblies          serial · created_at · carrier_id
 genealogy           assembly_serial · component_serial · position      as-built structure
 
 part_station_events assembly_serial · station_id · entered_at · left_at · state_at_entry
+                    ↑ no source yet — see below
 part_process_values assembly_serial · station_id · signal · value      authoritative per part
 part_process_curves assembly_serial · station_id · signal · samples[]  §3.4a's force–distance curve
 part_dispositions   assembly_serial · at · disposition · reason
@@ -617,6 +618,18 @@ messages            session_id · seq · role · content · created_at
 traces              session_id · message_seq · sops_loaded · tool_calls · budget · timings
 feedback            session_id · message_seq · useful · matched_reality · comment · created_at
 ```
+
+**`part_station_events` has no source, and §14 does not need one.** None of §4.1's five event
+types carries a station entry or exit instant, so the table exists as a shape with nothing to
+fill it — the standing `carriers` had before M2b. Writing the *processing* instant into
+`entered_at` would be exactly the quiet wrong answer this system refuses.
+
+§14's "any serial traced end to end: genealogy, station history, disposition" is answerable
+without it, and that is the reading this project takes: *station history* means what happened
+to this part at each station, which `assemblies.created_at` (S1), `part_process_values` and
+`part_process_curves` (S2), `inspection_results` (S3) and `part_dispositions` (S4) already
+give per serial. Filling the table would mean a plant change — an event carrying entry and
+exit — and buys nothing §14 asks for.
 
 There is no `users` table: identity lives in the provider (§10.5) and sessions carry the
 `sub` claim. That is what turns the existing trace tables into an audit trail for free —
