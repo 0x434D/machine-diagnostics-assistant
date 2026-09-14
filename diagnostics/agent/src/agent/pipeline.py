@@ -232,9 +232,20 @@ async def _compose(
     # Emitting the counts alone as `basis: "measured"` states a number under a semantics
     # the reader is never given -- so the threshold and the remainder travel with them, and
     # the remainder is what makes an empty breakdown readable rather than silent.
-    threshold = stats.get("defect_class_threshold")
+    # Not defaulted the way the counts above are: a count has a true zero and a threshold
+    # does not, so `stats.get(k, 0)` here would put a threshold this service never counted
+    # at into a sentence marked `basis: "measured"`. Absent, the two findings below have no
+    # statable semantics at all, so they are withheld and the withholding is said out loud.
+    raw_threshold = stats.get("defect_class_threshold")
+    threshold = raw_threshold if isinstance(raw_threshold, int | float) else None
     unaccounted = int(str(stats.get("rejects_without_class", 0)))
-    if isinstance(classes, list) and classes:
+    if threshold is None:
+        if classes or unaccounted:
+            caveats.append(
+                "The analysis service did not say which score threshold its defect "
+                "breakdown counted at, so the breakdown is not reported."
+            )
+    elif isinstance(classes, list) and classes:
         breakdown = ", ".join(
             f"{entry['defect_class']} {entry['count']}"
             for entry in classes
@@ -251,7 +262,7 @@ async def _compose(
             )
         )
 
-    if unaccounted:
+    if threshold is not None and unaccounted:
         findings.append(
             Finding(
                 statement=(

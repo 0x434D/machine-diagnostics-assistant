@@ -127,6 +127,33 @@ async def test_the_defect_breakdown_carries_the_semantics_it_was_counted_under(
     assert "counted twice" in breakdown.statement
 
 
+async def test_a_breakdown_with_no_threshold_is_withheld_rather_than_stated() -> None:
+    """The threshold is the semantics, not a decoration on it.
+
+    Read with `stats.get(key)` and no default, an absent key reached the reader as
+    "counting every class scoring None or above", marked `basis: "measured"` — a sentence
+    with no meaning presented as a measurement. Defaulting it to 0 the way the counts
+    beside it are defaulted would be worse: that is a threshold the service never counted
+    at, and the number under it would be wrong rather than missing.
+    """
+    without = stats(total=600, rejects=30, gaps=[], rejects_without_class=12)
+    del without["defect_class_threshold"]
+
+    answer = await run(
+        "how many rejects in the last hour?",
+        "s1",
+        settings=Settings(),
+        analysis=_client(FakeAnalysis(without)),
+        provider=ScriptedProvider(),
+        now=NOW,
+    )
+
+    assert not any("or above" in f.statement for f in answer.findings)
+    assert any("did not say which score threshold" in c for c in answer.caveats)
+    # The counts that need no threshold to mean something are still answered.
+    assert any("600 parts were inspected" in f.statement for f in answer.findings)
+
+
 async def test_rejects_no_class_explains_are_reported_rather_than_left_out() -> None:
     """§3.5 scenario 6 is a window of exactly these: every class present and every one of
     them decayed below the threshold. Silently, that window reads as "no defects seen"
