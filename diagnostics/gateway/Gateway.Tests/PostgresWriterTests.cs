@@ -314,6 +314,103 @@ public sealed class PostgresWriterTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AStateReasonStreamThatCameBackShortIsReportedAsLost()
+    {
+        // The check has to be able to fire. Counted against state_changes it could not: a
+        // StateReason shares its (station_id, source_ts) key with the State it is paired with,
+        // so the stored count is decided entirely by State and Returned == Stored under every
+        // input, including a StateReason read that lost half its rows. raw_events is verbatim
+        // and holds the empty reasons the derivation drops, so it is 1:1 with what was read.
+        await SeedTopologyAsync();
+        var window = Instant.AddHours(-1);
+
+        // The plant's own shape: an unchanged value is never published, so a station runs
+        // through six State transitions while StateReason moves twice — once to a reason and
+        // once back to the empty string. The two streams are different lengths, which is what
+        // makes counting one of them against the other's rows useless.
+        var states = new[] { "Idle", "Starting", "Execute", "Suspended", "Execute", "Idle" };
+        for (var minute = 1; minute <= states.Length; minute++)
+        {
+            await _writer.WriteBatchAsync(
+                [SampleDataChange("S2", "State", window.AddMinutes(minute), states[minute - 1])]);
+        }
+
+        await _writer.WriteBatchAsync([
+            SampleDataChange("S2", "StateReason", window.AddMinutes(4), "starved:B1_2"),
+        ]);
+        await _writer.WriteBatchAsync([
+            SampleDataChange("S2", "StateReason", window.AddMinutes(5), ""),
+        ]);
+
+        // The reader claims three where two arrived: one row read and lost, on one page, so no
+        // page boundary explains it. Counted against state_changes the station's six rows swamp
+        // it and the loss reads as a surplus.
+        await _writer.RecordBackfillWindowAsync(
+            window, Instant, "S2.StateReason", rowsReturned: 3, pages: 1, durationMs: 10);
+
+        var result = await new Reconciler(_postgres.GetConnectionString())
+            .CheckAsync(window, Instant);
+        var reason = result.Streams.Single(s => s.Stream == "S2.StateReason");
+
+        Assert.Equal(2, reason.RowsStored);
+        Assert.Equal(1, reason.Lost);
+        Assert.False(result.Reconciled);
+    }
+
+    [Fact]
+    public async Task ARereadStateRowDoesNotInventTheTransitionItCameFrom()
+    {
+        // What a subdivided backfill window does: the truncated read hands its rows over
+        // before the halves re-read the same range from the start, so this memory is asked
+        // about a row that precedes what it holds. Standing at the last row of the truncated
+        // read it would name that as what the first row transitioned from -- and the upsert's
+        // COALESCE cannot catch it, because the first State the gateway ever sees is stored
+        // with a null from_state and anything beats null. d28fc78 fixed one way of inventing a
+        // PackML transition; this is the other.
+        await SeedTopologyAsync();
+        var window = Instant.AddHours(-1);
+        var first = window.AddMinutes(1);
+        var second = window.AddMinutes(2);
+
+        // The truncated pass.
+        await _writer.WriteBatchAsync([SampleDataChange("S2", "State", first, "Execute")]);
+        await _writer.WriteBatchAsync([SampleDataChange("S2", "State", second, "Suspended")]);
+
+        // The halves, re-reading the same range from its start.
+        await _writer.WriteBatchAsync([SampleDataChange("S2", "State", first, "Execute")]);
+        await _writer.WriteBatchAsync([SampleDataChange("S2", "State", second, "Suspended")]);
+
+        var rows = await QueryAsync(
+            "SELECT c.source_ts, c.from_state, c.to_state FROM state_changes c "
+            + "JOIN stations s ON s.id = c.station_id WHERE s.code = 'S2' ORDER BY c.source_ts");
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(DBNull.Value, rows[0]["from_state"]);
+        Assert.Equal("Execute", rows[0]["to_state"]);
+        Assert.Equal("Execute", rows[1]["from_state"]);
+        Assert.Equal("Suspended", rows[1]["to_state"]);
+    }
+
+    [Fact]
+    public async Task TheLedgerNamesEveryStreamThisGatewayHasEverBackfilled()
+    {
+        // What a discovery that came back short is held against. Without it, a plant that
+        // stopped publishing one stream backfills the rest, writes one ledger row fewer, and
+        // answers /reconcile with every remaining stream green.
+        foreach (var stream in new[] { "S1.TaktTime", "S2.TaktTime", "B1_2.Level" })
+        {
+            await _writer.RecordBackfillWindowAsync(
+                Instant, Instant.AddHours(1), stream, rowsReturned: 1, pages: 1, durationMs: 1);
+        }
+
+        var known = await _writer.KnownBackfillStreamsAsync();
+
+        Assert.Equal(
+            ["B1_2.Level", "S1.TaktTime", "S2.TaktTime"],
+            known.Order(StringComparer.Ordinal));
+    }
+
+    [Fact]
     public async Task AGapMarkerLandsAsARowAndBreaksTheReconciliation()
     {
         // §4.4: without gap markers, missing data is indistinguishable from a quiet machine.

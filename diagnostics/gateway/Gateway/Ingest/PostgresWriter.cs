@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Reflection;
 using System.Text.Json;
+using Gateway.Opc;
 using Npgsql;
 using NpgsqlTypes;
 
@@ -19,7 +20,6 @@ public sealed class PostgresWriter
     /// </summary>
     internal const string StateSignal = "State";
     internal const string StateReasonSignal = "StateReason";
-    internal const string BufferLevelSignal = "Level";
 
     // Ordered, and applied in this order: 002 references stations, which 001 creates. Every
     // statement in both is IF NOT EXISTS, so applying them to an existing database is a no-op.
@@ -50,7 +50,13 @@ public sealed class PostgresWriter
 
     // A data change carries only the new value, so from_state can only come from memory.
     // Empty after a connect, which is why the first transition seen writes a null from_state.
-    private readonly ConcurrentDictionary<string, string> _lastStates = new(StringComparer.Ordinal);
+    //
+    // The SourceTimestamp is remembered with it, and that is not bookkeeping. A backfill
+    // window whose page comes back full and silent is halved and re-read from its start, so
+    // this memory is routinely asked about a row that precedes what it holds -- and a memory
+    // standing at row 1,000 answering for row 1 invents a transition the plant never made.
+    private readonly ConcurrentDictionary<string, SeenState> _lastStates =
+        new(StringComparer.Ordinal);
 
     public PostgresWriter(string connectionString) => _connectionString = connectionString;
 
@@ -110,6 +116,32 @@ public sealed class PostgresWriter
         await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// Every stream this gateway has ever recorded a backfill window for.
+    ///
+    /// <para>The only record of what this plant published before, and therefore the only thing
+    /// a fresh discovery can be held against. Discovery cannot tell a 25-stream plant from a
+    /// 26-stream plant that lost one, and the shorter run is green all the way to
+    /// <c>/reconcile</c>.</para>
+    /// </summary>
+    public async Task<IReadOnlySet<string>> KnownBackfillStreamsAsync(
+        CancellationToken ct = default)
+    {
+        await using var connection = new NpgsqlConnection(_connectionString);
+        await connection.OpenAsync(ct).ConfigureAwait(false);
+        await using var command = new NpgsqlCommand(
+            "SELECT DISTINCT stream FROM backfill_windows", connection);
+
+        var streams = new HashSet<string>(StringComparer.Ordinal);
+        await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            streams.Add(reader.GetString(0));
+        }
+
+        return streams;
+    }
+
     /// <returns>Rows affected across every table this batch touched.</returns>
     public async Task<int> WriteBatchAsync(
         IReadOnlyList<IngestRecord> batch, CancellationToken ct = default)
@@ -123,7 +155,7 @@ public sealed class PostgresWriter
         // What this batch learns, kept out of the shared caches until the batch has earned it.
         // Read through, so two records for one station inside a batch still see each other.
         var batchStationIds = new Dictionary<string, short>(StringComparer.Ordinal);
-        var batchStates = new Dictionary<string, string>(StringComparer.Ordinal);
+        var batchStates = new Dictionary<string, SeenState>(StringComparer.Ordinal);
 
         var rows = 0;
         foreach (var record in batch)
@@ -149,7 +181,7 @@ public sealed class PostgresWriter
             // Also before the station lookup, and for the same shape of reason: a buffer sits
             // between two stations and belongs to neither, so a level record names no station
             // and asking it for one would force it to pick a side.
-            if (signal == BufferLevelSignal)
+            if (signal == Subscriptions.BufferLevelSignal)
             {
                 rows += await UpsertBufferLevelAsync(connection, record, payload, ct)
                     .ConfigureAwait(false);
@@ -187,9 +219,9 @@ public sealed class PostgresWriter
             _stationIds[code] = id;
         }
 
-        foreach (var (code, state) in batchStates)
+        foreach (var (code, seen) in batchStates)
         {
-            _lastStates[code] = state;
+            _lastStates[code] = seen;
         }
 
         return rows;
@@ -330,7 +362,7 @@ public sealed class PostgresWriter
     /// </remarks>
     private async Task<int> UpsertStateChangeAsync(
         NpgsqlConnection connection, IngestRecord record, JsonElement payload,
-        short stationId, Dictionary<string, string> batchStates, CancellationToken ct)
+        short stationId, Dictionary<string, SeenState> batchStates, CancellationToken ct)
     {
         var value = Required(payload, "Value").GetString()!;
         var isState = Required(payload, "Signal").GetString() == StateSignal;
@@ -344,7 +376,7 @@ public sealed class PostgresWriter
         {
             toState = value;
             fromState = PreviousStateOf(
-                Required(payload, "Station").GetString()!, value, batchStates);
+                Required(payload, "Station").GetString()!, value, record.SourceTs, batchStates);
         }
         else
         {
@@ -392,10 +424,21 @@ public sealed class PostgresWriter
 
     /// <returns>
     /// The state this station was last seen in, or null when there is no transition to name —
-    /// the first state after a connect, and a repeat of the state already recorded.
+    /// the first state after a connect, a repeat of the state already recorded, and a row that
+    /// arrives out of order.
     /// </returns>
+    /// <remarks>
+    /// Out of order is not hypothetical. A truncated backfill window hands its rows over
+    /// before it is halved, and both halves then re-read the range from the start; the memory
+    /// standing at the last row of the truncated read would otherwise name it as what the
+    /// first row transitioned from. The upsert's COALESCE cannot catch that one, because the
+    /// very first State this gateway sees is stored with a null from_state and anything wins
+    /// against null. So a row at or before what is remembered establishes nothing about what
+    /// preceded it, and resets the memory to itself so the rows after it are right again.
+    /// </remarks>
     private string? PreviousStateOf(
-        string stationCode, string toState, Dictionary<string, string> batchStates)
+        string stationCode, string toState, DateTime sourceTs,
+        Dictionary<string, SeenState> batchStates)
     {
         if (!batchStates.TryGetValue(stationCode, out var last))
         {
@@ -405,14 +448,19 @@ public sealed class PostgresWriter
         // A repeat is a page-boundary duplicate rather than a transition: the server drops a
         // data change whose value equals the previous one, so the plant never sends a station
         // into the state it is already in.
-        var previous = last != toState ? last : null;
+        var previous = last is not null && last.SourceTs < sourceTs && last.State != toState
+            ? last.State
+            : null;
 
         // The batch's dictionary, promoted only on commit. Advancing the shared one here would
         // survive a rollback, and the retry would then read a memory that has already moved
         // past the record it is re-writing.
-        batchStates[stationCode] = toState;
+        batchStates[stationCode] = new SeenState(toState, sourceTs);
         return previous;
     }
+
+    /// <summary>The last State seen for one station, and when the plant stamped it.</summary>
+    private sealed record SeenState(string State, DateTime SourceTs);
 
     /// <summary>
     /// §3.3 renders a suspend reason as "direction:buffer_id". Resolving it here is what turns

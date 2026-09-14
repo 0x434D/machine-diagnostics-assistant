@@ -150,7 +150,7 @@ public sealed class Reconciler
                 """,
                 new object[] { code, from, to }),
 
-            PostgresWriter.BufferLevelSignal => new StoredQuery(
+            Subscriptions.BufferLevelSignal => new StoredQuery(
                 """
                 SELECT count(*) FROM buffer_levels l
                 JOIN buffers b ON b.id = l.buffer_id
@@ -169,19 +169,25 @@ public sealed class Reconciler
                 """,
                 new object[] { code, from, to }),
 
-            // Every row for the station, deliberately not only the ones carrying a reason. A
-            // StateReason value is not a row of its own — it is a column on the row its paired
-            // State keys, written at the same SourceTimestamp — and the empty one a station
-            // publishes when it stops being suspended is stored as the NULL that already says
-            // so. Counting only `reason IS NOT NULL` would report every unsuspend in the
-            // history as a lost row.
+            // raw_events, not state_changes, and this is the one stream that has to be counted
+            // there. A StateReason value is not a row of its own: it is a column on the row its
+            // paired State keys, and the empty one a station publishes when it stops being
+            // suspended is deliberately stored as the NULL that already says so. Counting rows
+            // carrying text reports every unsuspend as lost; counting the station's rows counts
+            // what State put there, so Returned == Stored identically and the check cannot fire
+            // under any input at all -- a row on /reconcile that can only ever say "fine".
+            //
+            // raw_events is verbatim and InsertRawAsync runs before the empty-reason return, so
+            // every value the read handed over is there. DISTINCT on the timestamp because a
+            // page boundary re-delivers one and raw_events is append-only.
             PostgresWriter.StateReasonSignal => new StoredQuery(
                 """
-                SELECT count(*) FROM state_changes c
-                JOIN stations s ON s.id = c.station_id
-                WHERE s.code = $1 AND c.source_ts >= $2 AND c.source_ts < $3
+                SELECT count(DISTINCT source_ts) FROM raw_events
+                WHERE kind = 'datachange'
+                  AND payload->>'Station' = $1 AND payload->>'Signal' = $2
+                  AND source_ts >= $3 AND source_ts < $4
                 """,
-                new object[] { code, from, to }),
+                new object[] { code, signal, from, to }),
 
             _ => new StoredQuery(
                 """

@@ -118,7 +118,8 @@ var ingest = Task.Run(
         // avoid. Backfill closes exactly the gap this gateway has.
         var history = new HistoryBackfill(
             HistoryBackfill.Through(() => connection.Session!), space, signalPolicy, EnqueueAsync,
-            options);
+            options,
+            app.Services.GetRequiredService<ILoggerFactory>().CreateLogger<HistoryBackfill>());
         backfill = history;
 
         // One backfill for all three of §4.3's situations — first boot, a downstream outage
@@ -146,7 +147,16 @@ var ingest = Task.Run(
 
             historyAvailableFrom = from;
             state = "backfilling";
-            var report = await history.RunAsync(from, to, stopping).ConfigureAwait(false);
+
+            // What the ledger already knows this plant publishes. A discovery that comes back
+            // short of it is a stream that stopped, and the backfill refuses rather than
+            // quietly covering one stream fewer than last time.
+            var knownStreams = writer is null
+                ? new HashSet<string>(StringComparer.Ordinal)
+                : await writer.KnownBackfillStreamsAsync(stopping).ConfigureAwait(false);
+
+            var report = await history.RunAsync(from, to, knownStreams, stopping)
+                .ConfigureAwait(false);
 
             // R1's ledger, one row per stream per window. Written from the backfill's own
             // report rather than recomputed, so the two cannot disagree about what was pulled

@@ -38,7 +38,6 @@ public sealed record DiscoveredTopology(
 /// </summary>
 public static class TopologyDiscovery
 {
-    private const string LevelSignal = "Level";
     private const string CapacityVariable = "Capacity";
     private const string UpstreamVariable = "UpstreamStation";
     private const string DownstreamVariable = "DownstreamStation";
@@ -306,7 +305,7 @@ public static class TopologyDiscovery
             var children = (await BrowseChildrenAsync(session, child.NodeId, ct)
                 .ConfigureAwait(false)).ToDictionary(node => node.Name, StringComparer.Ordinal);
 
-            var level = Required(children, child.Name, LevelSignal);
+            var level = Required(children, child.Name, Subscriptions.BufferLevelSignal);
             var capacity = Required(children, child.Name, CapacityVariable);
             var upstream = Required(children, child.Name, UpstreamVariable);
             var downstream = Required(children, child.Name, DownstreamVariable);

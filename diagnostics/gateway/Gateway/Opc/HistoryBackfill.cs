@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using Gateway.Ingest;
+using Microsoft.Extensions.Logging;
 using Opc.Ua;
 
 namespace Gateway.Opc;
@@ -44,13 +46,14 @@ public delegate Task<HistoryReadResult> HistoryReadCall(
 /// Pulls history in bounded windows. §4.3: subscriptions are for live data, HistoryRead is
 /// for the past, and the gateway sets its own pace because it is pull-based.
 /// </summary>
-public sealed class HistoryBackfill
+public sealed partial class HistoryBackfill
 {
     /// <summary>
     /// Pre-flight F1, re-measured on the pinned interpreter (measurements/r1-probe.txt):
-    /// read_raw_history returns at most this many values, with no exception and no bad
-    /// StatusCode. A window that comes back on this number cannot be distinguished from one
-    /// that was truncated, so it is treated as truncated.
+    /// <c>read_raw_history</c> returns at most this many values <i>per call</i>, with no
+    /// exception and no bad StatusCode. It is a property of one read, not of a window: a
+    /// window legitimately spanning ten full pages of 1,000 is not truncated, and refusing it
+    /// would be refusing paging that works.
     /// </summary>
     public const int SilentTruncationCeiling = 10_000;
 
@@ -59,13 +62,16 @@ public sealed class HistoryBackfill
     private readonly SignalPolicy _policy;
     private readonly Func<IngestRecord, Task> _onRecord;
     private readonly GatewayOptions _options;
+    private readonly ILogger<HistoryBackfill> _logger;
 
     public double Progress { get; private set; }
 
     public HistoryBackfill(
         HistoryReadCall read, AddressSpace space, SignalPolicy policy,
-        Func<IngestRecord, Task> onRecord, GatewayOptions options)
+        Func<IngestRecord, Task> onRecord, GatewayOptions options,
+        ILogger<HistoryBackfill> logger)
     {
+        _logger = logger;
         _read = read;
         _space = space;
         _policy = policy;
@@ -142,9 +148,15 @@ public sealed class HistoryBackfill
         return [new BackfillWindow(from, middle), new BackfillWindow(middle, to)];
     }
 
-    public async Task<BackfillReport> RunAsync(DateTime from, DateTime to, CancellationToken ct)
+    /// <param name="streamsReadBefore">
+    /// Every stream this gateway's ledger already names. A stream that was read once and is
+    /// not discovered now is a stream that stopped being published, and it must stop the run
+    /// rather than shrink it — see <see cref="DiscoveredStreams"/>.
+    /// </param>
+    public async Task<BackfillReport> RunAsync(
+        DateTime from, DateTime to, IReadOnlySet<string> streamsReadBefore, CancellationToken ct)
     {
-        var streams = DiscoveredStreams();
+        var streams = DiscoveredStreams(streamsReadBefore);
         var windows = new List<WindowReport>();
         var total = (to - from).TotalSeconds;
 
@@ -171,12 +183,23 @@ public sealed class HistoryBackfill
     /// <summary>
     /// Every stream the discovered topology publishes, each with the page size §5.1's policy
     /// gives it. Nothing here names a signal: a literal set would silently cover fewer streams
-    /// than the plant has the moment one of them is renamed, and the ledger would then report
-    /// success over a stream nobody read. What discovery found is what gets a ledger row, so a
-    /// stream that stopped being published is a missing row rather than a missing count.
+    /// than the plant has the moment one of them is renamed.
+    ///
+    /// <para><b>A shorter list than last time is a failure, not a smaller run.</b> Discovery
+    /// alone cannot tell "this plant has 25 streams" from "this plant had 26 and one stopped
+    /// publishing" — and with nothing asserting on the count, the second case backfilled 25
+    /// streams, wrote 25 ledger rows, and answered <c>/reconcile</c> with 25 rows all green.
+    /// A green run over missing data, which is the shape this whole task exists to refuse.
+    /// The ledger is the only record of what this plant published before, so it is what the
+    /// discovered set is held against.</para>
+    ///
+    /// <para>It says nothing on a first run against an empty ledger, because then there is
+    /// genuinely nothing to compare with; that case is the topology's to be right about.</para>
     /// </summary>
-    private List<BackfillStream> DiscoveredStreams()
+    private List<BackfillStream> DiscoveredStreams(IReadOnlySet<string> streamsReadBefore)
     {
+        ArgumentNullException.ThrowIfNull(streamsReadBefore);
+
         // Anchored on the station that publishes the inspection event rather than on a
         // hardcoded S3, and loud rather than empty: a plant whose event stream this gateway
         // cannot find is one whose §3.4 history would be quietly absent from every answer.
@@ -218,6 +241,18 @@ public sealed class HistoryBackfill
                     ReadVariablePagesAsync(buffer.LevelNodeId, key, pageSize, from, to, ct)));
         }
 
+        var vanished = streamsReadBefore
+            .Except(streams.Select(stream => stream.Name), StringComparer.Ordinal)
+            .Order(StringComparer.Ordinal)
+            .ToList();
+        if (vanished.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"{vanished.Count} stream(s) this gateway has backfilled before are no longer "
+                + $"published and would be missing from the ledger silently: "
+                + $"{string.Join(", ", vanished)}. {streams.Count} streams were discovered");
+        }
+
         return streams;
     }
 
@@ -239,8 +274,8 @@ public sealed class HistoryBackfill
         var outcome = await stream.Read(from, to, ct).ConfigureAwait(false);
         if (outcome.Verdict is PageVerdict.Complete)
         {
-            into.Add(Checked(new WindowReport(
-                from, to, stream.Name, outcome.Rows, outcome.Pages, outcome.DurationMs)));
+            into.Add(new WindowReport(
+                from, to, stream.Name, outcome.Rows, outcome.Pages, outcome.DurationMs));
             return;
         }
 
@@ -332,6 +367,7 @@ public sealed class HistoryBackfill
         var rows = 0;
         var pages = 0;
         var verdict = PageVerdict.Complete;
+        Exception? failure = null;
 
         try
         {
@@ -342,6 +378,7 @@ public sealed class HistoryBackfill
                 ThrowIfBad(result.StatusCode, node);
 
                 var pageRows = await decode(result.HistoryData).ConfigureAwait(false);
+                CheckCeiling(pageRows, node);
                 rows += pageRows;
                 continuationPoint = result.ContinuationPoint;
                 pages++;
@@ -354,14 +391,37 @@ public sealed class HistoryBackfill
             }
             while (continuationPoint is { Length: > 0 } && !ct.IsCancellationRequested);
         }
-        finally
+        catch (Exception e)
+        {
+            // Held, not handled. Nothing here can recover from it; it is caught only so the
+            // release below cannot take its place on the way out, and it is rethrown with its
+            // stack intact. An OperationCanceledException among them: that one is the shutdown
+            // signal, and a release that fails because the session is already gone must not be
+            // what the caller sees instead of it.
+            failure = e;
+        }
+
+        if (continuationPoint is { Length: > 0 })
         {
             // Released on every exit path, cancellation included, or the server's
             // continuation-point pool leaks until it refuses further reads.
-            if (continuationPoint is { Length: > 0 })
+            try
             {
-                await ReleaseAsync(node, continuationPoint).ConfigureAwait(false);
+                await ReleaseAsync(node, details, continuationPoint).ConfigureAwait(false);
             }
+            catch (Exception releaseFailure) when (failure is not null)
+            {
+                // The read already failed, so the session this point lives on is the likeliest
+                // reason this did too. Logged rather than thrown, and never swallowed on the
+                // path where the read succeeded — there, a leaked point is the only symptom
+                // there will be until the pool refuses.
+                LogReleaseFailed(_logger, node.ToString(), releaseFailure);
+            }
+        }
+
+        if (failure is not null)
+        {
+            ExceptionDispatchInfo.Capture(failure).Throw();
         }
 
         ct.ThrowIfCancellationRequested();
@@ -370,22 +430,28 @@ public sealed class HistoryBackfill
     }
 
     /// <summary>
-    /// The guard F1 exists for. A window returning the ceiling exactly is indistinguishable
-    /// from one that was silently truncated, so it is refused rather than trusted — the
-    /// failure this design is shaped around is a confident short count, not slowness.
+    /// The guard F1 exists for, at the level F1 measured it: one read. A call returning the
+    /// ceiling cannot be distinguished from one the server cut off there, and
+    /// <see cref="ClassifyPage"/> cannot see it because the client asked for more than the
+    /// ceiling. The fix is the stream's page_size in the signal policy, which is the number
+    /// that decides how much one call asks for.
     /// </summary>
-    private static WindowReport Checked(WindowReport window)
+    private static void CheckCeiling(int pageRows, NodeId node)
     {
-        if (window.RowsReturned >= SilentTruncationCeiling)
+        if (pageRows >= SilentTruncationCeiling)
         {
             throw new InvalidOperationException(
-                $"window {window.From:O}..{window.To:O} for {window.Stream} returned "
-                + $"{window.RowsReturned} values, at or above the {SilentTruncationCeiling} "
-                + "ceiling where truncation is silent; shorten GATEWAY_BACKFILL_WINDOW");
+                $"one HistoryRead on {node} returned {pageRows} values, at or above the "
+                + $"{SilentTruncationCeiling} ceiling where truncation is silent; lower that "
+                + "stream's page_size in the signal policy");
         }
-
-        return window;
     }
+
+    [LoggerMessage(
+        Level = LogLevel.Error,
+        Message = "the history read on {Node} failed and its continuation point could not be "
+            + "released; the server holds it until its pool recycles")]
+    private static partial void LogReleaseFailed(ILogger logger, string node, Exception failure);
 
     private static void ThrowIfBad(StatusCode status, NodeId node)
     {
@@ -395,16 +461,15 @@ public sealed class HistoryBackfill
         }
     }
 
-    private async Task ReleaseAsync(NodeId node, byte[] continuationPoint)
+    private async Task ReleaseAsync(
+        NodeId node, ExtensionObject details, byte[] continuationPoint)
     {
-        // An empty details object, as M1 measured working against this server, and
-        // CancellationToken.None: the release is what the cancelled read owes the server.
-        await _read(
-            node,
-            new ExtensionObject(new ReadRawModifiedDetails()),
-            continuationPoint,
-            release: true,
-            CancellationToken.None).ConfigureAwait(false);
+        // The window's own details, not a blank ReadRawModifiedDetails: a point handed out by
+        // an event read is released against ReadEventDetails, and M1's blank object described
+        // the wrong read for the one stream whose pages are small enough to have several.
+        // CancellationToken.None, because the release is what a cancelled read owes the server.
+        await _read(node, details, continuationPoint, release: true, CancellationToken.None)
+            .ConfigureAwait(false);
     }
 
     /// <summary>One page-reading pass over one window of one stream.</summary>

@@ -48,8 +48,16 @@ public sealed partial class Subscriptions
     /// </summary>
     public const string EventStream = "InspectionResult";
 
-    /// <summary>The one historised variable a buffer has, and the one signal name that
-    /// routes to a buffer rather than to a station.</summary>
+    /// <summary>
+    /// The one historised variable a buffer has, and the one signal name that routes to a
+    /// buffer rather than to a station.
+    ///
+    /// <para>The single declaration of it. Discovery browses for it, the subscription and the
+    /// backfill name their streams with it, the writer routes on it and the reconciliation
+    /// counts against a different table because of it — five readers of one string, and while
+    /// each held its own copy the backfill and the reconciler were free to disagree about
+    /// which stream a buffer level even is.</para>
+    /// </summary>
     public const string BufferLevelSignal = "Level";
 
     private const string ImageField = "Image";

@@ -58,8 +58,14 @@ public sealed record GatewayOptions
     public int PhasePollMs { get; init; } = 1_000;
 
     /// <summary>
-    /// One backfill window. At a 6 s takt this is 600 values per signal — sixteen times under
-    /// the 10,000 ceiling F1 measured, so a window can never silently truncate.
+    /// One backfill window, and the unit the reconciliation ledger records.
+    ///
+    /// <para>It is not a guarantee against truncation and never was. An hour holds ~600 values
+    /// of a station signal at a 6 s takt, but ~1,200 of a buffer <c>Level</c> — measured
+    /// against the live plant, above the page the policy gives it, and truncated silently
+    /// every window until <see cref="HistoryBackfill.ClassifyPage"/> was the thing deciding.
+    /// What this number actually governs is how much work a window that cannot be believed
+    /// costs before it is halved.</para>
     /// </summary>
     public TimeSpan BackfillWindow { get; init; } = TimeSpan.FromHours(1);
 
@@ -76,9 +82,14 @@ public sealed record GatewayOptions
     public int HistoryEventPageSize { get; init; } = 25;
 
     /// <summary>
-    /// The floor for subdividing an event window. At a 6 s takt a 30 s window holds ~5 parts,
-    /// well under any page size, so reaching this floor means something other than volume is
-    /// wrong and the run should fail rather than lose rows quietly.
+    /// How far subdivision may go, for any stream. At a 6 s takt a 30 s window holds ~5 parts
+    /// and ~10 buffer moves, far under any page size, so reaching this floor means something
+    /// other than volume is wrong and the run fails rather than storing a short window quietly.
+    ///
+    /// <para>Measured: against a one-hour window the event stream halves to 1 m 52.5 s, which
+    /// leaves two halvings of headroom and no more. A denser event stream — M2b adds four
+    /// event types — is answered by shortening <see cref="BackfillWindow"/>, not by lowering
+    /// this: the floor is what stops subdivision from hiding a defect that is not volume.</para>
     /// </summary>
     public TimeSpan MinimumBackfillWindow { get; init; } = TimeSpan.FromSeconds(30);
 
@@ -143,6 +154,10 @@ public sealed record GatewayOptions
             PostgresConnectionString = Read(environment, "GATEWAY_POSTGRES", ""),
             DrainBatchSize = ReadInt(environment, "GATEWAY_DRAIN_BATCH_SIZE", 200),
             HistoryEventPageSize = ReadInt(environment, "GATEWAY_HISTORY_EVENT_PAGE_SIZE", 25),
+            BackfillWindow = TimeSpan.FromMinutes(
+                ReadInt(environment, "GATEWAY_BACKFILL_WINDOW_MINUTES", 60)),
+            MinimumBackfillWindow = TimeSpan.FromSeconds(
+                ReadInt(environment, "GATEWAY_MINIMUM_BACKFILL_WINDOW_SECONDS", 30)),
             HistoryDepth = TimeSpan.FromHours(
                 ReadInt(environment, "GATEWAY_HISTORY_DEPTH_HOURS", 33)),
             MaxByteStringLength = ReadInt(

@@ -1,6 +1,6 @@
-using System.Text.Json;
 using Gateway.Ingest;
 using Gateway.Opc;
+using Microsoft.Extensions.Logging.Abstractions;
 using Opc.Ua;
 
 namespace Gateway.Tests;
@@ -228,14 +228,155 @@ public sealed class HistoryBackfillTests
                 PhaseNodeId: null)));
     }
 
+    [Fact]
+    public async Task AStreamThatStoppedBeingPublishedStopsTheRunRatherThanShrinkingIt()
+    {
+        // The green run over missing data. Discovery alone cannot tell a plant with two
+        // streams from a plant that had three and lost one: the backfill reads two, the ledger
+        // holds two rows, /reconcile returns two rows all reconciled and verify-no-gaps exits
+        // 0. The ledger is the only record of what this plant published before, so it is what
+        // the discovered set is held against.
+        var plant = new FakeHistorian();
+        var space = new AddressSpace(
+            [
+                new DiscoveredStation(
+                    "S3", "Inspection", plant.Events("S3", Minutes(1)),
+                    [new DiscoveredSignal("TaktTime", plant.Variable("S3.TaktTime", Minutes(1)),
+                        BuiltInType.Double)],
+                    EmitsEvents: true),
+            ],
+            [],
+            PhaseNodeId: null);
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => RunAsync(
+            plant, [], space,
+            streamsReadBefore: new HashSet<string>(StringComparer.Ordinal)
+            {
+                "S3.TaktTime", "S3.InspectionResult", "S3.PartCount",
+            }));
+
+        Assert.Contains("S3.PartCount", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("S3.TaktTime", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AFirstRunAgainstAnEmptyLedgerAssertsNothingAboutTheStreamCount()
+    {
+        // The honest limit of the guard above, stated so it is not mistaken for coverage it
+        // does not have: with no ledger there is nothing to have lost a stream against.
+        var plant = new FakeHistorian();
+        var report = await RunAsync(plant, [], new AddressSpace(
+            [
+                new DiscoveredStation(
+                    "S3", "Inspection", plant.Events("S3", Minutes(1)),
+                    [new DiscoveredSignal("TaktTime", plant.Variable("S3.TaktTime", Minutes(1)),
+                        BuiltInType.Double)],
+                    EmitsEvents: true),
+            ],
+            [],
+            PhaseNodeId: null));
+
+        Assert.Equal(2, report.Windows.Select(w => w.Stream).Distinct().Count());
+    }
+
+    [Fact]
+    public async Task OneReadAtTheSilentTruncationCeilingIsRefused()
+    {
+        // F1's ceiling is a property of one read, not of a window: a client asking for more
+        // than 10,000 gets 10,000 with no exception and no bad status, and ClassifyPage cannot
+        // see it because the page is not full to what was asked for.
+        var plant = new FakeHistorian { AlwaysFull = true };
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => RunAsync(
+            plant,
+            [],
+            new AddressSpace(
+                [
+                    new DiscoveredStation(
+                        "S3", "Inspection", plant.Events("S3", Minutes(1)),
+                        [new DiscoveredSignal(
+                            "TaktTime", plant.Variable("S3.TaktTime", Minutes(1)),
+                            BuiltInType.Double)],
+                        EmitsEvents: true),
+                ],
+                [],
+                PhaseNodeId: null),
+            policy: """{ "defaults": { "page_size": 20000 } }"""));
+
+        Assert.Contains("page_size", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task AWindowOfManyPagesIsNotRefusedForTotallingAboveTheCeiling()
+    {
+        // The other half of the same rule. F1's ceiling applied to a window total refuses
+        // paging that works: eleven thousand rows across four pages, none of them near the
+        // ceiling, is a window that was read completely.
+        var plant = new FakeHistorian { OffersContinuation = true };
+        var takt = plant.Variable("S3.TaktTime", Dense(11_000));
+
+        var written = new List<IngestRecord>();
+        var report = await RunAsync(
+            plant, written,
+            new AddressSpace(
+                [
+                    new DiscoveredStation(
+                        "S3", "Inspection", plant.Events("S3", Minutes(1)),
+                        [new DiscoveredSignal("TaktTime", takt, BuiltInType.Double)],
+                        EmitsEvents: true),
+                ],
+                [],
+                PhaseNodeId: null),
+            policy: """{ "defaults": { "page_size": 3000 } }""");
+
+        Assert.Equal(11_000, RowsFor(report, "S3.TaktTime"));
+        Assert.Equal(1, report.Windows.Count(w => w.Stream == "S3.TaktTime"));
+        Assert.Equal(4, report.Windows.Single(w => w.Stream == "S3.TaktTime").Pages);
+    }
+
+    [Fact]
+    public async Task AFailedReleaseDoesNotReplaceTheFailureThatCausedIt()
+    {
+        // The continuation point is released in every exit path, so a release that throws
+        // because the session is already gone used to become the exception the caller saw --
+        // including when the original was an OperationCanceledException, which is the shutdown
+        // signal CLAUDE.md says must survive.
+        var plant = new FakeHistorian { OffersContinuation = true, FailAfterFirstPage = true };
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => RunAsync(
+            plant,
+            [],
+            new AddressSpace(
+                [
+                    new DiscoveredStation(
+                        "S3", "Inspection", plant.Events("S3", Minutes(1)),
+                        [new DiscoveredSignal(
+                            // More rows than the page, so the first read hands back a
+                            // continuation point and the second -- the one that dies -- is
+                            // holding it.
+                            "TaktTime",
+                            plant.Variable("S3.TaktTime", Minutes(0, 10, 20, 30, 40, 50)),
+                            BuiltInType.Double)],
+                        EmitsEvents: true),
+                ],
+                [],
+                PhaseNodeId: null)));
+
+        Assert.True(plant.ReleaseAttempted, "the continuation point was never released");
+    }
+
     private const int EventPageSize = 3;
 
     private static DateTime[] Minutes(params int[] offsets) =>
         [.. offsets.Select(offset => Ts.AddMinutes(offset))];
 
+    /// <summary>`count` timestamps spread evenly inside the one-hour window under test.</summary>
+    private static DateTime[] Dense(int count) =>
+        [.. Enumerable.Range(0, count).Select(i => Ts.AddMilliseconds(i * (3_600_000 / count)))];
+
     private static Task<BackfillReport> RunAsync(
         FakeHistorian plant, List<IngestRecord> written, AddressSpace space,
-        string policy = """{ "defaults": { "page_size": 4 } }""")
+        string policy = """{ "defaults": { "page_size": 4 } }""",
+        IReadOnlySet<string>? streamsReadBefore = null)
     {
         var options = GatewayOptions.Default() with
         {
@@ -253,9 +394,14 @@ public sealed class HistoryBackfillTests
                 written.Add(record);
                 return Task.CompletedTask;
             },
-            options);
+            options,
+            NullLogger<HistoryBackfill>.Instance);
 
-        return backfill.RunAsync(Ts, Ts.AddHours(1), CancellationToken.None);
+        return backfill.RunAsync(
+            Ts,
+            Ts.AddHours(1),
+            streamsReadBefore ?? new HashSet<string>(StringComparer.Ordinal),
+            CancellationToken.None);
     }
 
     /// <summary>Distinct SourceTimestamps that reached the writer for one node.</summary>
@@ -280,9 +426,21 @@ public sealed class HistoryBackfillTests
         private readonly Dictionary<NodeId, DateTime[]> _rows = [];
         private readonly Dictionary<NodeId, List<uint>> _pageSizes = [];
         private readonly HashSet<NodeId> _eventNodes = [];
+        private int _reads;
 
         /// <summary>Answers every window full, whatever it is asked for.</summary>
         public bool AlwaysFull { get; init; }
+
+        /// <summary>
+        /// Hands back a continuation point whenever rows remain -- the behaviour asyncua shows
+        /// only when the client asks for more than the server's own cap.
+        /// </summary>
+        public bool OffersContinuation { get; init; }
+
+        /// <summary>The session dies mid-window, and the release that follows dies with it.</summary>
+        public bool FailAfterFirstPage { get; init; }
+
+        public bool ReleaseAttempted { get; private set; }
 
         public NodeId Variable(string name, DateTime[] sourceTimestamps)
         {
@@ -310,7 +468,16 @@ public sealed class HistoryBackfillTests
         {
             if (release)
             {
-                return Task.FromResult(new HistoryReadResult());
+                ReleaseAttempted = true;
+                return FailAfterFirstPage
+                    ? throw new ServiceResultException(
+                        StatusCodes.BadSessionIdInvalid, "the session is gone")
+                    : Task.FromResult(new HistoryReadResult());
+            }
+
+            if (FailAfterFirstPage && ++_reads > 1)
+            {
+                throw new OperationCanceledException("the gateway is shutting down");
             }
 
             var (from, to, pageSize) = ExtensionObject.ToEncodeable(details) switch
@@ -327,17 +494,34 @@ public sealed class HistoryBackfillTests
 
             seen.Add(pageSize);
 
-            var inWindow = AlwaysFull
-                ? [.. Enumerable.Range(0, (int)pageSize).Select(i => from.AddTicks(i))]
-                : _rows[node].Where(ts => ts >= from && ts < to).Order().Take((int)pageSize).ToList();
+            if (AlwaysFull)
+            {
+                var full = Enumerable.Range(0, (int)pageSize)
+                    .Select(i => from.AddTicks(i)).ToList();
+                return Task.FromResult(Page(node, full, null));
+            }
 
-            return Task.FromResult(new HistoryReadResult
+            var all = _rows[node].Where(ts => ts >= from && ts < to).Order().ToList();
+            var offset = continuationPoint is null ? 0 : BitConverter.ToInt32(continuationPoint);
+            var inWindow = all.Skip(offset).Take((int)pageSize).ToList();
+            var next = offset + inWindow.Count;
+
+            return Task.FromResult(Page(
+                node,
+                inWindow,
+                OffersContinuation && next < all.Count ? BitConverter.GetBytes(next) : null));
+        }
+
+        private HistoryReadResult Page(
+            NodeId node, IReadOnlyList<DateTime> sourceTimestamps, byte[]? continuationPoint) =>
+            new()
             {
                 StatusCode = StatusCodes.Good,
-                ContinuationPoint = null,
-                HistoryData = _eventNodes.Contains(node) ? EventPage(inWindow) : DataPage(inWindow),
-            });
-        }
+                ContinuationPoint = continuationPoint,
+                HistoryData = _eventNodes.Contains(node)
+                    ? EventPage(sourceTimestamps)
+                    : DataPage(sourceTimestamps),
+            };
 
         private static ExtensionObject DataPage(IReadOnlyList<DateTime> sourceTimestamps)
         {

@@ -22,6 +22,21 @@ POSTGRES_IMAGE = (
     "051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0"
 )
 ENDPOINT = "opc.tcp://line-simulator:4840/plant"
+
+# BROKEN AGAINST AN M2a GATEWAY -- Task 12 owns the fix.
+#
+# M2a Task 10 qualified backfill_windows.stream by station code ("S2.TaktTime"), because
+# the table is UNIQUE (from_ts, to_ts, stream) and four stations writing a bare "TaktTime"
+# overwrote each other. Two things below no longer hold:
+#
+#   * `WHERE stream = 'TaktTime'` matches no ledger row, so read_rows comes back 0 and
+#     report.py's `read_rows == pg_rows` check reads FAIL on a run that was fine;
+#   * `WHERE s.signal = 'TaktTime'` sums all four stations into one pg_rows.
+#
+# It fails in the safe direction, which is why it is left rather than guessed at: fixing it
+# means re-running R1/R2 and overwriting measurements/r1-r2-results.json, which is a
+# measurement decision. The shape it wants is `SELECT DISTINCT stream FROM backfill_windows`
+# with a per-station join, exactly as Gateway's Reconciler now does.
 STREAMS = ("TaktTime", "PartCount", "InspectionResult")
 
 # One hour at a 6 s takt is 600 rows per stream; the full depth is 33 h.
