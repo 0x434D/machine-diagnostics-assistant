@@ -19,7 +19,12 @@ COPY hmi/ ./
 RUN pnpm vite build
 
 FROM ${NGINX} AS runtime
-COPY --chown=101:101 hmi/nginx.conf /etc/nginx/conf.d/default.conf
+# templates/, not conf.d/: the image's entrypoint runs envsubst over everything here and
+# writes the result into conf.d at start, which is what lets the simulator's port be one
+# number in the environment rather than three spellings that can drift. conf.d is a tmpfs
+# in plant/compose.yml, because the container filesystem is read-only and that write is
+# the one thing in this image that has to happen at runtime.
+COPY --chown=101:101 hmi/nginx.conf.template /etc/nginx/templates/default.conf.template
 COPY --from=build --chown=101:101 /src/dist /usr/share/nginx/html
 USER 101:101
 EXPOSE 8080

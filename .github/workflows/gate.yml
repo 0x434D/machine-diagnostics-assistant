@@ -128,9 +128,14 @@ jobs:
           persist-credentials: false
       # Order matters and is the reason this is a separate step: setup-node's `cache: pnpm`
       # resolves the store path by *running* pnpm, so pnpm must already be installed.
-      # No `version:` here on purpose — the action reads `packageManager` from the UI's
-      # package.json, so the pnpm version is pinned in one place rather than two that can
-      # disagree. Specifying both is an error.
+      # No `version:` here on purpose — the action reads `packageManager` from a
+      # package.json, and specifying both is an error.
+      #
+      # There are two frontends and therefore two `packageManager` declarations now, and
+      # this reads only the UI's: one runner pnpm for both, while each image build reads
+      # its own. A divergence would mean CI resolving a lockfile with a different pnpm
+      # than the container that ships it, so it is asserted rather than trusted —
+      # simulator/tests/test_toolchain.py fails if the two ever disagree.
       #
       # `package_json_file` is required for that to work: the action defaults to a
       # package.json at the REPOSITORY ROOT, and this repository is two-thirds not

@@ -12,7 +12,7 @@ import type { StationView } from "./snapshot";
 export function StationTile({ station }: { station: StationView }) {
   return (
     <li className={`station station--${station.category}`}>
-      <span className="station__code">{station.code}</span>
+      <span className="station__name">{station.browse_name}</span>
       <span className="station__state">{station.state}</span>
       <span className="station__category">{station.category}</span>
       {station.reason !== "" && (

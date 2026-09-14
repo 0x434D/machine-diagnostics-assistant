@@ -4,6 +4,15 @@
 #
 # This container joins plant-net (to resolve `line-simulator`) and plant-edge (to be
 # publishable). It never joins field-net: exactly two containers ever do.
+#
+# A TEMPLATE, not a conf: ${PLANT_HMI_SERVER_PORT} is filled in at container start by the
+# nginx image's own /docker-entrypoint.d/20-envsubst-on-templates.sh, from the environment
+# Compose passes. It was a literal 8200 until review pointed out what that made
+# `Settings.hmi_server_port` -- a knob that moved the server, left this file proxying to
+# where the server used to be, and reported it as a blank screen and a 502 in a log nobody
+# was reading. envsubst substitutes only names that are actually set in the environment, so
+# nginx's own $http_upgrade, $is_args, $args, $uri and the $plant variables below survive it
+# untouched.
 server {
     listen 8080;
     server_name _;
@@ -18,10 +27,11 @@ server {
     # each location captures the remaining path and passes it explicitly.
     resolver 127.0.0.11 valid=10s ipv6=off;
 
-    # Before the catch-all below: regex locations are tried in order, and an upgrade
-    # request that fell through to it would be answered as plain HTTP.
+    # An exact-match location, which nginx tries before every regex whatever the order in
+    # this file -- so the catch-all below cannot answer an upgrade request as plain HTTP.
+    # (The ordering here is for a reader, not for nginx.)
     location = /api/plant/ws {
-        set $plant http://line-simulator:8200;
+        set $plant http://line-simulator:${PLANT_HMI_SERVER_PORT};
         proxy_pass $plant/ws;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
@@ -34,7 +44,7 @@ server {
     }
 
     location ~ ^/api/plant/(?<plant_path>.*)$ {
-        set $plant http://line-simulator:8200;
+        set $plant http://line-simulator:${PLANT_HMI_SERVER_PORT};
         proxy_pass $plant/$plant_path$is_args$args;
     }
 

@@ -13,7 +13,7 @@ export function Line({ snapshot }: { snapshot: LineSnapshot }) {
     <>
       <ol className="stations">
         {snapshot.stations.map((station) => (
-          <StationTile key={station.code} station={station} />
+          <StationTile key={station.browse_name} station={station} />
         ))}
       </ol>
       <ol className="buffers">

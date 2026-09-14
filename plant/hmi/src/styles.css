@@ -16,6 +16,15 @@
   --held-by-own-fault: #b42318;
   --stopped: #57606a;
   --transitioning: #0b62d1;
+
+  /* What a category with no rule of its own renders as. Not one of the five, and
+     deliberately a colour no plant screen would ever legitimately show: `.station`'s
+     fallback used to be grey, which meant a typo in `.station--stopped` rendered as a
+     perfectly plausible "stopped" tile and nothing anywhere failed. That is the same
+     "renders as nothing" failure category_for's exhaustiveness test exists to prevent,
+     one layer down, and this is the CSS half of the answer — the other half is
+     line.test.tsx, which asserts a rule exists for each of the five. */
+  --no-such-category: #ff00ff;
 }
 
 body {
@@ -45,7 +54,7 @@ ol {
 }
 
 .station {
-  border-inline-start: 6px solid var(--stopped);
+  border-inline-start: 6px solid var(--no-such-category);
   display: grid;
   gap: 0.1rem;
   padding: 0.5rem 0.75rem;
@@ -71,7 +80,7 @@ ol {
   border-color: var(--transitioning);
 }
 
-.station__code {
+.station__name {
   font-weight: 600;
 }
 

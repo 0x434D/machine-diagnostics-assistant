@@ -18,7 +18,10 @@ export type Category =
   | "transitioning";
 
 export interface StationView {
-  code: string;
+  /** §4.1's browse name, `S1_Feeding`. Deliberately NOT called `code`: the diagnostics
+   * stack's `stations.code` holds `S1`, split off by the gateway, and a field called
+   * `code` here would invite a join that returns zero rows and no error. */
+  browse_name: string;
   /** The PackML state name. Shown as text beside the colour, always: colour is never
    * the only channel (ISA-101). */
   state: string;
@@ -29,11 +32,13 @@ export interface StationView {
 }
 
 export interface BufferView {
+  /** `B1_2`. This one IS the diagnostics stack's `buffers.code` — the gateway stores a
+   * buffer's browse name whole, because it carries no function to split off. */
   code: string;
   level: number;
   capacity: number;
-  upstream: string;
-  downstream: string;
+  upstream_browse_name: string;
+  downstream_browse_name: string;
 }
 
 export interface LineSnapshot {

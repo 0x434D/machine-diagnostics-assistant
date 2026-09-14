@@ -98,6 +98,13 @@ services:
       PLANT_APPLICATION_URI: "urn:machine-agent:plant:line-simulator"
       PLANT_INSPECTION_URL: "http://inspection-service:8100"
       PLANT_PKI_ROOT: "/pki"
+      # The port the in-process HMI server binds (D5). Restated here, with the same
+      # interpolation plant-hmi's nginx template is filled from, so that one value in the
+      # environment moves the server and the proxy in front of it together. Left to
+      # simulator.config's default on one side and a literal on the other, raising it
+      # moved the server and left the screen proxying to where it used to be.
+      # test_hmi.py pins both restatements against that default.
+      PLANT_HMI_SERVER_PORT: "${PLANT_HMI_SERVER_PORT:-8200}"
     volumes:
       - ../pki:/pki:ro
       - plant-history:/data
@@ -118,10 +125,28 @@ services:
     build:
       context: .
       dockerfile: hmi/Dockerfile
-    # nginx-unprivileged writes its temp paths and its pid under /tmp, which the shared
-    # block already provides, so read_only holds with no exceptions. 101 rather than the
+    # nginx-unprivileged writes its temp paths and its pid under /tmp. 101 rather than the
     # block's HOST_UID: this container never touches the bind-mounted pki/.
     user: "101:101"
+    # The entrypoint renders /etc/nginx/templates/default.conf.template into conf.d at
+    # start, and that is the one write this read_only container has to be able to make.
+    # Nothing persists here -- it is regenerated on every start from the environment below.
+    #
+    # The long form rather than the shared block's `tmpfs: [/tmp]` short one, because this
+    # mount needs a mode: a bare tmpfs comes up root-owned at 0775 and this container runs
+    # as 101, so the entrypoint refused it with "conf.d is not writable" and nginx then
+    # served its stock configuration -- a working web server for the wrong site. 1777 is
+    # the same choice, for the same reason, as the plant image's /data: the uid cannot be
+    # known at image build time. The short-form /tmp from the shared block still applies.
+    volumes:
+      - type: tmpfs
+        target: /etc/nginx/conf.d
+        tmpfs:
+          mode: 01777
+    environment:
+      # What the template's ${PLANT_HMI_SERVER_PORT} becomes. Same interpolation as
+      # line-simulator's own restatement above, so the two cannot name different ports.
+      PLANT_HMI_SERVER_PORT: "${PLANT_HMI_SERVER_PORT:-8200}"
     depends_on: [line-simulator]
     ports:
       # Every number is configuration (§10.3), and the published port above all: the M1

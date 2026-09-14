@@ -5,8 +5,10 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from typing import cast
 
 import pytest
+import yaml
 from conftest import STATION_CODES, build_running_line
 from fastapi.testclient import TestClient
 from simulator.address_space import BUFFERS
@@ -14,7 +16,18 @@ from simulator.config import Settings
 from simulator.hmi import CATEGORIES, build_app, category_for, line_snapshot
 from simulator.packml import State
 
-NGINX_CONF = Path(__file__).resolve().parents[2] / "hmi" / "nginx.conf"
+PLANT = Path(__file__).resolve().parents[2]
+HMI = PLANT / "hmi"
+NGINX_TEMPLATE = HMI / "nginx.conf.template"
+COMPOSE = PLANT / "compose.yml"
+
+# The Makefile's `in-frontend` macro skips a frontend directory that is not in this
+# checkout rather than failing, so a simulator unit test must not be the one thing that
+# hard-requires it. The tests this guards are about the wiring between the two, and a
+# checkout with no wiring has none to be wrong.
+needs_the_screen = pytest.mark.skipif(
+    not HMI.is_dir(), reason=f"no {HMI.name}/ in this checkout"
+)
 
 # How many cycles to run before asserting. Four stations at roughly one takt each, so
 # ten rounds of the line -- long enough for a buffer to empty and the station below it
@@ -26,8 +39,28 @@ CYCLES = 40
 async def test_the_snapshot_carries_every_station_and_every_buffer() -> None:
     line, clock = await build_running_line()
     snapshot = line_snapshot(line, clock)
-    assert [s["code"] for s in snapshot["stations"]] == list(STATION_CODES)
+    assert [s["browse_name"] for s in snapshot["stations"]] == list(STATION_CODES)
     assert [b["code"] for b in snapshot["buffers"]] == [code for code, _, _ in BUFFERS]
+
+
+@pytest.mark.asyncio
+async def test_a_station_is_named_by_its_browse_name_and_the_field_says_so() -> None:
+    """The plant's identity for a station is §4.1's browse name, and emitting anything
+    else would make the HMI perform a split the plant never performs. But `code` means
+    `S1` one stack over (`stations.code`, from `TopologyDiscovery.SplitBrowseName`), so
+    a field called `code` carrying `S1_Feeding` is a join that returns nothing and says
+    nothing. The name is what keeps the two apart.
+    """
+    line, clock = await build_running_line()
+    snapshot = line_snapshot(line, clock)
+    for station in snapshot["stations"]:
+        assert "_" in station["browse_name"]
+    # A buffer's own code is NOT split by the gateway -- it stores the browse name whole
+    # -- so `code` there is the same word the diagnostics stack uses for the same value.
+    # The station references beside it are split, and are named for what they hold.
+    for buffer in snapshot["buffers"]:
+        assert buffer["upstream_browse_name"] in STATION_CODES
+        assert buffer["downstream_browse_name"] in STATION_CODES
 
 
 @pytest.mark.asyncio
@@ -50,7 +83,7 @@ async def test_a_suspended_station_carries_its_reason_to_the_screen() -> None:
     s3 = next(
         s
         for s in line_snapshot(line, clock)["stations"]
-        if s["code"] == "S3_Inspection"
+        if s["browse_name"] == "S3_Inspection"
     )
     assert s3["category"] == "waiting-on-others"
     assert s3["reason"] == "starved:B2_3"
@@ -64,9 +97,9 @@ async def test_a_held_station_is_a_cause_candidate_and_a_starved_one_is_not() ->
     await line.hold("S2_Joining", clock.history_start, "jam")
     for _ in range(CYCLES):
         await line.step()
-    by_code = {s["code"]: s for s in line_snapshot(line, clock)["stations"]}
-    assert by_code["S2_Joining"]["category"] == "held-by-own-fault"
-    assert by_code["S3_Inspection"]["category"] == "waiting-on-others"
+    by_name = {s["browse_name"]: s for s in line_snapshot(line, clock)["stations"]}
+    assert by_name["S2_Joining"]["category"] == "held-by-own-fault"
+    assert by_name["S3_Inspection"]["category"] == "waiting-on-others"
 
 
 def test_every_packml_state_maps_to_exactly_one_category() -> None:
@@ -111,10 +144,52 @@ def test_one_payload_reaches_the_screen_over_http_and_over_the_websocket() -> No
     assert over_websocket["phase"] == over_http["phase"]
 
 
-def test_the_screens_proxy_names_the_port_the_simulator_serves_on() -> None:
-    """Three spellings of one port -- `Settings.hmi_server_port`, the address nginx
-    proxies to, and the Vite dev server's proxy target -- and a mismatch shows as an
-    empty screen with nothing in any log to say why. This is the one of the three that
-    cannot be checked by importing it.
+@needs_the_screen
+def test_the_screens_proxy_reads_the_port_rather_than_restating_it() -> None:
+    """`Settings.hmi_server_port` has to be configuration in effect and not only in
+    form. It was neither: nginx.conf named 8200 as a literal, so raising the setting
+    moved the server, left the proxy pointing where it used to be, and reported that as
+    a blank screen and a 502 in a log nobody reads.
+
+    The template names the variable instead, and the two Compose services are filled
+    from one interpolation -- so the only number left to drift is the default, which is
+    what this pins.
     """
-    assert f"line-simulator:{Settings().hmi_server_port}" in NGINX_CONF.read_text()
+    template = NGINX_TEMPLATE.read_text()
+    assert "${PLANT_HMI_SERVER_PORT}" in template
+    # Directives only. A comment naming the number is prose about it, not a second place
+    # nginx reads it from -- and this file's own comment explains why the literal went.
+    directives = "\n".join(
+        line for line in template.splitlines() if not line.lstrip().startswith("#")
+    )
+    assert str(Settings().hmi_server_port) not in directives, (
+        "the template must not restate the port it is rendered from"
+    )
+
+    services = cast(
+        dict[str, dict[str, object]], yaml.safe_load(COMPOSE.read_text())["services"]
+    )
+    default = f"${{PLANT_HMI_SERVER_PORT:-{Settings().hmi_server_port}}}"
+    for service in ("line-simulator", "plant-hmi"):
+        environment = cast(dict[str, str], services[service].get("environment") or {})
+        assert environment["PLANT_HMI_SERVER_PORT"] == default, (
+            f"{service} names a different default port than simulator.config does"
+        )
+
+
+@needs_the_screen
+def test_the_screen_gets_somewhere_writable_to_render_its_configuration_into() -> None:
+    """The container is read_only, and rendering the template is the one write it has to
+    make at start. Without a writable mount there the entrypoint refuses, nginx falls
+    back to the image's stock configuration, and the container comes up healthy serving
+    the wrong site -- observed, which is why the mode is asserted and not just the path.
+    A bare tmpfs is root-owned at 0775 and this container runs as 101.
+    """
+    services = cast(
+        dict[str, dict[str, object]], yaml.safe_load(COMPOSE.read_text())["services"]
+    )
+    mounts = cast(list[dict[str, object]], services["plant-hmi"]["volumes"])
+    conf_d = next(m for m in mounts if m.get("target") == "/etc/nginx/conf.d")
+    assert conf_d["type"] == "tmpfs"
+    # 01777 in the file; YAML reads a leading zero as octal, so this is that number.
+    assert cast(dict[str, int], conf_d["tmpfs"])["mode"] == 0o1777

@@ -92,9 +92,19 @@ def category_for(state: State) -> str:
 
 class StationView(TypedDict):
     """One station as the screen reads it. `state` travels with `category` because the
-    category decides the colour and ISA-101 forbids the colour being the only channel."""
+    category decides the colour and ISA-101 forbids the colour being the only channel.
 
-    code: str
+    `browse_name`, emphatically not `code`. The value is §4.1's browse name -- the plant's
+    own identity for a station, `S1_Feeding` -- and the plant is right to emit it: it is
+    what `StationNodes.code`, `Settings.station_takt_seconds` and `Line`'s buffer check all
+    key on, and splitting it here would be the plant performing a split it never performs.
+    But `code` is a taken word one stack over: `stations.code` in 001_m1.sql holds `S1`,
+    produced by the gateway's `TopologyDiscovery.SplitBrowseName`. A consumer joining a
+    field called `code` against that column gets zero rows, no error, and a screen that
+    looks fine -- so the field says which of the two names it is carrying.
+    """
+
+    browse_name: str
     state: str
     category: str
     reason: str
@@ -102,13 +112,20 @@ class StationView(TypedDict):
 
 class BufferView(TypedDict):
     """One buffer, with the capacity its level is a fraction of -- so the screen draws a
-    fill bar without a copy of `Settings.buffer_capacity` of its own."""
+    fill bar without a copy of `Settings.buffer_capacity` of its own.
+
+    `code` here IS the diagnostics stack's `buffers.code`: the gateway stores a buffer's
+    browse name whole (`TopologyDiscovery.DiscoverBuffersAsync` passes `child.Name`
+    through), because a buffer's name carries no function to split off. The two station
+    references do not get the same treatment -- the gateway splits those down to `S1`
+    before storing them as `upstream_station_id` -- so they are named for what they hold.
+    """
 
     code: str
     level: int
     capacity: int
-    upstream: str
-    downstream: str
+    upstream_browse_name: str
+    downstream_browse_name: str
 
 
 class LineSnapshot(TypedDict):
@@ -147,20 +164,20 @@ def line_snapshot(line: Line, clock: SimulatedClock) -> LineSnapshot:
         "written_wall": clock.wall.isoformat(),
         "stations": [
             StationView(
-                code=code,
+                browse_name=browse_name,
                 state=state.value,
                 category=category_for(state),
                 reason=reason,
             )
-            for code, (state, reason) in line.station_states.items()
+            for browse_name, (state, reason) in line.station_states.items()
         ],
         "buffers": [
             BufferView(
                 code=buffer.buffer_id,
                 level=buffer.level,
                 capacity=buffer.capacity,
-                upstream=buffer.upstream,
-                downstream=buffer.downstream,
+                upstream_browse_name=buffer.upstream,
+                downstream_browse_name=buffer.downstream,
             )
             for buffer in line.buffers
         ],

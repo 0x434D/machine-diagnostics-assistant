@@ -11,9 +11,16 @@ import { defineConfig } from "vitest/config";
 // 4840, and test_compose_invariants pins that count): `pnpm dev` is for a simulator run
 // on the host with `python -m simulator.server`. Point VITE_PLANT_URL elsewhere for
 // anything else.
+//
+// PLANT_HMI_SERVER_PORT is the same variable simulator.config reads and the same one the
+// container's nginx template is rendered from, so moving the server moves this with it.
+// The literal below is the fallback of last resort and is pinned against
+// Settings.hmi_server_port by simulator/tests/test_hmi.py.
+const port = process.env.PLANT_HMI_SERVER_PORT ?? "8200";
+
 const proxy = {
   "/api/plant": {
-    target: process.env.VITE_PLANT_URL ?? "http://localhost:8200",
+    target: process.env.VITE_PLANT_URL ?? `http://localhost:${port}`,
     rewrite: (path: string) => path.replace(/^\/api\/plant/, ""),
     changeOrigin: true,
     // The snapshot stream is a WebSocket; without this the dev server answers the
@@ -35,5 +42,10 @@ export default defineConfig({
     // Handbook §2: vitest 5 defaults this to true. Stated so that reading the config tells
     // you what happens between tests, rather than requiring you to know the default.
     clearMocks: true,
+    // vitest stubs every CSS import to an empty string by default, `?raw` included --
+    // so line.test.tsx's assertion that each of the five categories has a rule silently
+    // read "" and passed nothing. It is the one thing on this screen carrying meaning,
+    // and a test of it that cannot fail is worse than no test.
+    css: true,
   },
 });
