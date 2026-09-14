@@ -2810,6 +2810,8 @@ make check
 
 `HistoryEventPageSize = 25` exists solely because S3's inspection events carry images against a 4 MiB response limit — M1 measured a reject image at up to 110,486 B. M2a adds no new event types (they are M2b's), so the 25 stays correct for the one event stream. What changes is **variables**: 25 streams instead of 2, each backfilled per window.
 
+*Task 10 deleted `GatewayOptions.HistoryPageSize` — page size now comes only from the signal policy, so two numbers held equal by a test became one.*
+
 **Files:**
 - Modify: `Opc/HistoryBackfill.cs`, `Opc/GatewayOptions.cs`, `Gateway.Tests/` (new backfill tests)
 
