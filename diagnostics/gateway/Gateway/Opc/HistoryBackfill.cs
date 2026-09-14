@@ -376,7 +376,7 @@ public sealed partial class HistoryBackfill
             NumValuesPerNode = (uint)_options.HistoryEventPageSize,
             // The identical filter the live subscription uses. A second filter would be a
             // second statement of the field order, and the order is the decoding contract.
-            Filter = Subscriptions.BuildInspectionFilter(),
+            Filter = Subscriptions.InspectionStream.BuildFilter(),
         });
 
         return await ReadPagesAsync(
@@ -386,7 +386,7 @@ public sealed partial class HistoryBackfill
                 var data = (HistoryEvent)ExtensionObject.ToEncodeable(result);
                 foreach (var entry in data.Events)
                 {
-                    await _onRecord(Subscriptions.ToEventRecord(
+                    await _onRecord(Subscriptions.InspectionStream.Decode(
                         station.Code, node.ToString(), entry.EventFields)).ConfigureAwait(false);
                 }
 

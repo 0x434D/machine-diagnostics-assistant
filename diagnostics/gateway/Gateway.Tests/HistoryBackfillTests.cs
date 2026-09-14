@@ -526,6 +526,9 @@ public sealed class HistoryBackfillTests
     /// </summary>
     private sealed class FakeHistorian
     {
+        private static readonly string[] DefectClasses = ["gap", "crack"];
+        private static readonly double[] Confidences = [0.02, 0.01];
+
         private readonly Dictionary<NodeId, DateTime[]> _rows = [];
         private readonly Dictionary<NodeId, List<uint>> _pageSizes = [];
         private readonly HashSet<NodeId> _eventNodes = [];
@@ -659,17 +662,20 @@ public sealed class HistoryBackfillTests
             var events = new HistoryEventFieldListCollection();
             foreach (var ts in sourceTimestamps)
             {
-                // Positional, in Subscriptions.InspectionEventFields' order -- that order is
-                // the wire format, and a page decoded against a different one would be a
+                // Positional, in the select-clause order the stream asked for -- that order
+                // is the wire format, and a page decoded against a different one would be a
                 // different test than the one the live subscription passes.
                 events.Add(new HistoryEventFieldList
                 {
                     EventFields =
                     [
                         new Variant(ts),
+                        new Variant(new NodeId("InspectionResultEventType", PlantNamespace)),
                         new Variant($"A-{ts:HHmmss}"),
+                        new Variant(1u),
                         new Variant("good"),
-                        new Variant(string.Empty),
+                        new Variant(DefectClasses),
+                        new Variant(Confidences),
                         new Variant(0.99),
                         new Variant("m-1"),
                         new Variant(Array.Empty<byte>()),

@@ -31,15 +31,12 @@ public sealed record StreamKey(StreamOwner Owner, string Code, string Signal);
 public sealed partial class Subscriptions
 {
     /// <summary>
-    /// The decoding contract. An event notification arrives as a positional EventFieldList,
-    /// so this order IS the wire format — it is stated here independently of the plant rather
-    /// than derived from it, because a check that moves when the thing it checks moves proves
-    /// nothing. Task 10's history reader must use the identical filter.
+    /// The one event stream this gateway reads today, and the filter both write paths use.
+    /// The field order is <see cref="PlantEvents"/>'s, stated there independently of the
+    /// plant; the live subscription and the history backfill share this instance so that
+    /// what is asked for and what is decoded cannot drift apart.
     /// </summary>
-    public static readonly string[] InspectionEventFields =
-    [
-        "Time", "AssemblySerial", "Disposition", "DefectClass", "Confidence", "ModelVersion", "Image",
-    ];
+    public static readonly EventStreamSpec InspectionStream = new([PlantEvents.InspectionResult]);
 
     /// <summary>
     /// How S3's event stream is named, in the subscription and in the backfill ledger alike.
@@ -59,8 +56,6 @@ public sealed partial class Subscriptions
     /// which stream a buffer level even is.</para>
     /// </summary>
     public const string BufferLevelSignal = "Level";
-
-    private const string ImageField = "Image";
 
     private readonly GatewayOptions _options;
     private readonly SignalPolicy _policy;
@@ -129,7 +124,7 @@ public sealed partial class Subscriptions
                     Handle = new StreamKey(StreamOwner.Station, station.Code, EventStream),
                     SamplingInterval = 0,
                     QueueSize = _options.EventQueueSize,
-                    Filter = BuildInspectionFilter(),
+                    Filter = InspectionStream.BuildFilter(),
                 };
                 events.Notification += OnEvent;
                 items.Add(events);
@@ -175,22 +170,6 @@ public sealed partial class Subscriptions
         return subscription;
     }
 
-    public static EventFilter BuildInspectionFilter()
-    {
-        var select = new SimpleAttributeOperandCollection();
-        foreach (var field in InspectionEventFields)
-        {
-            select.Add(new SimpleAttributeOperand
-            {
-                AttributeId = Attributes.Value,
-                TypeDefinitionId = ObjectTypeIds.BaseEventType,
-                BrowsePath = [new QualifiedName(field)],
-            });
-        }
-
-        return new EventFilter { SelectClauses = select };
-    }
-
     /// <summary>
     /// One decoder for a variable sample, used by the live subscription and by the history
     /// backfill. Two decoders would be two chances to disagree about the payload shape the
@@ -226,64 +205,6 @@ public sealed partial class Subscriptions
             StatusCode: value.StatusCode.Code,
             PayloadJson: payload,
             ImageBytes: null);
-    }
-
-    /// <summary>One decoder for an inspection event, shared for the same reason.</summary>
-    public static IngestRecord ToEventRecord(
-        string station, string nodeId, IList<Variant> fields)
-    {
-        ArgumentNullException.ThrowIfNull(fields);
-
-        byte[]? image = null;
-        var payload = new Dictionary<string, object?>(StringComparer.Ordinal)
-        {
-            ["Station"] = station,
-        };
-        var sourceTs = DateTime.UtcNow;
-
-        for (var i = 0; i < InspectionEventFields.Length && i < fields.Count; i++)
-        {
-            var name = InspectionEventFields[i];
-            var value = fields[i].Value;
-
-            if (name == ImageField)
-            {
-                // Rejects only; a good part carries no image and that is not a data gap (§3.4).
-                // The server sends an empty ByteString rather than a null one for a good part,
-                // and an empty byte[] is not "no image" — stored as-is it would put a row in
-                // inspection_images for every good part, which is the thing §3.4 forbids.
-                image = value as byte[] is { Length: > 0 } bytes ? bytes : null;
-                continue;
-            }
-
-            if (name == "Time" && value is DateTime time)
-            {
-                sourceTs = time;
-            }
-
-            if (name == "Confidence" && value is not null)
-            {
-                payload[name] = Convert.ToDouble(value, CultureInfo.InvariantCulture);
-                continue;
-            }
-
-            // An empty string is not a value. A good part carries no defect class, and the
-            // server sends "" rather than null for it — stored as-is it becomes a defect class
-            // whose name is empty, and every breakdown then reports good parts as a defect.
-            // Same shape as the empty ByteString that would have given every good part an
-            // image row: absent and empty are different claims.
-            var text = Convert.ToString(value, CultureInfo.InvariantCulture);
-            payload[name] = string.IsNullOrEmpty(text) ? null : text;
-        }
-
-        return new IngestRecord(
-            Kind: "event",
-            NodeId: nodeId,
-            SourceTs: sourceTs,
-            ServerTs: DateTime.UtcNow,
-            StatusCode: 0,
-            PayloadJson: JsonSerializer.Serialize(payload),
-            ImageBytes: image);
     }
 
     [LoggerMessage(
@@ -387,6 +308,6 @@ public sealed partial class Subscriptions
 
         var key = KeyOf(item);
         _ = _onRecord(
-            ToEventRecord(key.Code, item.StartNodeId.ToString(), fields.EventFields));
+            InspectionStream.Decode(key.Code, item.StartNodeId.ToString(), fields.EventFields));
     }
 }
