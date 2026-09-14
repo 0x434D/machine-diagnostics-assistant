@@ -21,6 +21,7 @@ from typing import override
 from simulator.carriers import Carrier
 from simulator.curve import force_distance, peak_of
 from simulator.events import PART_PROCESSED
+from simulator.faults import JOINING_CLAMP_FORCE
 from simulator.line import PartState
 from simulator.stations.base import Station, require_assembly
 
@@ -35,8 +36,18 @@ class JoiningStation(Station):
         # (M2c's scenario 3 drifts it), the contact point is the components' (scenario 7
         # moves it) and the stiffness is the material's. Only the first reaches a
         # published scalar.
-        clamp = self._rng.gauss(
-            settings.joining_force_nominal, settings.joining_force_sigma
+        # The drift is applied to the drawn clamp, not to the mean it was drawn from:
+        # the draw then happens identically whether or not scenario 3 is running, which
+        # is what keeps a loaded-but-unfired scenario byte-identical to no scenario at
+        # all. It reaches `JoiningForcePeak` only through the trace `force_distance`
+        # builds below, so the published peak stays a measurement of the press rather
+        # than a second copy of the injected number.
+        clamp = self._faults.modify(
+            JOINING_CLAMP_FORCE,
+            self._rng.gauss(
+                settings.joining_force_nominal, settings.joining_force_sigma
+            ),
+            at,
         )
         contact_mm = self._rng.gauss(
             settings.press_contact_nominal_mm, settings.press_contact_sigma_mm

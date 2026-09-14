@@ -14,6 +14,7 @@ from typing import override
 from simulator.carriers import Carrier
 from simulator.config import Settings
 from simulator.events import ASSEMBLY_CREATED, COMPONENT_READ
+from simulator.faults import LANE_FILL, NO_FAULTS, FaultSet
 from simulator.identity import LANES, LotSchedule, load_carrier
 from simulator.line import PartState
 from simulator.stations.base import Station, StationNodes, clamp_level
@@ -26,6 +27,8 @@ class FeedingStation(Station):
         settings: Settings,
         seed: int,
         schedule: LotSchedule,
+        *,
+        faults: FaultSet = NO_FAULTS,
     ) -> None:
         """`schedule` is the lot schedule both lanes draw from.
 
@@ -33,7 +36,7 @@ class FeedingStation(Station):
         instant the line starts, which is the clock's and not this station's, and a
         containment question can then be asked of the schedule without a station.
         """
-        super().__init__(nodes, settings, seed)
+        super().__init__(nodes, settings, seed, faults=faults)
         self._schedule = schedule
 
     @override
@@ -82,7 +85,7 @@ class FeedingStation(Station):
         # operator. M2c's scenario 5 contaminates one lane and scenario 1 starves the
         # feed entirely, so both lanes are separate signals from the start.
         for lane in LANES:
-            await self._nodes.write(f"LaneFill_{lane}", at, self._lane_level())
+            await self._nodes.write(f"LaneFill_{lane}", at, self._lane_level(lane, at))
             # D12: live-only. The lot code is on the ComponentReadEvent above, which is
             # the authoritative copy; this is the one an HMI reads without asking for
             # history, and historising it would be the second copy §3.4a warns about.
@@ -91,19 +94,20 @@ class FeedingStation(Station):
             )
         await self._nodes.write_live("CurrentAssemblySerial", at, assembly.serial)
 
-    def _lane_level(self) -> float:
+    def _lane_level(self, lane: int, at: datetime) -> float:
         """A slow sawtooth with measurement noise: drawn down by production, topped
-        back up when the lane runs out. Carries no diagnosis of its own -- it exists so
-        the signal is a real varying float rather than a constant the historian would
-        coalesce away.
+        back up when the lane runs out.
 
         **Both lanes supply every assembly**, one component each, so both fall at the
-        same rate and wrap on the same part -- which is why this takes no lane. M2a
-        drained lane 1 on the odd parts and lane 2 on the even ones; that was a guess
-        made before there were components to draw, and `identity.load_carrier` now
+        same rate and wrap on the same part -- the sawtooth itself is the same on both.
+        M2a drained lane 1 on the odd parts and lane 2 on the even ones; that was a
+        guess made before there were components to draw, and `identity.load_carrier` now
         contradicts it outright. What separates the two lanes is which lot each is
-        drawing from, which is what M2c's scenarios 5 and 7 turn on; it was never the
-        shape of the level.
+        drawing from, which is what §3.5's scenarios 5 and 7 turn on.
+
+        `lane` is here for the fault engine rather than for the sawtooth: §3.5's feeder
+        starvation may take out one lane or the whole feed, and a modifier that could
+        not tell which lane it was asked about could only do the second.
 
         Called once per lane, so each stream carries its own noise draw and the two are
         two measurements rather than one number published twice.
@@ -111,4 +115,9 @@ class FeedingStation(Station):
         capacity = self._settings.lane_capacity
         drawn = (self._part_count * self._settings.lane_draw_per_part) % capacity
         level = capacity - drawn + self._rng.gauss(0.0, self._settings.lane_fill_sigma)
-        return round(clamp_level(level), 3)
+        # Applied to the drawn value rather than to the sawtooth it came from, so the
+        # noise draw above happens identically whether or not a fault is active --
+        # see `faults`' identity property.
+        return round(
+            clamp_level(self._faults.modify(LANE_FILL, level, at, lane=lane)), 3
+        )

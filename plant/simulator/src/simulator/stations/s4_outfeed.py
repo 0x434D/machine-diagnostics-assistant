@@ -8,6 +8,7 @@ from typing import ClassVar, override
 from simulator.carriers import Carrier
 from simulator.config import Settings
 from simulator.events import PART_COMPLETED
+from simulator.faults import NO_FAULTS, OUTFEED_FILL, FaultSet
 from simulator.line import PartState
 from simulator.stations.base import (
     Station,
@@ -22,8 +23,15 @@ class OutfeedStation(Station):
     # they sum to it. See Station.part_count_signal.
     part_count_signal: ClassVar[str | None] = None
 
-    def __init__(self, nodes: StationNodes, settings: Settings, seed: int) -> None:
-        super().__init__(nodes, settings, seed)
+    def __init__(
+        self,
+        nodes: StationNodes,
+        settings: Settings,
+        seed: int,
+        *,
+        faults: FaultSet = NO_FAULTS,
+    ) -> None:
+        super().__init__(nodes, settings, seed, faults=faults)
         self._good = 0
         self._reject = 0
 
@@ -46,7 +54,7 @@ class OutfeedStation(Station):
 
         await self._nodes.write("GoodCount", at, self._good)
         await self._nodes.write("RejectCount", at, self._reject)
-        await self._nodes.write("OutfeedFill", at, self._outfeed_level())
+        await self._nodes.write("OutfeedFill", at, self._outfeed_level(at))
         # §5.2's `part_dispositions` row: how the part left the line, and why. The
         # reason is S3's verdict carried on the part, not re-derived here.
         await self._nodes.trigger_event(
@@ -59,10 +67,12 @@ class OutfeedStation(Station):
             },
         )
 
-    def _outfeed_level(self) -> float:
-        """Fills as parts arrive, emptied when an operator clears it. M2c's scenario 2
-        blocks the outfeed entirely, which is why this is a level rather than a
-        counter."""
+    def _outfeed_level(self, at: datetime) -> float:
+        """Fills as parts arrive, emptied when an operator clears it. §3.5's scenario 2
+        blocks the outfeed, which is why this is a level rather than a counter: a
+        blockage is a backlog the operator stops taking away, and it shows up here as
+        the level climbing past the point it normally wraps at."""
         held = (self._good + self._reject) % self._settings.outfeed_capacity
         level = held + self._rng.gauss(0.0, self._settings.outfeed_fill_sigma)
-        return round(clamp_level(level), 3)
+        # After the draw, not before it -- see `faults`' identity property.
+        return round(clamp_level(self._faults.modify(OUTFEED_FILL, level, at)), 3)

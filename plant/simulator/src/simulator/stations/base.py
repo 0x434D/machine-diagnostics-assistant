@@ -22,6 +22,7 @@ from typing import ClassVar, Protocol
 from simulator.carriers import Carrier
 from simulator.config import Settings
 from simulator.events import EventType
+from simulator.faults import NO_FAULTS, FaultSet
 from simulator.identity import Assembly
 from simulator.line import PartState
 from simulator.packml import State
@@ -139,12 +140,23 @@ class Station(ABC):
     accepts any name, which is exactly the shape of test that cannot see this.
     """
 
-    def __init__(self, nodes: StationNodes, settings: Settings, seed: int) -> None:
+    def __init__(
+        self,
+        nodes: StationNodes,
+        settings: Settings,
+        seed: int,
+        *,
+        faults: FaultSet = NO_FAULTS,
+    ) -> None:
         """Raises ValueError if `settings` names no takt for this station's code.
 
         Checked here rather than at the first cycle so that a misconfigured
         deployment fails while the line is being built -- which is boot -- instead of
         one takt into generation, with a run already in flight.
+
+        `faults` defaults to the empty set, so a station built without a scenario and a
+        station built with one that has not fired are the same station -- see
+        `faults.NO_FAULTS`.
         """
         if nodes.code not in settings.station_takt_seconds:
             raise ValueError(
@@ -164,6 +176,7 @@ class Station(ABC):
         # different run on every boot -- the exact guarantee §3.6 asks for, broken
         # invisibly. crc32 is stable across processes, platforms and releases.
         self._rng = random.Random(seed ^ zlib.crc32(nodes.code.encode()))
+        self._faults = faults
         self._previous_takt: float | None = None
         self._part_count = 0
 

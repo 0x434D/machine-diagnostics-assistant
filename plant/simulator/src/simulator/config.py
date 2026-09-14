@@ -268,6 +268,48 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     outfeed_capacity: int = 50
     outfeed_fill_sigma: float = 0.3
 
+    # faults — §3.5's six, as the magnitudes a scenario injects them at (`simulator.
+    # faults`). Flat fields rather than one mapping keyed by fault name: `extra="ignore"`
+    # above means pydantic cannot tell a mistyped key from another consumer's, so a
+    # mis-keyed entry silently leaves every reader on the default -- which is exactly how
+    # `station_takt_seconds` once gave all four stations the line-wide takt. A field name
+    # is checked by mypy at every read.
+    #
+    # Each magnitude is an **end**, not a rate: `faults.Fault` ramps from nominal to it
+    # over the matching ramp and then holds. See the module docstring for why a rate is
+    # the wrong shape here.
+    #
+    # Starting values, in the same sense `station_takt_seconds` above carries them: the
+    # scenario tasks measure each against the noise floor it has to be visible through,
+    # and carrier wear is the one already expressed that way (`carrier_wear_sigmas`).
+    #
+    # Scenario 1. Zero, not a fraction: §3.5 calls this starvation, and a feeder running
+    # slow is a different fault with a different consequence chain.
+    feeder_starvation_factor: float = 0.0
+    # Scenario 2. Parts of backlog added to OutfeedFill. Above outfeed_capacity (50), so
+    # the level reaches the point a full outfeed is at rather than approaching it; over
+    # ten minutes, so the blockage builds the way a stopped discharge conveyor does
+    # instead of appearing between two cycles.
+    outfeed_blockage_parts: float = 70.0
+    outfeed_blockage_ramp_seconds: float = 600.0
+    # Scenario 3. -420 N is 10 % of the 4200 N clamp and 10.5 x joining_force_sigma, so
+    # the drifted mean sits well outside the part-to-part spread it has to be seen
+    # through. Over an hour, because §3.5 calls it a drift: a step would be a different
+    # failure, and scenario 7 -- where the same rising `gap` must NOT be explained by the
+    # force -- is only a test at all while this one is genuinely visible in the force.
+    joining_force_drift_newtons: float = -420.0
+    joining_force_drift_ramp_seconds: float = 3600.0
+    # Scenario 5. Six times the baseline propensity of the two classes §3.5 names for a
+    # contaminated lane, applied as a step: a lane is contaminated when someone tips the
+    # wrong tray into it, not over an hour.
+    lane_contamination_factor: float = 6.0
+    # Scenario 6. Fouling leaves 55 % of the camera's nominal contrast after two hours.
+    # D8 makes the confidence fall out of the image rather than out of a knob, so what
+    # this number has to be is set by the classifier's statistic and is measured where
+    # that change lands.
+    optics_fouling_factor: float = 0.55
+    optics_fouling_ramp_seconds: float = 7200.0
+
     # catch-up pacing -- asyncua's own per-monitored-item notification queue caps at
     # 10,000 and silently discards the oldest entry past that, so generate_history
     # must give the ~10 ms publish loop a chance to drain before any one stream's

@@ -30,6 +30,7 @@ from simulator.buffers import Buffer
 from simulator.carriers import CarrierPool
 from simulator.clock import SimulatedClock
 from simulator.config import ClockConfig, Settings
+from simulator.faults import NO_FAULTS, FaultSet
 from simulator.historian import Ledger, LedgerWriter, attach_historian
 from simulator.identity import LotSchedule
 from simulator.inspection_client import InspectionClient
@@ -144,6 +145,7 @@ def build_line(
     settings: Settings,
     produce: ProduceFn,
     schedule: LotSchedule,
+    faults: FaultSet = NO_FAULTS,
 ) -> Line:
     """§3.1's line: four stations in line order, the three buffers between them, and
     one circulating carrier pool.
@@ -162,14 +164,33 @@ def build_line(
 
     Every station is seeded from the same `settings.seed`; `Station.__init__` folds the
     station code in, so the four draw independently and reproducibly (§3.6).
+
+    `faults` is the scenario this run carries (§3.5), handed to all four because a fault
+    modifies the number where it is computed and three of the four compute one. It
+    defaults to the empty set, which is what makes a line built without a scenario
+    indistinguishable from one whose scenario has not fired yet.
     """
     stations: list[Station] = [
-        FeedingStation(writer.station("S1_Feeding"), settings, settings.seed, schedule),
-        JoiningStation(writer.station("S2_Joining"), settings, settings.seed),
-        InspectionStation(
-            writer.station("S3_Inspection"), settings, settings.seed, produce
+        FeedingStation(
+            writer.station("S1_Feeding"),
+            settings,
+            settings.seed,
+            schedule,
+            faults=faults,
         ),
-        OutfeedStation(writer.station("S4_Outfeed"), settings, settings.seed),
+        JoiningStation(
+            writer.station("S2_Joining"), settings, settings.seed, faults=faults
+        ),
+        InspectionStation(
+            writer.station("S3_Inspection"),
+            settings,
+            settings.seed,
+            produce,
+            faults=faults,
+        ),
+        OutfeedStation(
+            writer.station("S4_Outfeed"), settings, settings.seed, faults=faults
+        ),
     ]
     buffers = [
         Buffer(buffer_id, settings.buffer_capacity, upstream, downstream)

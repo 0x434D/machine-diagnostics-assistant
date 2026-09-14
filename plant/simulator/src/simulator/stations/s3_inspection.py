@@ -15,6 +15,7 @@ from typing import override
 from simulator.carriers import Carrier
 from simulator.config import Settings
 from simulator.events import INSPECTION_RESULT
+from simulator.faults import NO_FAULTS, FaultSet
 from simulator.line import PartState
 from simulator.stations.base import (
     ProduceFn,
@@ -26,9 +27,15 @@ from simulator.stations.base import (
 
 class InspectionStation(Station):
     def __init__(
-        self, nodes: StationNodes, settings: Settings, seed: int, produce: ProduceFn
+        self,
+        nodes: StationNodes,
+        settings: Settings,
+        seed: int,
+        produce: ProduceFn,
+        *,
+        faults: FaultSet = NO_FAULTS,
     ) -> None:
-        super().__init__(nodes, settings, seed)
+        super().__init__(nodes, settings, seed, faults=faults)
         self._produce = produce
 
     @override
