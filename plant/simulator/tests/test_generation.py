@@ -1,16 +1,26 @@
 """Catch-up and live across §4.1's twenty-five streams, and R1's pass condition:
-the historian's row count equals the ledger, exactly, per stream."""
+the historian's row count equals the ledger, exactly, per stream.
+
+Also the timestamp round trip everything above rests on: `HistorySQLite` stores both
+of its `TIMESTAMP` columns through sqlite3's own deprecated adapter, and sqlite3's own
+converter cannot read half of what that adapter writes. See
+`simulator.historian.register_timestamp_converter`.
+"""
 
 from __future__ import annotations
 
 import asyncio
+import importlib
+import sqlite3
+import sqlite3.dbapi2
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from itertools import pairwise
 from pathlib import Path
 from typing import NamedTuple
 
 import pytest
-from asyncua import Server
+from asyncua import Server, ua
 from asyncua.server.history_sql import HistorySQLite
 from conftest import new_server
 from simulator.address_space import (
@@ -20,7 +30,12 @@ from simulator.address_space import (
 )
 from simulator.clock import SimulatedClock
 from simulator.config import ClockConfig, Settings
-from simulator.historian import Ledger, LedgerWriter, attach_historian
+from simulator.historian import (
+    Ledger,
+    LedgerWriter,
+    attach_historian,
+    register_timestamp_converter,
+)
 from simulator.line import Line, run_catchup, run_live
 from simulator.server import build_line
 from simulator.stations.base import PartOutcome, ProduceFn
@@ -30,13 +45,12 @@ from simulator.stations.base import PartOutcome, ProduceFn
 EXPECTED_STREAMS = 25
 
 
-def _utc(stamp: datetime | None) -> datetime:
-    """HistorySQLite round-trips SourceTimestamp through sqlite3's PARSE_DECLTYPES
-    "timestamp" converter, which always comes back naive -- confirmed against the
-    installed asyncua 2.0.1. The instant itself is still the UTC one that was written.
-    """
+def _stamp(stamp: datetime | None) -> datetime:
+    """A row's SourceTimestamp, with the "the column could be NULL" case asserted
+    rather than typed away. Aware: `historian.register_timestamp_converter` keeps the
+    UTC offset the adapter wrote."""
     assert stamp is not None
-    return stamp if stamp.tzinfo is not None else stamp.replace(tzinfo=UTC)
+    return stamp
 
 
 async def _stub_produce(part_id: str, _ts: datetime) -> PartOutcome:
@@ -170,12 +184,6 @@ async def test_source_timestamps_are_simulated_not_wall_clock(tmp_path: Path) ->
     timestamps = [r.SourceTimestamp for r in rows if r.SourceTimestamp is not None]
     assert timestamps, "history is empty"
     oldest = min(timestamps)
-    # HistorySQLite round-trips SourceTimestamp through sqlite3's PARSE_DECLTYPES
-    # "timestamp" converter, which always comes back naive -- confirmed against the
-    # installed asyncua 2.0.1, not assumed. The instant itself is still the UTC one
-    # this station wrote, so normalising before comparing is correct, not a fudge.
-    if oldest.tzinfo is None:
-        oldest = oldest.replace(tzinfo=UTC)
     assert oldest < datetime.now(UTC) - timedelta(minutes=50)
 
 
@@ -212,14 +220,7 @@ async def test_the_priming_rows_carry_a_simulated_timestamp(tmp_path: Path) -> N
                 if row.SourceTimestamp is not None
             ]
             assert stamps, f"{stream.owner}.{stream.signal} has no history at all"
-            # HistorySQLite round-trips SourceTimestamp through sqlite3's
-            # PARSE_DECLTYPES "timestamp" converter, which always comes back naive --
-            # confirmed against the installed asyncua 2.0.1. The instant itself is
-            # still the UTC one that was written.
-            oldest[stream.owner, stream.signal] = min(
-                (stamp.replace(tzinfo=UTC) if stamp.tzinfo is None else stamp, value)
-                for stamp, value in stamps
-            )
+            oldest[stream.owner, stream.signal] = min(stamps)
 
     for key, (stamp, _value) in sorted(oldest.items()):
         assert stamp == priming, (
@@ -269,7 +270,7 @@ async def test_the_historian_says_a_station_is_running_from_the_part_it_starts_o
         )
 
     history = [
-        (_utc(row.SourceTimestamp), row.Value.Value) for row in rows if row.Value
+        (_stamp(row.SourceTimestamp), row.Value.Value) for row in rows if row.Value
     ]
     assert [value for _, value in history[:7]] == [
         # The priming row, then PackML's real sequence. Not an Aborted -> Execute jump:
@@ -290,7 +291,7 @@ async def test_the_historian_says_a_station_is_running_from_the_part_it_starts_o
     # The claim that matters: S1 is on record as running before it is on record as
     # having made anything.
     running_at = next(stamp for stamp, value in history if value == "Execute")
-    first_part = min(_utc(row.SourceTimestamp) for row in part_rows[1:])
+    first_part = min(_stamp(row.SourceTimestamp) for row in part_rows[1:])
     assert running_at < first_part
 
 
@@ -379,3 +380,172 @@ async def test_the_reconciliation_names_the_stream_that_disagrees(
     message = str(raised.value)
     assert "on 1 of 26 streams" in message
     assert "S1_Feeding" not in message, "only the offender is named"
+
+
+# --- the timestamp round trip (§12) -------------------------------------------------
+
+_WHOLE = 0
+"""Microseconds. The value `datetime.isoformat(" ")` omits, which is the whole
+defect: one row in 386,782 of a 33 h run, measured in Task 10."""
+
+_SOME = 123_456
+"""Microseconds. Any non-zero value round-trips through sqlite3's own converter, which
+is why 380,000 rows can pass and the 380,001st kill the run."""
+
+
+@pytest.fixture
+def sqlite3s_own_timestamp_converter() -> Iterator[None]:
+    """Put sqlite3's own deprecated `TIMESTAMP` converter back for one test.
+
+    `attach_historian` replaces it process-wide, and every other test in this file
+    builds a plant -- so without this the defect below is unreachable and the test
+    would pass on the fix it exists to measure. Reloading `sqlite3.dbapi2` re-runs the
+    standard library's own registration, which is the only way to get that exact
+    converter back: it is a closure inside `register_adapters_and_converters`, not a
+    module attribute anything can import.
+
+    Restored by re-registering rather than by putting back whatever was there before,
+    so a session in which this test happens to run first does not leave sqlite3's own
+    in place for everything after it.
+    """
+    importlib.reload(sqlite3.dbapi2)
+    try:
+        yield
+    finally:
+        register_timestamp_converter()
+
+
+async def _history_of_one_row(
+    db: Path, source_microsecond: int, server_microsecond: int
+) -> tuple[HistorySQLite, ua.NodeId]:
+    """One historised node holding exactly one row, with both of its `TIMESTAMP`
+    columns placed to order.
+
+    Constructed directly rather than generated: the offending row appears once in
+    ~386,782, so waiting for one means a 33 h run and the odds.
+    """
+    storage = HistorySQLite(str(db))
+    await storage.init()
+    node_id = ua.NodeId(ua.Int32(1), ua.Int16(2))
+    await storage.new_historized_node(node_id, None, 0)
+    await storage.save_node_value(
+        node_id,
+        ua.DataValue(
+            ua.Variant(6.0, ua.VariantType.Double),
+            # Both suppressions for the reason address_space.write_at records: the
+            # fields are typed ua.DateTime, a datetime subclass asyncua's own runtime
+            # never constructs and sqlite3's parameter binder refuses.
+            SourceTimestamp=datetime(  # type: ignore[arg-type]
+                2026, 9, 13, 6, 0, 58, source_microsecond, tzinfo=UTC
+            ),
+            ServerTimestamp=datetime(  # type: ignore[arg-type]
+                2026, 9, 13, 6, 1, 2, server_microsecond, tzinfo=UTC
+            ),
+        ),
+    )
+    return storage, node_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("sqlite3s_own_timestamp_converter")
+@pytest.mark.parametrize(
+    ("source_microsecond", "server_microsecond"),
+    [
+        pytest.param(_SOME, _WHOLE, id="whole-second ServerTimestamp"),
+        # §12 names ServerTimestamp only. SourceTimestamp is declared TIMESTAMP in the
+        # same table and fails identically -- and it is simulated time, the one field
+        # here that may not be nudged to suit a storage layer. Recorded because it
+        # roughly doubles the exposure the risk row states.
+        pytest.param(_WHOLE, _SOME, id="whole-second SourceTimestamp"),
+    ],
+)
+async def test_sqlite3s_own_converter_cannot_read_what_its_adapter_wrote(
+    tmp_path: Path, source_microsecond: int, server_microsecond: int
+) -> None:
+    """§12's found risk, constructed rather than waited for.
+
+    The failure is not an `aiosqlite.Error`, so it escapes `read_node_history`'s own
+    try/except: every `HistoryRead` whose window contains the row raises, and raises
+    again on every retry. A backfill does not come back short -- it stops.
+    """
+    storage, node_id = await _history_of_one_row(
+        tmp_path / "broken.db", source_microsecond, server_microsecond
+    )
+    try:
+        with pytest.raises(ValueError, match="invalid literal for int"):
+            await storage.read_node_history(
+                node_id,
+                datetime(2026, 9, 13, tzinfo=UTC),
+                datetime(2026, 9, 14, tzinfo=UTC),
+                0,
+            )
+    finally:
+        await storage.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("source_microsecond", "server_microsecond"),
+    [
+        pytest.param(_SOME, _WHOLE, id="whole-second ServerTimestamp"),
+        pytest.param(_WHOLE, _SOME, id="whole-second SourceTimestamp"),
+        pytest.param(_SOME, _SOME, id="the case that already worked"),
+    ],
+)
+async def test_the_registered_converter_reads_every_row_back_unchanged(
+    tmp_path: Path, source_microsecond: int, server_microsecond: int
+) -> None:
+    """The fix, over the same three rows -- including the one that always worked, so
+    that a converter which repairs the whole second by mangling everything else fails
+    here rather than in production.
+
+    Both instants come back aware. sqlite3's own converter discards the offset and
+    returns a naive datetime that is really UTC, which is M1's F3: a continuation
+    point that cannot be compared against the aware datetime it came from.
+    """
+    register_timestamp_converter()
+    storage, node_id = await _history_of_one_row(
+        tmp_path / "fixed.db", source_microsecond, server_microsecond
+    )
+    try:
+        rows, _ = await storage.read_node_history(
+            node_id,
+            datetime(2026, 9, 13, tzinfo=UTC),
+            datetime(2026, 9, 14, tzinfo=UTC),
+            0,
+        )
+    finally:
+        await storage.stop()
+
+    assert len(rows) == 1
+    assert rows[0].SourceTimestamp == datetime(
+        2026, 9, 13, 6, 0, 58, source_microsecond, tzinfo=UTC
+    )
+    assert rows[0].ServerTimestamp == datetime(
+        2026, 9, 13, 6, 1, 2, server_microsecond, tzinfo=UTC
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("sqlite3s_own_timestamp_converter")
+async def test_attaching_the_historian_registers_the_converter(
+    tmp_path: Path,
+) -> None:
+    """The wiring, not the parsing: it is `attach_historian` that has to do this, and
+    it has to do it before any query can run against sqlite3's own.
+
+    Asserted by what the registered converter *does* with the offending text rather
+    than by which function object is registered, so moving the fix somewhere else in
+    the same call still passes.
+    """
+    whole_second = b"2026-09-13 06:00:58+00:00"
+    with pytest.raises(ValueError, match="invalid literal for int"):
+        sqlite3.converters["TIMESTAMP"](whole_second)
+
+    settings = Settings(history_depth_hours=60.0 / 3600.0)
+    clock = SimulatedClock(ClockConfig(timedelta(seconds=60), settings.catchup_speed))
+    await _build_plant(settings, clock, tmp_path / "h.db")
+
+    assert sqlite3.converters["TIMESTAMP"](whole_second) == datetime(
+        2026, 9, 13, 6, 0, 58, tzinfo=UTC
+    )

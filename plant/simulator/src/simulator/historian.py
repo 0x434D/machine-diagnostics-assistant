@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -25,6 +26,78 @@ EVENT_SIGNAL = "InspectionResult"
 """How S3's event stream is keyed, alongside §4.1's 25 data streams. Not a variable
 name in the tree -- event history hangs off the emitting station node itself -- so
 this names the event type rather than a signal."""
+
+
+def _timestamp_from_sqlite(stored: bytes) -> datetime:
+    """One `TIMESTAMP` column, back to the instant that was written.
+
+    `datetime.fromisoformat` reads everything `datetime.isoformat(" ")` produces,
+    with or without microseconds, and keeps the UTC offset the adapter wrote -- so a
+    value that went in aware comes back aware instead of losing its timezone on the
+    way through the database.
+    """
+    return datetime.fromisoformat(stored.decode())
+
+
+def _timestamp_to_sqlite(instant: datetime) -> str:
+    """One instant, as the text a `TIMESTAMP` column holds.
+
+    Byte-for-byte what sqlite3's own deprecated adapter produces, so a database
+    written before this was registered reads back identically.
+    """
+    return instant.isoformat(" ")
+
+
+def register_timestamp_converter() -> None:
+    """Replace sqlite3's own `TIMESTAMP` converter, which cannot read what its own
+    adapter writes. Must be called before any `HistorySQLite` query runs.
+
+    `HistorySQLite.init()` connects with `detect_types=PARSE_DECLTYPES`, so both
+    columns declared `TIMESTAMP` -- `ServerTimestamp` and `SourceTimestamp` -- are
+    handed to whatever converter is registered under that name. sqlite3's own adapter
+    stores a datetime as `isoformat(" ")`, which omits microseconds when they are
+    exactly zero; its own converter then splits the time part on `:` and calls `int()`
+    on what is left, so `'2026-09-13 06:00:58+00:00'` raises
+    `ValueError: invalid literal for int() with base 10: b'58+00'`. That exception is
+    not an `aiosqlite.Error`, so it escapes `read_node_history`'s own try/except and
+    every `HistoryRead` whose window contains the row fails -- permanently, and
+    identically on every retry. Measured at one row in 386,782 (§12), which is roughly
+    one 33 h authenticity run in three.
+
+    Fixed here on the read rather than by perturbing the write, for three reasons
+    measured rather than assumed:
+
+    * **Both columns are exposed, not just `ServerTimestamp`.** Constructing a row
+      with a whole-second `SourceTimestamp` raises the identical error, and
+      `SourceTimestamp` is simulated time -- the one field in this plant that may not
+      be nudged off a value to suit a storage layer. A fix that only moved the wall
+      clock would leave the half that matters.
+    * **What is stored is already unambiguous.** `'2026-09-13 06:00:58+00:00'` is
+      valid ISO-8601 carrying its offset; nothing is wrong with the row on disk. What
+      cannot read it is a converter Python deprecated in 3.12, which is where the
+      repair belongs.
+    * It costs nothing at write time and reads rows that are already written.
+
+    The value comes back timezone-aware, which sqlite3's converter did not do: it
+    discards the offset and returns a naive datetime that is really UTC. That
+    ambiguity is M1's F3 -- a naive continuation point cannot be compared against an
+    aware datetime -- and it stops existing here.
+
+    Idempotent, and safe to call more than once: registration replaces.
+    """
+    # Process-global, and deliberately so: the registry is where PARSE_DECLTYPES
+    # looks, there is no per-connection override, and this process opens no sqlite
+    # database but the historian's.
+    sqlite3.register_converter("timestamp", _timestamp_from_sqlite)
+    # The write half, which is not needed to fix anything today and is registered for
+    # what happens when it is. Python 3.12 deprecated both defaults; the day the
+    # adapter is removed, `save_node_value` binds a datetime sqlite3 no longer knows,
+    # raises "type 'datetime' is not supported" *inside* its own try/except, logs it,
+    # and every row goes missing with no visible error -- the identical failure
+    # `address_space.write_at` already carries a suppression for. It also takes a
+    # deprecation warning per written row out of the test output, which at the
+    # production depth was 812,000 of them.
+    sqlite3.register_adapter(datetime, _timestamp_to_sqlite)
 
 
 @dataclass
@@ -259,9 +332,8 @@ def _table_name(storage: HistorySQLite, node_id: ua.NodeId) -> str:
 
 async def _count_rows(storage: HistorySQLite, node_id: ua.NodeId) -> int:
     """A direct SQL COUNT(*) against the sqlite file HistorySQLite itself owns, not
-    read_raw_history(): counting rows needs no datetime comparison at all, so --
-    unlike paging *values* across a start/end boundary -- it never touches
-    read_node_history's timezone-naive continuation point."""
+    read_raw_history(): counting rows needs no datetime comparison and no decoding of
+    25 streams' worth of values to arrive at one integer per stream."""
     table = _table_name(storage, node_id)
     async with storage._db.execute(f'SELECT COUNT(*) FROM "{table}"') as cursor:
         row = await cursor.fetchone()
@@ -316,6 +388,8 @@ async def attach_historian(
     catch-up will fill -- one takt before `clock.history_start` is what `server.main`
     passes.
     """
+    # Before the storage exists, so no query can run against sqlite3's own converter.
+    register_timestamp_converter()
     storage = HistorySQLite(str(db_path), max_history_data_response_size=page_size)
 
     # HistoryManager.init() already ran inside Server.init() against the default
