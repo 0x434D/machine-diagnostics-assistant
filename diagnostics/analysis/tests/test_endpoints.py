@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import pytest
+from analysis.config import Settings
 from fastapi.testclient import TestClient
+
+from tests.conftest import BOOSTED_SCORE, CURVE_SAMPLES, DEFECT_CLASSES
 
 WINDOW = {"from": "2026-09-12T01:00:00Z", "to": "2026-09-12T02:00:00Z"}
 
@@ -14,7 +17,55 @@ def test_stats_window_is_closed_and_counts_are_exact(client: TestClient) -> None
 
     assert body["total"] == 600  # one hour at 6 s takt
     assert body["rejects"] == 30  # the fixture's every-20th-part, not the plant's rate
-    assert sum(d["count"] for d in body["by_defect_class"]) == 30
+
+
+@pytest.mark.usefixtures("seeded_db")
+def test_the_breakdown_reads_the_score_vector_rather_than_the_dead_scalar(
+    client: TestClient,
+) -> None:
+    """The endpoint answered `by_defect_class: []` for a whole milestone with no error.
+
+    It grouped by `inspection_results.defect_class`, which the widened inspection event
+    stopped filling, so the filter that excluded nulls excluded every row. The counts below
+    are what a query over `defect_classes`/`confidences` produces and nothing else does:
+    the fixture spreads its 30 rejects five to a class, and gives one of them a second
+    class the model also believes it saw — so a breakdown that collapsed to one class per
+    part would report 5 for `scratch` instead of 6, and the old query reports nothing at all.
+    """
+    body = client.get("/inspection/stats", params=WINDOW).json()
+
+    counts = {row["defect_class"]: row["count"] for row in body["by_defect_class"]}
+    assert counts == {
+        "gap": 5,
+        "crack": 5,
+        "misalignment": 5,
+        "missing_part": 5,
+        "scratch": 6,
+        "contamination": 5,
+    }
+    # 31 against 30 rejects. §3.4's scores are independent and do not sum to 1, so the
+    # breakdown is not a partition and must not be read as one.
+    assert sum(counts.values()) == 31 > body["rejects"]
+
+
+@pytest.mark.usefixtures("seeded_db")
+def test_the_breakdown_says_which_threshold_it_counted_at(client: TestClient) -> None:
+    """A count whose meaning lives in a config file is a number the agent would cite as
+    if it meant something else."""
+    body = client.get("/inspection/stats", params=WINDOW).json()
+
+    assert body["defect_class_threshold"] == Settings().defect_class_threshold
+    assert body["defect_class_threshold"] < BOOSTED_SCORE
+
+
+@pytest.mark.usefixtures("seeded_db")
+def test_a_good_parts_low_scores_are_not_defects_it_has(client: TestClient) -> None:
+    """A good part carries all six classes scored low, not an absent vector (§3.4). Every
+    one of those rows is in the window, so a breakdown that counted classes rather than
+    classes above the threshold would report 600-odd of each."""
+    body = client.get("/inspection/stats", params=WINDOW).json()
+
+    assert all(row["count"] < 10 for row in body["by_defect_class"])
 
 
 @pytest.mark.usefixtures("seeded_db")
@@ -52,13 +103,69 @@ def test_a_window_with_no_gap_says_so_rather_than_omitting_coverage(
 
 
 @pytest.mark.usefixtures("seeded_db")
-def test_part_lookup_reads_the_per_part_record_directly(client: TestClient) -> None:
-    """§3.4a: the per-part record is authoritative and is never reconstructed by joining the
-    time series on "when was this part at S3"."""
-    response = client.get("/parts/A-00000007")
+def test_a_serial_answers_with_every_section_of_its_history(
+    client: TestClient,
+) -> None:
+    """§14's line, as one response: genealogy, what each station recorded, the verdict and
+    the disposition."""
+    body = client.get("/parts/A-00000007").json()
 
-    assert response.status_code == 200
-    assert response.json()["assembly_serial"] == "A-00000007"
+    assert body["assembly_serial"] == "A-00000007"
+    assert body["created_at"] is not None
+    assert body["carrier_id"] is not None
+    assert [row["component_serial"] for row in body["genealogy"]] == [
+        "C1-00000007",
+        "C2-00000007",
+    ]
+    assert {row["signal"] for row in body["process_values"]} == {
+        "PeakForce",
+        "JoiningDistance",
+    }
+    assert len(body["process_curves"][0]["samples"]) == CURVE_SAMPLES
+    assert body["inspection"]["result"] == "reject"
+    assert body["disposition"]["disposition"] == "reject"
+
+
+@pytest.mark.usefixtures("seeded_db")
+def test_the_genealogy_carries_the_supplier_lot_each_component_came_from(
+    client: TestClient,
+) -> None:
+    """§3.5 scenario 7 resolves to a component lot, so the lot has to be reachable from the
+    part rather than from a second query the agent has to know to make.
+
+    The two parts below differ only in when they were made: lane 1 changed lot halfway
+    through the window, and lane 2 did not.
+    """
+    early = client.get("/parts/A-00000007").json()["genealogy"]
+    late = client.get("/parts/A-00000407").json()["genealogy"]
+
+    assert [row["lot_code"] for row in early] == ["LOT-A1", "LOT-B1"]
+    assert [row["lot_code"] for row in late] == ["LOT-A2", "LOT-B1"]
+    assert {row["supplier"] for row in early} == {"Acme", "Borealis"}
+
+
+@pytest.mark.usefixtures("seeded_db")
+def test_the_verdict_carries_every_class_the_classifier_scored(
+    client: TestClient,
+) -> None:
+    """Not the one that won. §3.5's scenarios 4 and 5 each turn on two classes being high
+    on one part, and scenario 6 on all six falling together."""
+    inspection = client.get("/parts/A-00000007").json()["inspection"]
+
+    assert inspection["defect_classes"] == list(DEFECT_CLASSES)
+    assert len(inspection["confidences"]) == len(DEFECT_CLASSES)
+    high = [
+        name
+        for name, score in zip(
+            inspection["defect_classes"], inspection["confidences"], strict=True
+        )
+        if score >= Settings().defect_class_threshold
+    ]
+    assert high == ["gap", "scratch"]
+    # §3.4: six independent scores, not a distribution. The measured cost of reading them
+    # as one was a good part reported as 27 % confident and ~30 % misaligned, so a
+    # normalisation introduced anywhere between the classifier and here has to fail.
+    assert sum(inspection["confidences"]) != pytest.approx(1.0)
 
 
 @pytest.mark.usefixtures("seeded_db")
@@ -69,8 +176,8 @@ def test_unknown_serial_is_404_not_an_empty_object(client: TestClient) -> None:
 
 @pytest.mark.usefixtures("seeded_db")
 def test_only_rejects_expose_an_image_url(client: TestClient) -> None:
-    assert client.get("/parts/A-00000007").json()["image_url"] is not None
-    assert client.get("/parts/A-00000006").json()["image_url"] is None
+    assert client.get("/parts/A-00000007").json()["inspection"]["image_url"] is not None
+    assert client.get("/parts/A-00000006").json()["inspection"]["image_url"] is None
 
 
 @pytest.mark.usefixtures("seeded_db")

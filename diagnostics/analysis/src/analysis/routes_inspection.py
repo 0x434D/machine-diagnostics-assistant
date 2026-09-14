@@ -26,7 +26,17 @@ def inspection_stats(
     to: Annotated[datetime, Query()],
     settings: Annotated[Settings, Depends(settings_dependency)],
 ) -> InspectionStats:
-    """Counts over a closed window, with the gaps that make them incomplete."""
+    """Counts over a closed window, with the gaps that make them incomplete.
+
+    **The breakdown reads §3.4's score vector, not a scalar class.** It grouped by
+    `inspection_results.defect_class` until M2b Task 7, and by then nothing filled that
+    column: the plant sends `DefectClasses`, the gateway's select clause named the old
+    scalar, asyncua maps a select clause it cannot resolve to `Variant(None)` rather than
+    erroring, the writer resolves that to `DBNull`, and `defect_class IS NOT NULL` then
+    emptied the group-by. No exception and no 500 — `by_defect_class: []` beside a correct
+    `total` and `rejects`, which is a silently empty answer to "which defects are we
+    seeing" and the exact failure §1 exists to prevent.
+    """
     with connection(settings) as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT count(*), count(*) FILTER (WHERE result = 'reject') "
@@ -35,11 +45,26 @@ def inspection_stats(
         )
         total, rejects = cur.fetchone() or (0, 0)
 
+        # No filter on `result`, and none is needed: `inspection.classifier` boosts a class
+        # only where the model believes it saw that defect, and any part with a boosted
+        # class is a reject. So the threshold is the filter, and a part that scored high on
+        # a class without being rejected would be a thing worth seeing rather than a thing
+        # to hide.
+        #
+        # unnest of the two arrays together, so a class stays paired with its own score.
+        # They are parallel by construction — the plant fills both from one dict and the
+        # gateway writes both from one event — which is what makes the pairing safe here
+        # rather than an assumption this query makes about them.
         cur.execute(
-            "SELECT defect_class, count(*) FROM inspection_results "
-            "WHERE source_ts >= %s AND source_ts < %s AND defect_class IS NOT NULL "
-            "GROUP BY defect_class ORDER BY count(*) DESC",
-            (from_, to),
+            "SELECT scored.defect_class, count(*) "
+            "FROM inspection_results r, "
+            "     unnest(r.defect_classes, r.confidences) AS scored(defect_class, score) "
+            "WHERE r.source_ts >= %s AND r.source_ts < %s AND scored.score >= %s "
+            "GROUP BY scored.defect_class "
+            # The class name breaks ties, so two classes on the same count come back in a
+            # stable order rather than in whichever order the plan happened to produce.
+            "ORDER BY count(*) DESC, scored.defect_class",
+            (from_, to, settings.defect_class_threshold),
         )
         by_class = [
             DefectClassCount(defect_class=row[0], count=row[1])
@@ -70,6 +95,7 @@ def inspection_stats(
         total=total,
         rejects=rejects,
         by_defect_class=by_class,
+        defect_class_threshold=settings.defect_class_threshold,
         sample_serials=samples,
         coverage=Coverage(gaps=gaps),
     )
