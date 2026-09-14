@@ -23,15 +23,23 @@ from simulator.config import Settings
 LANES: Final[tuple[int, ...]] = (1, 2)
 """§4.1's two feeder lanes, in the order S1 loads them.
 
-A closed set like the station codes rather than a setting: each lane is four nodes in
-the address space (`LaneFill_n`, `Lane{n}_Lot`) and a column in §5.2, so a third lane
-is a tree change and a migration, not a number to turn up. Ordered, because a
+A closed set like the station codes rather than a setting: a lane is two nodes in the
+address space (`LaneFill_n` and `Lane{n}_Lot`, so four across the two) and a column in
+§5.2, so a third lane is a tree change and a migration, not a number to turn up. Ordered, because a
 component's position in `Assembly.components` is §5.2's `genealogy.position`.
 """
 
 _LOT_NUMBER_CEILING: Final = 9999
-"""The largest number `L-{n:04d}` can spell. §3.5 scenario 7 names `L-4471`, and the
-shape is what lets a scenario name a lot it has not seen generated."""
+"""The largest number `L-{n:04d}` can spell.
+
+The *shape* is §3.5 scenario 7's `L-4471`; the codes themselves are not. Where the
+sequence starts is derived from the seed, so at the shipped 20260912 a run issues
+`L-2305` upwards and the literal `L-4471` is never reached at all. **A scenario must
+name the lot it wants by lane and position in that lane's sequence -- `lots(lane)[0]`,
+say -- and read the code back off it.** A scenario that hard-codes `L-4471` contaminates
+a lot that does not exist, injects nothing, and scores zero against a containment list
+it never touched.
+"""
 
 
 def component_serial(lane: int, index: int) -> str:
@@ -142,16 +150,22 @@ class LotSchedule:
     def draw(self, lane: int, at: datetime) -> Component:
         """One component off `lane`'s current lot, rolling over when it is exhausted.
 
-        Raises ValueError for a lane §4.1 does not have, and for a draw earlier than
-        this lane's previous one -- simulated time only moves forward, and a lot
-        window that ran backwards would make a component's lot ambiguous at exactly
-        the instant a containment query needs it.
+        Raises ValueError for a lane §4.1 does not have, and for a draw at or before
+        this lane's previous one -- simulated time only moves forward per lane, and a
+        lot window that ran backwards, or two components off one lane at one instant,
+        would make a component's lot ambiguous at exactly the instant a containment
+        query needs it. The two lanes do draw at the same instant, which is what
+        `load_carrier` does.
         """
         self._check_lane(lane)
         previous = self._last_draw.get(lane)
-        if previous is not None and at < previous:
+        if previous is not None and at <= previous:
             raise ValueError(
-                f"lane {lane} drew at {at}, before its previous draw at {previous}"
+                f"lane {lane} drew at {at}, at or before its previous draw at "
+                f"{previous}: two components off one lane at one instant straddling a "
+                "rollover belong to different lots, and `lot_at` can only return the "
+                "second -- so the component's own record and the schedule disagree "
+                "about exactly the fact a containment query asks for"
             )
         self._last_draw[lane] = at
 

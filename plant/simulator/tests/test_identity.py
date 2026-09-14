@@ -110,6 +110,22 @@ def test_the_lot_a_component_came_from_is_recoverable_from_its_read_time() -> No
         assert lots.lot_at(1, at).lot_code == component.lot_code
 
 
+def test_one_lane_cannot_draw_twice_at_the_same_instant() -> None:
+    """Two components off one lane at one instant can straddle a rollover, and then the
+    first component records the old lot while `lot_at` answers with the new one -- the
+    exact ambiguity the lot windows exist to prevent. Not reachable at today's takt,
+    which is why it is a guard rather than a comment."""
+    lots = schedule(Settings(lot_size=2))
+    lots.draw(1, T0)
+    lots.draw(1, T0 + TAKT)
+    with pytest.raises(ValueError, match="at or before its previous draw"):
+        lots.draw(1, T0 + TAKT)
+
+    # Both lanes at one instant is the normal case, and stays legal.
+    both = schedule()
+    assert {both.draw(lane, T0).lane for lane in LANES} == set(LANES)
+
+
 def test_an_assembly_records_the_components_it_was_built_from() -> None:
     """As-built, at the instant of assembly. §3.4a: the association is known exactly
     at the instant of production and only approximately afterwards."""
@@ -171,14 +187,17 @@ def _run(lots: LotSchedule) -> list[tuple[str, str, str]]:
 
 _PROBE = """
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from simulator.config import Settings
 from simulator.identity import LANES, LotSchedule, load_carrier
 
-lots = LotSchedule(Settings(), datetime(2026, 9, 14, 6, tzinfo=UTC))
 at = datetime(2026, 9, 14, 6, tzinfo=UTC)
-built = [load_carrier(lots, i, 0, at).components for i in range(3)]
+lots = LotSchedule(Settings(), at)
+built = [
+    load_carrier(lots, i, 0, at + i * timedelta(seconds=6)).components
+    for i in range(3)
+]
 print(json.dumps([
     [(c.serial, c.lot_code) for parts in built for c in parts],
     [lots.current(lane).supplier for lane in LANES],
