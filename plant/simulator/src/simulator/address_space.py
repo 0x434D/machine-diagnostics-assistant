@@ -112,6 +112,14 @@ INSPECTION_STATION = "S3_Inspection"
 """The one station §4.1 gives an event type in M2a. The other four event types in
 §4.1's tree arrive with the data they carry, in M2b."""
 
+BUFFER_LEVEL_TYPE = ua.VariantType.UInt32
+"""A buffer holds a whole number of carriers and can never hold fewer than none.
+
+Named because a buffer's `Level` is declared in one place and written in another,
+and the station signals' types travel with them in `StationNodeSet.types` -- this is
+the one variant type that would otherwise be a literal in two spots, free to drift
+into a node declared UInt32 and written as something else."""
+
 _INITIAL_BY_TYPE: dict[ua.VariantType, float | str] = {
     ua.VariantType.Double: 0.0,
     ua.VariantType.UInt32: 0,
@@ -236,7 +244,7 @@ class BufferNodeSet:
 
     async def write_level(self, at: datetime, level: int) -> None:
         """Publish this buffer's fill at simulated instant `at`."""
-        await _write_at(self.level, ua.VariantType.UInt32, at, level)
+        await _write_at(self.level, BUFFER_LEVEL_TYPE, at, level)
 
 
 @dataclass(frozen=True)
@@ -348,42 +356,51 @@ async def build_address_space(
             # Node internally and satisfies mypy strict either way.
             event_gen = await server.get_event_generator(event_type, station.nodeid)
 
-        stations[code] = StationNodeSet(code, station, historised, types, event_gen)
+        stations[code] = StationNodeSet(
+            code=code,
+            node=station,
+            historised=historised,
+            types=types,
+            event_gen=event_gen,
+        )
 
     buffers_folder = await line.add_object(idx, "Buffers")
     buffers: dict[str, BufferNodeSet] = {}
     for buffer_id, upstream, downstream in BUFFERS:
         buffer = await buffers_folder.add_object(idx, buffer_id)
+        # Keyword arguments throughout: these are six same-typed Node slots filled by
+        # inline awaits, where transposing two add_variable calls binds Capacity to
+        # UpstreamStation and type-checks perfectly.
         buffers[buffer_id] = BufferNodeSet(
-            buffer_id,
-            buffer,
-            await buffer.add_variable(idx, "Level", 0, ua.VariantType.UInt32),
+            buffer_id=buffer_id,
+            node=buffer,
+            level=await buffer.add_variable(idx, "Level", 0, BUFFER_LEVEL_TYPE),
             # The static three. Written here by add_variable's own initial value and
             # never again, which is what makes them readable on connect without the
             # plant running -- §4.1's "topology is discovered, not configured".
-            await buffer.add_variable(
+            capacity=await buffer.add_variable(
                 idx, "Capacity", buffer_capacity, ua.VariantType.UInt32
             ),
-            await buffer.add_variable(
+            upstream=await buffer.add_variable(
                 idx, "UpstreamStation", upstream, ua.VariantType.String
             ),
-            await buffer.add_variable(
+            downstream=await buffer.add_variable(
                 idx, "DownstreamStation", downstream, ua.VariantType.String
             ),
         )
 
     return AddressSpace(
-        idx,
-        line,
-        clock,
-        clock_time,
-        clock_phase,
-        clock_speed,
-        stations_folder,
-        buffers_folder,
-        stations,
-        buffers,
-        event_type,
+        idx=idx,
+        line=line,
+        clock=clock,
+        clock_time=clock_time,
+        clock_phase=clock_phase,
+        clock_speed=clock_speed,
+        stations_folder=stations_folder,
+        buffers_folder=buffers_folder,
+        stations=stations,
+        buffers=buffers,
+        event_type=event_type,
     )
 
 

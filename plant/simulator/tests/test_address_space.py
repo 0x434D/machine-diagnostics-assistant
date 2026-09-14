@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 import pytest_asyncio
+from asyncua import Node, Server
 from conftest import new_server
 from simulator.address_space import AddressSpace, build_address_space, publish_clock
 from simulator.clock import Phase, SimulatedClock
@@ -11,17 +12,57 @@ from simulator.config import ClockConfig, Settings
 from simulator.events import EVENT_FIELDS
 from simulator.historian import Ledger, attach_historian
 
+# §4.1's tree as a reader of the spec would write it down, kept apart from the tables
+# that build it: asserting the served tree against address_space.STATION_SIGNALS would
+# compare the code to itself and pass through any edit to it.
+_STATION_VARIABLES = {
+    "S1_Feeding": {
+        "State",
+        "StateReason",
+        "TaktTime",
+        "LaneFill_1",
+        "LaneFill_2",
+        "PartCount",
+    },
+    "S2_Joining": {
+        "State",
+        "StateReason",
+        "TaktTime",
+        "JoiningForcePeak",
+        "JoiningDistance",
+        "PartCount",
+    },
+    "S3_Inspection": {"State", "StateReason", "TaktTime", "PartCount"},
+    "S4_Outfeed": {
+        "State",
+        "StateReason",
+        "TaktTime",
+        "OutfeedFill",
+        "GoodCount",
+        "RejectCount",
+    },
+}
 
-async def _build() -> AddressSpace:
+_BUFFER_VARIABLES = {"Level", "Capacity", "UpstreamStation", "DownstreamStation"}
+
+
+async def _build() -> tuple[Server, AddressSpace]:
     server = new_server()
     await server.init()
     idx = await server.register_namespace("http://machine-agent/plant")
-    return await build_address_space(server, idx, Settings().buffer_capacity)
+    return server, await build_address_space(server, idx, Settings().buffer_capacity)
+
+
+async def _children(node: Node) -> set[str]:
+    return {
+        (await child.read_browse_name()).Name for child in await node.get_children()
+    }
 
 
 @pytest_asyncio.fixture
 async def space() -> AddressSpace:
-    return await _build()
+    _server, built = await _build()
+    return built
 
 
 @pytest.mark.asyncio
@@ -98,23 +139,72 @@ async def test_the_buffers_name_stations_that_exist(space: AddressSpace) -> None
 async def test_every_station_code_has_its_own_configured_takt(
     space: AddressSpace,
 ) -> None:
-    """§3.1: the stations do NOT share one takt, and `Station._nominal_takt` looks
-    the number up by `StationNodes.code` -- these browse names. The lookup falls back
-    to the line-wide takt for a station the configuration does not name, deliberately
-    and silently (a station handed a takt of zero would wedge the queue), so a code
-    that drifts from `station_takt_seconds`' keys produces a perfectly balanced line
-    with no error anywhere: every buffer oscillates between empty and one, and buffer
-    capacity bounds nothing. This is the only place both spellings are in scope."""
+    """§3.1: the stations do NOT share one takt, and `Station._nominal_takt` looks the
+    number up by `StationNodes.code` -- these browse names. `Station.__init__` now
+    refuses a station the settings do not name, so a drift between the two spellings
+    is loud rather than a silently balanced line; this pins the *shipped defaults*
+    against §4.1's codes, so the plant boots without needing the environment to
+    correct it. `test_stations` covers the refusal itself."""
     assert set(space.stations) <= set(Settings().station_takt_seconds)
 
 
 @pytest.mark.asyncio
 async def test_topology_is_browsable_under_line_stations() -> None:
-    """§4.1: the gateway discovers the line's topology by browsing, never by config."""
-    space = await _build()
-    stations = space.stations_folder
+    """§4.1: the gateway discovers the line's topology by browsing, never by config.
+
+    Walked from Objects by browse name, not from `space.stations_folder`: an
+    in-process handle proves the object exists, not that the path a gateway actually
+    walks reaches it.
+    """
+    server, space = await _build()
+    line = await server.nodes.objects.get_child([f"{space.idx}:Line"])
+    stations = await line.get_child([f"{space.idx}:Stations"])
+
     found = [(await s.read_browse_name()).Name for s in await stations.get_children()]
     assert found == ["S1_Feeding", "S2_Joining", "S3_Inspection", "S4_Outfeed"]
+
+
+@pytest.mark.asyncio
+async def test_the_served_tree_browses_to_twenty_five_streams_and_nine_static() -> None:
+    """§4.1's count, read off the server a gateway meets rather than off the dataclass
+    that built it.
+
+    `test_the_tree_carries_exactly_twenty_five_historised_streams` sums
+    `len(nodes.historised)`, and every assertion keyed on `historised` shares that
+    blind spot: add `Lane1_Lot` to S1 as a variable that is simply left out of
+    `historised` and all of them stay green, while a gateway browsing S1 sees seven
+    variables and §13's "nothing in a milestone is faked" is broken. This walks the
+    tree instead, so what is asserted is what is served.
+
+    34 variables: 25 historised streams (every station variable, plus one `Level` per
+    buffer) and nine static topology nodes read on connect. §4.1's own total is 37 --
+    the three missing are `Lane1_Lot`, `Lane2_Lot` and `CurrentAssemblySerial`, which
+    M2b brings with the data that makes them change.
+    """
+    server, space = await _build()
+    line = await server.nodes.objects.get_child([f"{space.idx}:Line"])
+
+    stations = await line.get_child([f"{space.idx}:Stations"])
+    served_stations = {
+        (await station.read_browse_name()).Name: await _children(station)
+        for station in await stations.get_children()
+    }
+    assert served_stations == _STATION_VARIABLES
+
+    buffers = await line.get_child([f"{space.idx}:Buffers"])
+    served_buffers = {
+        (await buffer.read_browse_name()).Name: await _children(buffer)
+        for buffer in await buffers.get_children()
+    }
+    assert served_buffers == dict.fromkeys(("B1_2", "B2_3", "B3_4"), _BUFFER_VARIABLES)
+
+    # Only Level is historised on a buffer; Capacity, UpstreamStation and
+    # DownstreamStation are the static nine.
+    historised = sum(len(names) for names in served_stations.values())
+    historised += len(served_buffers)
+    static = sum(len(names) - 1 for names in served_buffers.values())
+    assert (historised, static) == (25, 9)
+    assert historised + static == 34
 
 
 @pytest.mark.asyncio
@@ -194,27 +284,28 @@ async def test_clock_is_a_sibling_of_stations_with_exactly_three_variables() -> 
     either, since it describes the line's own timebase rather than something a
     station measures -- carrying exactly SimulatedTime, Phase and Speed, browsable by
     the same path a gateway walks to find Stations."""
-    space = await _build()
+    server, space = await _build()
+    line = await server.nodes.objects.get_child([f"{space.idx}:Line"])
 
-    siblings = {
-        (await c.read_browse_name()).Name for c in await space.line.get_children()
-    }
-    assert siblings == {"Clock", "Stations", "Buffers"}
+    assert await _children(line) == {"Clock", "Stations", "Buffers"}
 
-    names = {
-        (await c.read_browse_name()).Name for c in await space.clock.get_children()
-    }
-    assert names == {"SimulatedTime", "Phase", "Speed"}
+    clock = await line.get_child([f"{space.idx}:Clock"])
+    assert await _children(clock) == {"SimulatedTime", "Phase", "Speed"}
 
 
 @pytest.mark.asyncio
-async def test_clock_nodes_track_simulated_clock_through_both_phases(
-    space: AddressSpace,
-) -> None:
+async def test_clock_nodes_track_simulated_clock_through_both_phases() -> None:
     """Phase and Speed must agree with SimulatedClock.phase/catchup_speed exactly --
     not a second, independent notion of either computed here (see
     address_space.publish_clock and its _clock_snapshot helper). Speed is exactly
-    1.0 once live, never the configured catchup_speed (§3.2)."""
+    1.0 once live, never the configured catchup_speed (§3.2).
+
+    Runs against a *started* server, not the bare address space: publish_clock's only
+    caller (server.main) runs it inside `async with server`, and a node write behaves
+    differently there -- the subscription machinery that a historian or a client hangs
+    off is live. This is the one test that covers it.
+    """
+    server, space = await _build()
     boot = datetime(2026, 9, 12, 12, 0, tzinfo=UTC)
     wall = [boot]
     clock = SimulatedClock(
@@ -222,31 +313,31 @@ async def test_clock_nodes_track_simulated_clock_through_both_phases(
         wall_fn=lambda: wall[0],
     )
 
-    task = asyncio.create_task(publish_clock(space, clock, interval_seconds=0.01))
-    try:
-        await asyncio.sleep(0.05)
-        assert await space.clock_phase.read_value() == Phase.CATCHUP.value
-        assert await space.clock_speed.read_value() == 600.0
+    async with server:
+        task = asyncio.create_task(publish_clock(space, clock, interval_seconds=0.01))
+        try:
+            await asyncio.sleep(0.05)
+            assert await space.clock_phase.read_value() == Phase.CATCHUP.value
+            assert await space.clock_speed.read_value() == 600.0
 
-        wall[0] = boot + clock.catchup_duration + timedelta(seconds=1)
-        await asyncio.sleep(0.05)
-        assert await space.clock_phase.read_value() == Phase.LIVE.value
-        # Exactly 1.0, not approximately -- the same pass condition
-        # test_clock.py already pins for SimulatedClock.now() itself.
-        assert await space.clock_speed.read_value() == 1.0
-    finally:
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+            wall[0] = boot + clock.catchup_duration + timedelta(seconds=1)
+            await asyncio.sleep(0.05)
+            assert await space.clock_phase.read_value() == Phase.LIVE.value
+            # Exactly 1.0, not approximately -- the same pass condition
+            # test_clock.py already pins for SimulatedClock.now() itself.
+            assert await space.clock_speed.read_value() == 1.0
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
 
 
 @pytest.mark.asyncio
-async def test_simulated_time_is_utc_aware_and_tracks_clock_now(
-    space: AddressSpace,
-) -> None:
+async def test_simulated_time_is_utc_aware_and_tracks_clock_now() -> None:
     """§4.1: SimulatedTime is UTC-aware and matches SimulatedClock.now() to within
     the publish cadence -- the node and the clock it mirrors must never read as two
     different clocks."""
+    server, space = await _build()
     # A negligible history depth, not the injected fake wall_fn test_clock.py uses:
     # this test wants the real wall clock actually advancing, so "within the update
     # interval" is a real bound rather than a tautology against a frozen one.
@@ -255,18 +346,21 @@ async def test_simulated_time_is_utc_aware_and_tracks_clock_now(
     )
     interval = 0.05
 
-    task = asyncio.create_task(publish_clock(space, clock, interval_seconds=interval))
-    try:
-        await asyncio.sleep(interval * 3)
-        simulated_time = await space.clock_time.read_value()
-        assert simulated_time.tzinfo is not None
-        assert simulated_time.utcoffset() == timedelta(0)
-        drift = abs((clock.now() - simulated_time).total_seconds())
-        assert drift <= interval * 2
-    finally:
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+    async with server:
+        task = asyncio.create_task(
+            publish_clock(space, clock, interval_seconds=interval)
+        )
+        try:
+            await asyncio.sleep(interval * 3)
+            simulated_time = await space.clock_time.read_value()
+            assert simulated_time.tzinfo is not None
+            assert simulated_time.utcoffset() == timedelta(0)
+            drift = abs((clock.now() - simulated_time).total_seconds())
+            assert drift <= interval * 2
+        finally:
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
 
 
 @pytest.mark.asyncio
@@ -280,10 +374,7 @@ async def test_clock_nodes_are_not_historized(tmp_path: Path) -> None:
     Task 7 raises that to §4.1's 25 when it deletes station_s3.py -- so the clock's
     absence is what this asserts, not the size of the set.
     """
-    server = new_server()
-    await server.init()
-    idx = await server.register_namespace("http://machine-agent/plant")
-    space = await build_address_space(server, idx, Settings().buffer_capacity)
+    server, space = await _build()
 
     ledger = Ledger()
     await attach_historian(

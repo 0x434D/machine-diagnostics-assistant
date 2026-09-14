@@ -197,6 +197,22 @@ def test_each_station_takes_its_own_nominal_takt() -> None:
     assert means["S3_Inspection"] == pytest.approx(means["S4_Outfeed"], abs=0.05)
 
 
+def test_a_station_the_settings_do_not_name_is_refused() -> None:
+    """The station set is closed -- §4.1 fixes four and address_space.STATION_SIGNALS
+    enumerates them -- so a code the configuration does not name is an operator error,
+    not a station to run at the line-wide default.
+
+    This is the mechanism, not the instance. The shipped defaults were keyed "S1".."S4"
+    while StationNodes.code carries "S1_Feeding"..; fixing the defaults does not stop
+    PLANT_STATION_TAKT_SECONDS reintroducing exactly that at runtime, and a fallback
+    would absorb it into a perfectly balanced line where every buffer oscillates
+    between empty and one and §3.1's propagation claim quietly stops being true.
+    """
+    settings = Settings(station_takt_seconds={"S1": 5.7})
+    with pytest.raises(ValueError, match="no takt configured for station"):
+        FeedingStation(RecordingNodes("S1_Feeding"), settings, seed=1)
+
+
 _DRAW_PROBE = """
 from simulator.config import Settings
 from simulator.stations import FeedingStation

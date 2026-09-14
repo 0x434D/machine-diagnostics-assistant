@@ -96,6 +96,19 @@ class Station(ABC):
     existing at all (CLAUDE.md)."""
 
     def __init__(self, nodes: StationNodes, settings: Settings, seed: int) -> None:
+        """Raises ValueError if `settings` names no takt for this station's code.
+
+        Checked here rather than at the first cycle so that a misconfigured
+        deployment fails while the line is being built -- which is boot -- instead of
+        one takt into generation, with a run already in flight.
+        """
+        if nodes.code not in settings.station_takt_seconds:
+            raise ValueError(
+                f"no takt configured for station {nodes.code!r}: "
+                f"station_takt_seconds names {sorted(settings.station_takt_seconds)}. "
+                "§4.1 fixes the set of stations, so an unnamed one is a "
+                "misconfiguration, not a station to run at the line-wide default"
+            )
         self._nodes = nodes
         self._settings = settings
         # Per-station RNG, derived from the master seed and the station code rather
@@ -115,13 +128,24 @@ class Station(ABC):
         return self._nodes.code
 
     def _nominal_takt(self) -> float:
-        """Per station, not one line-wide number (§3.1). Falls back to takt_seconds
-        for a station the configuration does not name -- the same fail-open choice
-        Task 9's signal policy makes, and for the same reason: a station handed a takt
-        of zero because nobody listed it would wedge the queue."""
-        return self._settings.station_takt_seconds.get(
-            self.code, self._settings.takt_seconds
-        )
+        """Per station, not one line-wide number (§3.1).
+
+        Raises KeyError for a station the configuration does not name -- __init__
+        has already refused that case, so reaching it means the settings changed
+        underneath a running line.
+
+        This deliberately does *not* fail open to `takt_seconds`. The station set is
+        **closed**: §4.1 fixes four stations and `address_space.STATION_SIGNALS`
+        enumerates them, so a missing key is an operator error rather than an
+        expected case. (Task 9's signal policy does fail open, and correctly -- its
+        signal set is open and discovered, where losing an unknown stream is the
+        worse failure. The two are not the same situation.) Falling back here is
+        silent and produces a perfectly balanced line: every buffer oscillates
+        between empty and one, buffer capacity bounds nothing, and §3.1's whole
+        propagation claim quietly stops being true. `line.Line` already keys its
+        state machines on this same code space with a raising lookup.
+        """
+        return self._settings.station_takt_seconds[self.code]
 
     def next_takt(self) -> float:
         """Additive Gaussian jitter, resampled until distinct from the previous value.

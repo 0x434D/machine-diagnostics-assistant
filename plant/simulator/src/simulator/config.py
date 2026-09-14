@@ -94,11 +94,10 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     #
     # Keyed by §4.1's station browse names, because that is what `StationNodes.code`
     # carries and what `Station._nominal_takt` looks this up with. A short "S1" here
-    # would miss, and the miss is silent by design (the lookup falls back to
-    # takt_seconds rather than to zero, which would wedge the queue) -- producing a
-    # perfectly balanced line and the bounded-nothing buffers the paragraph above
-    # rules out, with no error anywhere. test_address_space pins the two spellings
-    # together.
+    # misses, and a miss is the balanced line the paragraph above rules out -- so
+    # `Station.__init__` refuses a station this does not name rather than falling back
+    # to takt_seconds. That applies to PLANT_STATION_TAKT_SECONDS too, which is the
+    # spelling a deployment can still get wrong after the default is right.
     #
     # Starting values, confirmed by Task 12's measurement rather than assumed.
     station_takt_seconds: dict[str, float] = {
