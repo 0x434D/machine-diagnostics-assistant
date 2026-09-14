@@ -19,6 +19,8 @@ from pathlib import Path
 import psycopg
 import pytest
 
+from tests.conftest import CURVE_SAMPLES
+
 REPO = Path(__file__).resolve().parents[3]
 PLANT_CONTAINER = "machine-agent-plant-line-simulator-1"
 GATEWAY_IMAGE = "machine-agent/edge-gateway:dev"
@@ -33,6 +35,18 @@ file: a proof run against a different signal policy is a proof about a different
 
 STATUS = "http://localhost:18082/status"
 DSN = "postgresql://postgres:auth@localhost:15434/postgres"
+
+LOT_CODE_SHAPE = "^L-[0-9]{4}$"
+SUPPLIER_SHAPE = "^SUP-[0-9]{2}$"
+"""`simulator.identity.LotSchedule._load`'s two spellings, as Postgres regexes.
+
+Shapes rather than presence, because presence is what a swap survives. §4.1 declares
+`LotCode` and `Supplier` next to each other and both `String`, the field order is the wire
+format, and the plant and the gateway state that order in separate files in separate
+languages -- so exchanging the two decodes without an error, writes without an error, and
+reconciles against `raw_events` without an error, because `raw_events` is written verbatim
+before any of this is derived. Two regexes that cannot both match are the only thing in
+this repository that notices."""
 
 pytestmark = pytest.mark.authenticity
 
@@ -262,7 +276,13 @@ def test_history_read_closes_an_upstream_outage() -> None:
 @pytest.mark.usefixtures("stack")
 def test_the_diagnostics_stack_answers_with_the_plant_shut_down() -> None:
     """§1 row 4, and §2.1's hard requirement. The proof that decides whether the two-stack
-    split is real or decorative: with the plant gone, history still answers."""
+    split is real or decorative: with the plant gone, history still answers.
+
+    M2b's identity chain is asserted here rather than in a test of its own because this is
+    the only thing in the repository that runs a real gateway against a real plant, and it
+    is therefore the only place the two stacks' independent statements of §4.1 are held
+    against each other at all. `make check` cannot: it has no plant.
+    """
     _sh("docker", "stop", PLANT_CONTAINER)
     try:
         assert _count("inspection_results") > 0
@@ -270,9 +290,43 @@ def test_the_diagnostics_stack_answers_with_the_plant_shut_down() -> None:
             row = conn.execute(
                 "SELECT count(*), min(source_ts), max(source_ts) FROM inspection_results"
             ).fetchone()
+            chain = conn.execute(
+                """
+                SELECT (SELECT count(*) FROM genealogy),
+                       (SELECT count(*) FROM components WHERE lot_id IS NOT NULL),
+                       (SELECT count(*) FROM components
+                         JOIN component_lots ON component_lots.id = components.lot_id
+                         WHERE lot_code !~ %s OR supplier !~ %s),
+                       (SELECT count(*) FROM part_process_curves),
+                       (SELECT count(*) FROM part_process_curves
+                         WHERE cardinality(samples) <> %s),
+                       (SELECT count(*) FROM part_dispositions
+                         WHERE disposition = 'reject'),
+                       (SELECT count(*) FROM part_dispositions
+                         WHERE disposition = 'reject' AND reason IS NULL)
+                """,
+                (LOT_CODE_SHAPE, SUPPLIER_SHAPE, CURVE_SAMPLES),
+            ).fetchone()
         assert row is not None and row[0] > 0
         assert row[1] is not None and row[2] is not None, (
             "history has no span to answer from"
+        )
+
+        assert chain is not None
+        built, lotted, misfiled, curves, wrong_length, rejects, nameless = chain
+        assert built > 0, "no as-built genealogy survived the plant going away"
+        assert lotted > 0, "no component resolves to a supplier lot"
+        assert misfiled == 0, (
+            f"{misfiled} of {lotted} lotted components carry a lot code or a supplier that "
+            "is not that field's shape — §4.1 declares both String and side by side, so a "
+            "swapped field order is silent everywhere else"
+        )
+        assert curves > 0 and wrong_length == 0, (
+            f"{wrong_length} of {curves} press curves are not {CURVE_SAMPLES} samples long"
+        )
+        assert rejects > 0, "no reject was sorted, so no disposition reason was tested"
+        assert nameless == 0, (
+            f"{nameless} of {rejects} rejects were sorted with no reason"
         )
     finally:
         _sh("docker", "start", PLANT_CONTAINER)
