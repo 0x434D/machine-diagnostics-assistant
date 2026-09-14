@@ -222,9 +222,21 @@ Closes assumption A4.
 
 ### D10 — the reject rate reverts to §3.5's 1.5%
 
-M1 used 5% as a declared measurement knob for R4. Side effect worth having: rejects are the
-only parts that render an image, and rendering dominated M1's 151–185 s catch-up wall, so
-this cuts catch-up's largest cost by roughly 70%.
+M1 used 5% as a declared measurement knob for R4.
+
+**The side effect this decision claimed does not exist, and M2a measured it.** The claim was
+that rejects are the only parts that render an image, so dropping the rate would cut
+catch-up's largest cost by roughly 70%. Rejects are the only parts that *carry* an image —
+every part is rendered regardless, because the classifier needs one to classify. The rate
+decides which images ride the event, not how many are drawn.
+
+Measured over two boots at 25 streams on one idle machine: **183.1 s at 5% against 182.3 s at
+1.5%.** The wall did not move. What moved is what crosses the wire and lands in storage:
+carried images 939 → ~295, image bytes 103 MB → ~32 MB.
+
+The decision stands — 1.5% is §3.5's noise floor and that is reason enough — but it buys a
+third of the ingest volume, not a third of the boot. Recorded because Task 1's own reasoning
+leaned on the false version when it predicted catch-up would get cheaper.
 
 Closes assumption A16.
 
