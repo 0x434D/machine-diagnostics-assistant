@@ -436,13 +436,18 @@ Objects/
 
 **What that tree actually counts to: 38 variable nodes.** Ten are static and read on
 connect, never historised — each buffer's `Capacity`, `UpstreamStation` and
-`DownstreamStation`, plus `Line/CurveStrokeMm`, the millimetre span S2's force–distance
-curve is sampled over. That last one is published rather than agreed: only OPC UA crosses
+`DownstreamStation`, plus `Line/Press/StrokeLength`, the millimetre span S2's
+force–distance curve is sampled over. That last one is published rather than agreed: only OPC UA crosses
 between the stacks, so a private constant in the gateway and another in the analysis service
 would be the same number in three places with nothing keeping them equal, and changing the
 stroke would silently mis-scale every stored curve with no error anywhere. The axis is not
 optional metadata — §3.4a's contact point, which is scenario 7's primary signal, cannot be
-computed without it. Three restate what an event already carries authoritatively — `Lane1_Lot`,
+computed without it.
+
+It sits under `Line/Press`, a sibling of `Stations`, rather than under S2 — the same
+arrangement `Clock` already has, and for a harder reason: topology discovery takes every
+variable child of a station as a signal to subscribe to, so a static node placed under S2
+would arrive as a twenty-sixth stream. Three restate what an event already carries authoritatively — `Lane1_Lot`,
 `Lane2_Lot`, `CurrentAssemblySerial` — and are live-only, because a historised second copy
 invites exactly the time-join §3.4a forbids. That leaves **25 historised streams and five
 event types**, against M1's two and one. The count is worth stating because all three of
