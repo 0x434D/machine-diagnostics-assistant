@@ -83,13 +83,17 @@ class InspectionClient:
         )
         truth_response.raise_for_status()
 
-        # The request itself carries only what a camera would hand over. carrier_id is
-        # still a placeholder, and no longer for M1's reason -- the carrier pool exists
-        # now and S3 knows which carrier it is looking at. D11 widens
-        # inspection_results to §5.2's shape in M2b, in one ALTER, and the only
-        # question that needs the part-to-carrier link is M2c's scenario 4; plumbing
-        # the real id through a column nothing reads would be M2b's data model
-        # arriving early and unvalidated.
+        # The request itself carries only what a camera would hand over.
+        #
+        # **carrier_id is a placeholder and this signature widens when M2c arrives.**
+        # The real id does reach Postgres -- S3 puts it on `InspectionResultEvent`,
+        # which is §5.2's `inspection_results.carrier_id` -- but it does not reach the
+        # classifier, because `ProduceFn` is `(part_id, sim_ts)` and neither this call
+        # nor `SimulatedClassifier` can see a carrier at all. M2c's scenario 4 wears one
+        # carrier and needs its defect draw keyed on exactly that, so `ProduceFn`, this
+        # method and the constant below all move then. Recorded as a known widening
+        # rather than a settled choice: what is here now is enough for M2b, and it is
+        # not enough for the scenario that needs it.
         response = await self._http.post(
             f"{self._s.inspection_url}/inspect",
             json={

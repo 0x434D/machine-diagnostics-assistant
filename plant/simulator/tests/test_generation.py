@@ -156,21 +156,51 @@ async def test_every_stream_reconciles_exactly(tmp_path: Path) -> None:
 
     expected = dict(ledger.rows)
     # One event key per emitting station, because the historian stores one table per
-    # emitting node. In Task 3 only S3 fires; S1, S2 and S4 have generators, tables and
-    # a ledger entry of zero, and a zero on both sides is what says the stream exists
-    # and lost nothing rather than that nobody looked.
+    # emitting node and every one of §4.1's four stations emits.
     for code in STATION_CODES:
         expected[(code, "Events")] = ledger.events.get(code, 0)
     assert counts == expected
 
-    # The two counts this test knows independently of the ledger. S3 inspects every
-    # part that reaches it exactly once, so its PartCount stream is one row per part
-    # plus the priming row, and its event stream is one row per part with none.
-    parts = ledger.rows[("S3_Inspection", "PartCount")] - 1
-    assert ledger.events["S3_Inspection"] == parts
-    assert parts > 10_000, (
+    # What this test knows independently of the ledger: how many events each station
+    # owes per part, counted off §4.1 rather than off the ledger it is checking.
+    #
+    # **This is the check that catches a station wired to the wrong generator.** The
+    # equality above only says the historian holds what the ledger claims -- and the
+    # ledger counts a trigger wherever it happened, so S2 firing S4's event type would
+    # reconcile perfectly while `part_dispositions` filled from the press. Counting
+    # each station's events against its own part count is what separates the two.
+    #
+    # Each station's part count comes from its own §4.1 counter, one row per part plus
+    # the priming row. S4 has no PartCount: its count is GoodCount + RejectCount, and
+    # only the one that moved is a row (see Ledger.record), so the two sum to it.
+    parts = {
+        code: ledger.rows[(code, "PartCount")] - 1
+        for code in ("S1_Feeding", "S2_Joining", "S3_Inspection")
+    }
+    parts["S4_Outfeed"] = (
+        ledger.rows[("S4_Outfeed", "GoodCount")]
+        + ledger.rows[("S4_Outfeed", "RejectCount")]
+        - 2
+    )
+    # Three per part at S1 -- one ComponentReadEvent per lane and one
+    # AssemblyCreatedEvent -- and one per part at each of the other three. Literals,
+    # not len(LANES) + 1: deriving the multiplier from the constant `load_carrier`
+    # itself iterates would move both sides of the assertion together.
+    assert ledger.events == {
+        "S1_Feeding": 3 * parts["S1_Feeding"],
+        "S2_Joining": parts["S2_Joining"],
+        "S3_Inspection": parts["S3_Inspection"],
+        "S4_Outfeed": parts["S4_Outfeed"],
+    }
+    # The line drains downstream, so a part that reached S1 has not necessarily reached
+    # S4 by the horizon -- but every part S4 completed was created at S1, and the gap
+    # between them is what is sitting in the buffers and on the carriers.
+    assert parts["S1_Feeding"] >= parts["S2_Joining"] >= parts["S3_Inspection"]
+    assert parts["S3_Inspection"] >= parts["S4_Outfeed"] > 0
+
+    assert parts["S3_Inspection"] > 10_000, (
         "the queue cap this test exists for is 10,000 rows per stream; a depth that "
-        f"produces only {parts} parts cannot reach it"
+        f"produces only {parts['S3_Inspection']} parts cannot reach it"
     )
 
     # The line ran to the horizon rather than stopping somewhere inside it: live

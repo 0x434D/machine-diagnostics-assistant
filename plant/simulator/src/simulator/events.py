@@ -145,7 +145,9 @@ vocabulary already exists twice in this repository (`inspection.classifier` and
 `simulator.inspection_client`, pinned equal by a test, because the two uv workspaces
 may not import each other), and a third copy in the gateway with nothing keeping it
 equal is how a vector gets decoded against the wrong key with no error anywhere. Six
-short strings against a reject's ~32 kB image is not a cost worth optimising.
+short strings against a reject's image -- 110,056 B at the median of R4's 500-render
+measurement at the shipped configuration (`measurements/r4-image-sizes.txt`), p99
+110,419 B -- is not a cost worth optimising.
 
 **`Confidence` is the scalar and is not one of the six.** §3.4 is explicit that it is
 confidence in the OK/NOK *verdict*: a good part is confidently good while every class

@@ -13,7 +13,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from conftest import RecordingNodes, build_running_line
-from simulator.address_space import PACKML_SIGNALS, STATION_SIGNALS
+from simulator.address_space import (
+    PACKML_SIGNALS,
+    STATION_LIVE_SIGNALS,
+    STATION_SIGNALS,
+)
 from simulator.carriers import Carrier
 from simulator.config import Settings
 from simulator.curve import peak_of, work_of
@@ -124,6 +128,12 @@ async def test_every_station_writes_only_signals_the_tree_gives_it() -> None:
     `TaktTime` and `PartCount` against a double that accepts any name, and §4.1 gives
     S4 no `PartCount` at all (its count is `GoodCount` + `RejectCount`): the assertion
     passed while the shipped wiring could not run one cycle.
+
+    Both dicts are bounded, not just the historised one. `StationNodeSet.write_live`
+    raises the same KeyError for a live-only signal §4.1 does not give a station, and
+    D12 gives three of them to S1 and none to anyone else -- so a station reaching for
+    `CurrentAssemblySerial` that has no such node is the identical crash on the first
+    cycle of a real boot.
     """
     for station, nodes in build_all():
         # Every station below S1 refuses a part with no assembly, and S4 also refuses
@@ -134,6 +144,13 @@ async def test_every_station_writes_only_signals_the_tree_gives_it() -> None:
         await station.run_cycle(T0, Carrier(0), part)
         declared = {name for name, _ in PACKML_SIGNALS + STATION_SIGNALS[station.code]}
         assert nodes.signals() <= declared, station.code
+        declared_live = {name for name, _ in STATION_LIVE_SIGNALS.get(station.code, ())}
+        assert nodes.live_signals() <= declared_live, station.code
+        # A station's two node dicts are disjoint in the tree, so its two write paths
+        # must be too: a signal reached through the wrong one is either a historised
+        # stream the ledger never counted or a live node with a ledger row the
+        # historian can never hold.
+        assert nodes.signals() & nodes.live_signals() == set(), station.code
         # TaktTime is the one signal every station has and every station must write:
         # it is what makes the takt a measured number rather than a configured one.
         assert "TaktTime" in nodes.signals(), station.code
@@ -179,6 +196,12 @@ async def test_feeding_draws_both_lanes_down_together() -> None:
     draw. `identity.load_carrier` settles it: one component per lane per assembly, so
     the old assertion pinned a fiction. What separates the two lanes is which lot each
     is drawing from (M2c's scenarios 5 and 7), not the shape of its level.
+
+    Two stations, because the two claims need opposite noise settings. The sawtooth is
+    only checkable with the sensor off, and "two measurements rather than one number
+    published twice" is only checkable with it on -- with `lane_fill_sigma=0` an
+    implementation that drew once and published the result to both lanes satisfies
+    every assertion in the first half.
     """
     # Measurement noise off, because the claim is about the draw rather than about the
     # sensor: at the shipped `lane_fill_sigma` the per-part 0.5 is inside one sigma of
@@ -216,6 +239,29 @@ async def test_feeding_draws_both_lanes_down_together() -> None:
     ]
     assert len(after) == 2
     assert after[1] == pytest.approx(after[0] - settings.lane_draw_per_part)
+
+    # At the shipped noise the two lanes are two measurements of two levels, not one
+    # draw published under two names -- which is the half a sigma of zero cannot see.
+    # `!=` on the rounded floats, because that is exactly what a shared draw could not
+    # produce: `_lane_level()` is called once per lane and each call takes its own
+    # Gaussian, so the two land on different values essentially always at
+    # `lane_fill_sigma=0.4` and three decimal places.
+    noisy_settings = Settings()
+    assert noisy_settings.lane_fill_sigma > 0.0, (
+        "this half of the test is vacuous at a sigma of zero, which is the defect it "
+        "exists to close"
+    )
+    noisy_nodes = RecordingNodes(_CODES[FeedingStation])
+    noisy = FeedingStation(
+        noisy_nodes, noisy_settings, seed=1, schedule=LotSchedule(noisy_settings, T0)
+    )
+    await noisy.run_cycle(T0, Carrier(0), PartState())
+    noisy_levels = {
+        signal: value
+        for signal, _, value in noisy_nodes.writes
+        if signal.startswith("LaneFill_") and isinstance(value, float)
+    }
+    assert noisy_levels["LaneFill_1"] != noisy_levels["LaneFill_2"]
 
 
 @pytest.mark.asyncio
