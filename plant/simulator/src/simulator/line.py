@@ -259,7 +259,11 @@ class Line:
             self._queue.schedule(start_ts, index)
 
     async def _drive(
-        self, code: str, at: datetime, command: Command, reason: str | None = None
+        self,
+        code: str,
+        at: datetime,
+        command: Command,
+        reason: SuspendReason | str | None = None,
     ) -> datetime:
         """Apply one PackML command and publish both states it passes through.
 
@@ -272,6 +276,13 @@ class Line:
         holding. They go one `transition_interval` apart because §5.2 keys
         `state_changes` on `(station_id, source_ts)` and would otherwise keep only the
         second.
+
+        The harder half of the same rule, and why `step` drives its suspensions through
+        here rather than applying them itself: `state_changes` records
+        `from_state`/`to_state`, and `Execute -> Suspended` is not an edge PackML has.
+        Publishing only the settled state put thousands of pairs in that table that the
+        state machine cannot produce -- the same defect `bring_up` refuses in larger
+        print, one file apart.
         """
         station = self._station_for(code)
         machine = self._machines[code]
@@ -397,9 +408,11 @@ class Line:
             # carrier_count 12 it occurred once in 40,000 steps, and at the configured
             # 18 not at all, at takt jitter sigma 0.05 or 0.5.
             if machine.state is State.EXECUTE:
-                machine.apply(Command.SUSPEND, reason)
-                machine.settle()
-                await station.publish_state(at, machine.state, machine.reason)
+                # Through _drive, so `Suspending` reaches the historian alongside
+                # `Suspended` and the recorded edge is one PackML has. Its two
+                # publishes are `state_transition_seconds` apart and both land inside
+                # this cycle, which run_catchup's window check keeps under one takt.
+                await self._drive(station.code, at, Command.SUSPEND, reason)
             next_at = at + timedelta(seconds=takt)
             self._queue.schedule(next_at, index)
             return CycleOutcome(
@@ -407,9 +420,12 @@ class Line:
             )
 
         if machine.state is State.SUSPENDED:
-            machine.apply(Command.UNSUSPEND)
-            machine.settle()
-            await station.publish_state(at, machine.state, machine.reason)
+            # `Unsuspending` for the same reason: `Suspended -> Execute` is not an edge
+            # either. The cycle below still runs at `at` while the settled `Execute` is
+            # stamped one transition later -- the station is producing again the moment
+            # its buffer cleared, and the half-second is the transition it takes to say
+            # so, not a delay in the line.
+            await self._drive(station.code, at, Command.UNSUSPEND)
 
         if upstream is None:
             acquired = self._carriers.acquire()

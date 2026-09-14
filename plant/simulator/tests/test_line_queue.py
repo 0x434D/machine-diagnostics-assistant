@@ -7,6 +7,7 @@ ordering, buffer movement, suspension -- is entirely the Line's.
 
 from __future__ import annotations
 
+import itertools
 from datetime import datetime, timedelta
 
 import pytest
@@ -15,6 +16,20 @@ from simulator.buffers import Buffer
 from simulator.carriers import CarrierPool
 from simulator.line import BRING_UP_TRANSITIONS, CycleQueue, Line
 from simulator.packml import State
+
+_WAITING_STATES = frozenset(
+    {
+        State.ABORTED,
+        State.STOPPED,
+        State.IDLE,
+        State.EXECUTE,
+        State.HELD,
+        State.SUSPENDED,
+    }
+)
+"""PackML's six waiting states -- the ones a machine sits in until commanded. Written
+out rather than derived from `_SETTLES_TO`, because a set derived from the module
+under test moves whenever it does and would stop asserting anything."""
 
 
 def test_the_queue_pops_in_time_order() -> None:
@@ -236,3 +251,62 @@ async def test_holding_a_station_publishes_holding_then_held() -> None:
         State.UNHOLDING,
         State.EXECUTE,
     ]
+
+
+@pytest.mark.asyncio
+async def test_suspending_a_station_publishes_suspending_then_suspended() -> None:
+    """The same rule as `hold` above, on the transition that actually happens
+    thousands of times a run. S4 is scheduled first and B3_4 is empty, so its first
+    cycle suspends it.
+
+    A suspension that published only `Suspended` reached the historian as a single
+    row, and `state_changes` -- which records from_state/to_state -- then held
+    `Execute -> Suspended`, which is not an edge `packml._ENTERS`/`_SETTLES_TO` has.
+    The machine was right the whole time; the record was not.
+    """
+    line, stations = await build_fake_line()
+
+    await line.step()  # S4 first, and B3_4 is empty
+
+    assert stations[3].states[-2] == (T0, State.SUSPENDING, "starved:B3_4")
+    assert stations[3].states[-1] == (
+        T0 + TRANSITION,
+        State.SUSPENDED,
+        "starved:B3_4",
+    )
+
+
+@pytest.mark.asyncio
+async def test_no_station_ever_publishes_a_pair_packml_cannot_make() -> None:
+    """The general form, over a run rather than over one transition.
+
+    Every acting state is published, so no two consecutive rows for a station are both
+    waiting states -- which is the whole of what makes a `from_state`/`to_state` pair
+    in §5.2's table a transition rather than an assertion about one. Asserted over the
+    published rows, not over `StateMachine`: the machine passed through `Suspending`
+    all along, and it was the publishing that dropped it.
+    """
+    line, stations = await build_fake_line()
+    for _ in range(400):
+        await line.step()
+
+    seen: set[State] = set()
+    for station in stations:
+        published = [(at, state) for at, state, _ in station.states]
+        seen.update(state for _, state in published)
+
+        for (_, before), (_, after) in itertools.pairwise(published):
+            assert not (before in _WAITING_STATES and after in _WAITING_STATES), (
+                f"{station.code} published {before.value} -> {after.value}, which is "
+                "not a transition PackML has"
+            )
+
+        # Distinct and ordered, for the reason bring_up's own test states: §5.2 keys
+        # state_changes on (station_id, source_ts), so two rows at one instant are one
+        # row downstream and the acting half is the one that would be lost.
+        stamps = [at for at, _ in published]
+        assert stamps == sorted(set(stamps)), station.code
+
+    # The two states that were unreachable. Without this the assertion above is
+    # satisfied by a line that simply never suspends.
+    assert {State.SUSPENDING, State.UNSUSPENDING} <= seen

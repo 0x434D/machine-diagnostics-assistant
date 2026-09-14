@@ -186,9 +186,19 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     catchup_batch_size: int = 500
     catchup_batch_pause_seconds: float = 0.05
 
-    # inspection — M1's reject rate is a measurement knob for R4, not §3.5's
-    # 1.5 % noise floor, which arrives with the noise model in M2.
-    reject_rate: float = 0.05
+    # inspection — §3.5's noise floor (M2 design D10, closing assumption A16). M1 ran
+    # at 5 % as a declared measurement knob for R4.
+    #
+    # D10 also expected this to cut catch-up's largest cost, on the grounds that rejects
+    # are the only parts that render an image. That half is wrong, and it is written down
+    # here because the argument is persuasive enough to be made again:
+    # `inspection_client.produce` renders *every* part, since the classifier has to be
+    # given an image to classify, and the rate decides only which images are carried into
+    # the OPC UA event (§3.4). Measured over two boots of this stack at 25 streams --
+    # 183.1 s at 0.05 against 182.3 s at 0.015, inside the boot-to-boot spread R3 found --
+    # while rendered images fell 939 to 294 and image bytes 103 MB to 32 MB. The rate
+    # moves how much history weighs, not how long it takes to generate.
+    reject_rate: float = 0.015
     # R4 measurement (measurements/r4-image-sizes.txt): at compress_level=1 with the
     # sensor noise below, 320x240 clears OPC UA's MaxBufferSize (65,535 B) with margin
     # while staying inside the ~170 s catch-up wall; 640x480 does not (either PNG

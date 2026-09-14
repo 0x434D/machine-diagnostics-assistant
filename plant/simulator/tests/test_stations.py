@@ -125,9 +125,36 @@ async def test_part_count_is_monotonic_across_cycles() -> None:
 
 @pytest.mark.asyncio
 async def test_feeding_records_both_lane_fills() -> None:
-    station, nodes = build_one(FeedingStation)
+    """Two lanes, not one level published under two names. S1 alternates feeders, so
+    after the first part lane 1 has supplied it and lane 2 has supplied nothing, and
+    lane 1 stands `lane_draw_per_part` lower.
+
+    Asserting only that both names were written is what let an implementation that
+    drained both lanes by the whole part count pass -- and M2c's scenario 5
+    contaminates exactly one lane, which that implementation cannot express. The names
+    do not distinguish the two; the levels do.
+    """
+    # Measurement noise off, because the claim is about the lanes rather than about a
+    # draw: at the shipped `lane_fill_sigma` the 0.5 the lanes differ by is inside one
+    # sigma of the noise on each, so a run of this test would sometimes be reading the
+    # Gaussian instead of the sawtooth.
+    nodes = RecordingNodes(_CODES[FeedingStation])
+    station = FeedingStation(nodes, Settings(lane_fill_sigma=0.0), seed=1)
+
     await station.run_cycle(T0, Carrier(0), PartState())
-    assert {"LaneFill_1", "LaneFill_2"} <= nodes.signals()
+
+    # A fill level is a number; the isinstance filter is what makes that a claim rather
+    # than an assumption, because RecordingNodes takes `float | str` and the equality
+    # below fails if either lane arrived as text.
+    levels = {
+        signal: value
+        for signal, _, value in nodes.writes
+        if signal.startswith("LaneFill_") and isinstance(value, float)
+    }
+    assert set(levels) == {"LaneFill_1", "LaneFill_2"}
+    assert levels["LaneFill_2"] - levels["LaneFill_1"] == pytest.approx(
+        Settings().lane_draw_per_part
+    )
 
 
 @pytest.mark.asyncio

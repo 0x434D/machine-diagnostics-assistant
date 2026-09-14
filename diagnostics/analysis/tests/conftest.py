@@ -38,7 +38,12 @@ POSTGRES_IMAGE = (
 WINDOW_START = datetime(2026, 9, 12, 1, 0, 0, tzinfo=UTC)
 TAKT = timedelta(seconds=6)
 PARTS_IN_AN_HOUR = 600
-REJECT_EVERY = 20  # 5 % of parts, matching the plant's configured rate
+# Every 20th part, which is a density chosen for the fixture and not the plant's rate:
+# D10 puts that at §3.5's 1.5 %, nine rejects in this window, too few to spread over six
+# defect classes and still assert a breakdown. Deliberately not tracking
+# `Settings.reject_rate` -- these are query tests over seeded rows, and a fixture that
+# moved whenever the plant was retuned would make them fail for a reason that is not theirs.
+REJECT_EVERY = 20
 REJECT_OFFSET = 7  # so A-00000007 is a reject and A-00000006 is not
 
 

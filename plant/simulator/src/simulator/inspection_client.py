@@ -37,12 +37,15 @@ class InspectionClient:
     ) -> None:
         """`seed` defaults to `settings.seed`.
 
-        A client's verdict for a part is a pure function of (`seed`, `part_id`) and of
-        nothing else -- see `produce` -- so one client serves catch-up and live alike,
-        which is what M2a's single continuous line hands it. `seed` stays a parameter
-        because that purity is the property being relied on and this is what makes it
-        testable: two clients differing only in their seed must disagree about the
-        same part.
+        Which parts this client marks defective is a function of (`seed`, `part_id`)
+        and `settings.reject_rate` -- never of how many parts came before, which is
+        what lets one client serve catch-up and live alike, as M2a's single continuous
+        line requires (see `produce`). The verdict that comes back is the inspection
+        service's own, over the rendered image, and is not decided here at all.
+
+        `seed` stays a parameter because that order-independence is the property being
+        relied on and this is what makes it testable: two clients differing only in
+        their seed must disagree about the same part.
         """
         self._s = settings
         self._http = client
@@ -57,8 +60,8 @@ class InspectionClient:
         the inspection service responds with an error status.
         """
         # A fresh Random keyed by part_id, not a continuing draw from one shared
-        # stream: the defect decision for a given part_id is then a pure function of
-        # (seed, part_id), never of how many other parts this process produced
+        # stream: whether this part is defective then depends on (seed, part_id) and
+        # the configured rate, never on how many other parts this process produced
         # before it -- see the constructor's `seed` docstring.
         rng = random.Random(f"{self._seed}:{part_id}:defect")
         defects = (
