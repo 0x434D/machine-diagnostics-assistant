@@ -196,8 +196,10 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # given an image to classify, and the rate decides only which images are carried into
     # the OPC UA event (§3.4). Measured over two boots of this stack at 25 streams --
     # 183.1 s at 0.05 against 182.3 s at 0.015, inside the boot-to-boot spread R3 found --
-    # while rendered images fell 939 to 294 and image bytes 103 MB to 32 MB. The rate
-    # moves how much history weighs, not how long it takes to generate.
+    # while the renders did not change at all -- 19,799 inspection events in each boot,
+    # one render behind every one of them -- and only the images *carried* fell, 939 to
+    # 294 and 103 MB to 32 MB. The rate moves how much the history weighs, not how long
+    # it takes to generate.
     reject_rate: float = 0.015
     # R4 measurement (measurements/r4-image-sizes.txt): at compress_level=1 with the
     # sensor noise below, 320x240 clears OPC UA's MaxBufferSize (65,535 B) with margin
