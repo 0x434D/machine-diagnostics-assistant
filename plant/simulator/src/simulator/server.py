@@ -132,7 +132,9 @@ async def build_server(settings: Settings) -> tuple[Server, AddressSpace]:
     server.set_match_discovery_client_ip(False)
 
     idx = await server.register_namespace(NAMESPACE)
-    space = await build_address_space(server, idx, settings.buffer_capacity)
+    space = await build_address_space(
+        server, idx, settings.buffer_capacity, settings.joining_distance_nominal
+    )
     return server, space
 
 

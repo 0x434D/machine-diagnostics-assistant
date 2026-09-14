@@ -50,7 +50,10 @@ async def _build() -> tuple[Server, AddressSpace]:
     server = new_server()
     await server.init()
     idx = await server.register_namespace("http://machine-agent/plant")
-    return server, await build_address_space(server, idx, Settings().buffer_capacity)
+    settings = Settings()
+    return server, await build_address_space(
+        server, idx, settings.buffer_capacity, settings.joining_distance_nominal
+    )
 
 
 async def _children(node: Node) -> set[str]:
@@ -165,7 +168,7 @@ async def test_topology_is_browsable_under_line_stations() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_served_tree_browses_to_twenty_five_streams_and_nine_static() -> None:
+async def test_the_served_tree_browses_to_twenty_five_streams_and_ten_static() -> None:
     """§4.1's count, read off the server a gateway meets rather than off the dataclass
     that built it.
 
@@ -176,10 +179,17 @@ async def test_the_served_tree_browses_to_twenty_five_streams_and_nine_static() 
     variables and §13's "nothing in a milestone is faked" is broken. This walks the
     tree instead, so what is asserted is what is served.
 
-    34 variables: 25 historised streams (every station variable, plus one `Level` per
-    buffer) and nine static topology nodes read on connect. §4.1's own total is 37 --
-    the three missing are `Lane1_Lot`, `Lane2_Lot` and `CurrentAssemblySerial`, which
-    M2b brings with the data that makes them change.
+    35 variables: 25 historised streams (every station variable, plus one `Level` per
+    buffer) and ten static nodes read on connect -- the buffers' three apiece and
+    `Press/StrokeLength`, §3.4a's curve axis. §4.1's own total is 38 -- the three
+    missing are `Lane1_Lot`, `Lane2_Lot` and `CurrentAssemblySerial`, which M2b brings
+    with the data that makes them change.
+
+    Those three will land as *station* variables, and `TopologyDiscovery` takes every
+    Variable child of a station as a subscribed signal -- so whoever adds them has to
+    teach the gateway to skip what the plant does not historise, or this count says 25
+    while the gateway ingests 28. `Press/StrokeLength` sits outside Stations for
+    exactly that reason.
     """
     server, space = await _build()
     line = await server.nodes.objects.get_child([f"{space.idx}:Line"])
@@ -198,13 +208,18 @@ async def test_the_served_tree_browses_to_twenty_five_streams_and_nine_static() 
     }
     assert served_buffers == dict.fromkeys(("B1_2", "B2_3", "B3_4"), _BUFFER_VARIABLES)
 
+    press = await line.get_child([f"{space.idx}:Press"])
+    assert await _children(press) == {"StrokeLength"}
+
     # Only Level is historised on a buffer; Capacity, UpstreamStation and
-    # DownstreamStation are the static nine.
+    # DownstreamStation are nine of the ten statics, and the press's stroke is the
+    # tenth.
     historised = sum(len(names) for names in served_stations.values())
     historised += len(served_buffers)
     static = sum(len(names) - 1 for names in served_buffers.values())
-    assert (historised, static) == (25, 9)
-    assert historised + static == 34
+    static += len(await _children(press))
+    assert (historised, static) == (25, 10)
+    assert historised + static == 35
 
 
 @pytest.mark.asyncio
@@ -287,7 +302,10 @@ async def test_clock_is_a_sibling_of_stations_with_exactly_three_variables() -> 
     server, space = await _build()
     line = await server.nodes.objects.get_child([f"{space.idx}:Line"])
 
-    assert await _children(line) == {"Clock", "Stations", "Buffers"}
+    assert await _children(line) == {"Clock", "Stations", "Buffers", "Press"}
+
+    press = await line.get_child([f"{space.idx}:Press"])
+    assert await _children(press) == {"StrokeLength"}
 
     clock = await line.get_child([f"{space.idx}:Clock"])
     assert await _children(clock) == {"SimulatedTime", "Phase", "Speed"}

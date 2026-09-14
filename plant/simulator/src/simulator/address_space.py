@@ -5,11 +5,22 @@ near-identical code paths. Adding a fifth station is a row of data and nothing e
 which is the same claim §4.1 makes about the gateway: topology is described in one
 place and discovered by browsing, never spread across code.
 
-**What the tree counts to: 25 historised streams and nine static nodes.** Six each
-for S1, S2 and S4, four for S3, one `Level` per buffer; the static nine are the
-buffers' `Capacity`, `UpstreamStation` and `DownstreamStation`, read on connect and
-never historised. Every guard in Tasks 9 and 10 is sized against the 25, so a tree
-that counts to 24 or 26 is a tree that disagrees with §4.1.
+**What the tree counts to: 25 historised streams and ten static nodes.** Six each
+for S1, S2 and S4, four for S3, one `Level` per buffer; nine of the statics are the
+buffers' `Capacity`, `UpstreamStation` and `DownstreamStation` and the tenth is
+`Press/StrokeLength`, all read on connect and never historised. Every guard in Tasks 9
+and 10 is sized against the 25, so a tree that counts to 24 or 26 is a tree that
+disagrees with §4.1.
+
+`Press/StrokeLength` is §3.4a's curve axis: the curve is an array of forces with no
+axis of its own, and this is the ram travel that turns a sample index into
+millimetres. It is a sibling of Stations rather than a variable on S2 **because a
+station's variables are what a gateway subscribes to** -- `TopologyDiscovery` takes
+every Variable child of a station as a signal, so a static one there would arrive as a
+26th stream. Published rather than left as a constant in the gateway and another in the
+analysis service: only OPC UA crosses between the stacks, and three private copies of
+one number are three chances to mis-scale every curve downstream with no error
+anywhere.
 
 `Lane1_Lot`, `Lane2_Lot` and `CurrentAssemblySerial` are in §4.1 and are deliberately
 absent here. They arrive in M2b with the data that makes them change; §13's standard
@@ -110,6 +121,10 @@ BUFFERS: tuple[tuple[str, str, str], ...] = (
     ("B2_3", "S2_Joining", "S3_Inspection"),
     ("B3_4", "S3_Inspection", "S4_Outfeed"),
 )
+
+PRESS_FOLDER = "Press"
+CURVE_STROKE_SIGNAL = "StrokeLength"
+"""Where §3.4a's curve axis is published, and under what name."""
 
 INSPECTION_STATION = "S3_Inspection"
 """The one station §4.1 gives an event type in M2a. The other four event types in
@@ -261,6 +276,7 @@ class AddressSpace:
     idx: int
     line: Node
     clock: Node
+    press_stroke: Node
     clock_time: Node
     clock_phase: Node
     clock_speed: Node
@@ -327,13 +343,16 @@ def initial_value(signal: str, variant_type: ua.VariantType) -> float | str:
 
 
 async def build_address_space(
-    server: Server, idx: int, buffer_capacity: int
+    server: Server, idx: int, buffer_capacity: int, curve_stroke_mm: float
 ) -> AddressSpace:
     """§4.1's tree under Objects/Line, on an initialised but unstarted `server`.
 
     `buffer_capacity` is `Settings.buffer_capacity` -- the same number the `Buffer`
     objects themselves are built with, so the `Capacity` node a gateway reads and the
     capacity the line actually enforces are one configured value, not two.
+    `curve_stroke_mm` is the same idea for §3.4a's curve: the ram travel the samples are
+    spaced across, so the axis a consumer scales with and the axis the press was sampled
+    on cannot be two different numbers.
     """
     objects = server.nodes.objects
     line = await objects.add_object(idx, "Line")
@@ -352,6 +371,14 @@ async def build_address_space(
         idx, "Phase", Phase.CATCHUP.value, ua.VariantType.String
     )
     clock_speed = await clock.add_variable(idx, "Speed", 1.0, ua.VariantType.Double)
+
+    # Static, written by add_variable's own initial value and never again -- the same
+    # arrangement as the buffers' topology nodes below, and readable on connect without
+    # the plant running. See this module's docstring for why it is not a child of S2.
+    press = await line.add_object(idx, PRESS_FOLDER)
+    press_stroke = await press.add_variable(
+        idx, CURVE_STROKE_SIGNAL, curve_stroke_mm, ua.VariantType.Double
+    )
 
     # create_custom_event_type wants a list, not the tuple EVENT_FIELDS is defined
     # as elsewhere -- list() here, not a per-element rebuild.
@@ -435,6 +462,7 @@ async def build_address_space(
         idx=idx,
         line=line,
         clock=clock,
+        press_stroke=press_stroke,
         clock_time=clock_time,
         clock_phase=clock_phase,
         clock_speed=clock_speed,

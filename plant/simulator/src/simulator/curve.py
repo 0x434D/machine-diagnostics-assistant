@@ -1,35 +1,39 @@
 """§3.4a's force-distance curve: the trace one press leaves against one serial.
 
-**Two knobs, and they move independently.** *Where* the force begins to rise is about
-the incoming components -- an undersized component lets the press travel further before
-it meets resistance -- while *how* the load develops after contact is about the press.
-M2c's scenario 7 is a bad component lot with a perfectly stable joining force and
-scenario 3 is a force drift; both raise `gap` defects, so the curve's shape is the only
-thing that separates them. Generate them from one knob and scenario 7 is unwinnable.
+**Three knobs, and only one of them reaches a published scalar.** The press is force
+-clamped at the top and position-stopped at the bottom: hydraulic relief caps the load,
+a hard mechanical stop ends the stroke, and the ram runs to that stop on every part. So
 
-The model that makes both true, and why it is the only one of the obvious three:
+* the **clamp force** sets `JoiningForcePeak` -- the press's knob, and M2c's scenario 3
+  drifts it;
+* the **stop** sets `JoiningDistance` -- it is not in this module at all, because
+  nothing that happens at constant ram position can appear in a force-against-position
+  trace. The end of the stroke is where the trace ends, not a feature inside it;
+* the **contact point** sets where the load picks up -- the components' knob, moved by
+  M2c's scenario 7, and it moves *neither* published scalar. It is visible only in the
+  shape of the trace;
+* the **stiffness** is the slope of the rise -- the material's, and curve-only.
 
-* The press descends through a fixed recorded window, `settings.curve_stroke_mm` wide,
-  sampled uniformly. Below the contact point it is touching nothing and the trace is
-  the sensor's noise floor.
-* From contact it seats the part a fixed depth (`settings.press_seat_depth_mm`),
-  loading it at `stiffness` newtons per millimetre, then holds. So the peak is
-  `stiffness x seat_depth` -- it does not know where contact happened.
-* A press that instead always stopped at the same absolute position would lower its
-  peak whenever contact came late, which is scenario 3's symptom appearing inside
-  scenario 7. A press that instead drove to a target force would ignore `stiffness`
-  altogether, and scenario 3 would have no signal.
+That is the whole reason §3.4a stores a curve. An earlier draft of this module made the
+peak `stiffness x a fixed seating depth`, which made `(peak, distance)` and
+`(stiffness, contact)` a bijection: every sample was reconstructible from the two
+scalars to ~1e-12 N, D6's curve table held nothing the scalar table did not, and
+scenario 7 became a two-scalar query -- rising distance, steady force -- pointing
+straight at the *right* cause. §3.5 calls scenario 7 the strongest test in the set
+precisely because its symptom points at the wrong one, so that draft destroyed it. A
+summary is a projection, and losing the contact point into the curve is what the
+projection is for.
 
-The consequence, stated because it is a real one: the total travel *does* move with the
-contact point, so §4.1's `JoiningDistance` shifts under scenario 7 while `PeakForce`
-does not. Two independent knobs cannot leave both summaries fixed -- something has to
-carry the contact point -- and §3.4a's own account of scenario 7 is that the press
-travels further, so the distance is where it shows.
+Sampled uniformly across the ram's stroke, which is `settings.joining_distance_nominal`
+-- the stop. The array carries forces only, so a consumer needs that stroke to turn a
+sample index into millimetres; it is published as a static OPC UA node
+(`Line/Press/StrokeLength`) rather than copied into the gateway and the analysis
+service, because only OPC UA crosses between the stacks and three private copies of one
+number is three chances to mis-scale every curve downstream with no error anywhere.
 
-`peak_of`, `contact_of` and `distance_of` read the array they are given. They are not
-handed the numbers the curve was generated from: a summary generated beside its curve
-can disagree with it, and every scenario-7 query would then be reading two unrelated
-numbers.
+`peak_of`, `contact_of` and `work_of` read the array they are given. Joining work
+(N.mm) is the statistic the two scalars cannot produce: a later contact point leaves
+both of them where they were and takes a measurable bite out of the area.
 """
 
 from __future__ import annotations
@@ -41,90 +45,117 @@ from simulator.config import Settings
 
 
 def force_distance(
-    rng: random.Random, settings: Settings, *, contact_mm: float, stiffness: float
+    rng: random.Random,
+    settings: Settings,
+    *,
+    contact_mm: float,
+    clamp_force: float,
+    stiffness: float,
 ) -> tuple[float, ...]:
-    """One part's trace, in newtons, sampled uniformly across the recorded window.
+    """One part's trace, in newtons, sampled uniformly across the ram's stroke.
 
-    `contact_mm` is where the press meets resistance and `stiffness` is newtons per
-    millimetre of travel past it -- §3.4a's two knobs, per part, in that order of
-    causation (the components decide the first, the press the second).
+    `contact_mm` is where the ram meets resistance (the components' knob), `stiffness`
+    is newtons per millimetre of compression after that (the material's), and
+    `clamp_force` is where the press stops adding load (the press's own).
 
-    Raises ValueError if the geometry cannot produce a curve: a non-positive stiffness,
-    a negative contact point, fewer than two samples, or a contact point so late that
-    the press would still be seating when the window ends. That last one is refused
-    rather than clipped, because a clipped curve reports a peak the press never reached.
+    Raises ValueError if the geometry cannot produce a curve: a non-positive clamp,
+    stiffness or sample count, a negative contact point, or a part so late or so soft
+    that the ram would reach its stop before the clamp ever took over. That last one is
+    refused rather than clipped -- the peak would then be a number the press never
+    commanded, which is the contact point leaking into `JoiningForcePeak` and the exact
+    confusion between scenarios 3 and 7 that this module exists to prevent.
     """
     samples = settings.curve_samples
-    stroke = settings.curve_stroke_mm
-    seat = settings.press_seat_depth_mm
+    stroke = settings.joining_distance_nominal
     if samples < 2:
         raise ValueError(f"a curve needs at least two samples, got {samples!r}")
     if stiffness <= 0:
         raise ValueError(f"stiffness must be positive, got {stiffness!r} N/mm")
+    if clamp_force <= 0:
+        raise ValueError(f"clamp_force must be positive, got {clamp_force!r} N")
     if contact_mm < 0:
         raise ValueError(f"contact_mm must not be negative, got {contact_mm!r}")
-    if contact_mm + seat > stroke:
+
+    knee_mm = contact_mm + clamp_force / stiffness
+    if knee_mm >= stroke:
         raise ValueError(
-            f"a contact point at {contact_mm!r} mm plus a seat depth of {seat!r} mm "
-            f"runs past the {stroke!r} mm recorded window: the press would still be "
-            "seating when the trace ends, and the peak in it would be one the press "
-            "never reached"
+            f"a part met at {contact_mm!r} mm and compressing at {stiffness!r} N/mm "
+            f"reaches the {clamp_force!r} N clamp at {knee_mm:.3f} mm, at or past the "
+            f"{stroke!r} mm stop: the ram would end its stroke still short of the "
+            "clamp, and the peak in the trace would be one the press never commanded"
         )
 
-    peak = stiffness * seat
     step = stroke / (samples - 1)
-    # Drawn for every sample and used only below contact, so the number of draws a part
-    # makes does not depend on where its contact point fell. M2c compares a scenario run
-    # against a baseline run on the same seed; a shifted contact point that also shifted
-    # the RNG stream would move signals the scenario never touched.
-    noise = [rng.gauss(0.0, settings.curve_noise_sigma) for _ in range(samples)]
     return tuple(
-        noise[i]
-        if i * step <= contact_mm
-        else min(peak, stiffness * (i * step - contact_mm))
+        min(clamp_force, max(0.0, stiffness * (i * step - contact_mm)))
+        + rng.gauss(0.0, settings.curve_noise_sigma)
         for i in range(samples)
     )
 
 
 def peak_of(curve: tuple[float, ...]) -> float:
-    """The largest force in the trace -- §4.1's `JoiningForcePeak`."""
+    """The largest force in the trace -- §4.1's `JoiningForcePeak`.
+
+    The clamp plus whatever the load cell made of it, which is why it is read off the
+    trace rather than handed back from the draw that set the clamp.
+    """
     if not curve:
         raise ValueError("an empty curve has no peak")
     return max(curve)
 
 
 def contact_of(curve: tuple[float, ...], settings: Settings) -> float:
-    """Where the force began to rise, in millimetres from the start of the window.
+    """Where the load picked up, in millimetres of ram travel.
 
     Back-extrapolated from the straight part of the rise rather than read off the first
     sample above the noise, so it is continuous in the contact point instead of
-    quantised to the sample spacing -- a contact shift smaller than one sample is still
-    a contact shift, and M2c's scenario 7 is scored on exactly that sensitivity.
+    quantised to the sample spacing, and so the load cell's noise averages out across
+    the fitted points instead of landing on one of them. This is the only reading that
+    moves under M2c's scenario 7.
     """
     slope, intercept = _fit_rise(curve, settings)
     return -intercept / slope
 
 
-def distance_of(curve: tuple[float, ...], settings: Settings) -> float:
-    """Total travel to the end of the press stroke -- §4.1's `JoiningDistance`.
+def work_of(curve: tuple[float, ...], settings: Settings) -> float:
+    """Joining work, N.mm: the area under the trace across the whole stroke.
 
-    Derived from the same fitted rise as `contact_of` and from the curve's own peak, so
-    the three summaries are always three readings of one trace.
+    The statistic the two published scalars cannot produce. A part that met the ram
+    later is clamped for less of its stroke, so the area falls while the peak and the
+    distance both stay exactly where they were -- which is scenario 7's signal, and the
+    reason §3.4a keeps the curve rather than two numbers off it.
+
+    Trapezoidal, because the trace is a sampled continuous quantity rather than a
+    sequence of independent readings.
     """
-    slope, intercept = _fit_rise(curve, settings)
-    return (peak_of(curve) - intercept) / slope
+    if len(curve) < 2:
+        raise ValueError(f"work needs at least two samples, got {len(curve)}")
+    step = settings.joining_distance_nominal / (len(curve) - 1)
+    return step * (sum(curve) - (curve[0] + curve[-1]) / 2)
 
 
 def _fit_rise(curve: tuple[float, ...], settings: Settings) -> tuple[float, float]:
     """Slope (N/mm) and intercept (N) of the straight part of the rise.
 
-    Raises ValueError when fewer than two samples fall inside the configured band --
-    a curve too coarsely sampled, or one with no rise in it at all.
+    Raises ValueError when the configured band reaches down into the load cell's noise,
+    and when fewer than two samples fall inside it. Both are refused rather than
+    reported, because both produce a plausible wrong number instead of an exception:
+    a noise sample fitted as if it were on the rise moves the contact point by more
+    than M2c's scenario 7 does.
     """
     peak = peak_of(curve)
     low = settings.curve_fit_band_low * peak
     high = settings.curve_fit_band_high * peak
-    step = settings.curve_stroke_mm / (len(curve) - 1)
+    margin = settings.curve_fit_noise_margin_sigmas * settings.curve_noise_sigma
+    if low < margin:
+        raise ValueError(
+            f"the fit band starts at {low:.1f} N, inside "
+            f"{settings.curve_fit_noise_margin_sigmas!r} sigma of a "
+            f"{settings.curve_noise_sigma!r} N noise floor: a sample off the idle "
+            "stroke could be fitted as if it were on the rise"
+        )
+
+    step = settings.joining_distance_nominal / (len(curve) - 1)
     band = [(i * step, force) for i, force in enumerate(curve) if low <= force <= high]
     if len(band) < 2:
         raise ValueError(

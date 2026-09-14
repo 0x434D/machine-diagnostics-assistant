@@ -144,7 +144,10 @@ async def probe_one(multiple: int, image: bytes, width: int, height: int) -> Run
     await server.init()
     server.set_endpoint("opc.tcp://127.0.0.1:0/ceiling")
     idx = await server.register_namespace("http://machine-agent/plant")
-    space = await build_address_space(server, idx, Settings().buffer_capacity)
+    settings = Settings()
+    space = await build_address_space(
+        server, idx, settings.buffer_capacity, settings.joining_distance_nominal
+    )
 
     capture = _StatusCodeCapture()
     asyncua_logger = logging.getLogger("asyncua")

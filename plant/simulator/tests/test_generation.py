@@ -88,7 +88,9 @@ async def _build_plant(
     server = new_server()
     await server.init()
     idx = await server.register_namespace("http://machine-agent/plant")
-    space = await build_address_space(server, idx, settings.buffer_capacity)
+    space = await build_address_space(
+        server, idx, settings.buffer_capacity, settings.joining_distance_nominal
+    )
 
     ledger = Ledger()
     storage = await attach_historian(
