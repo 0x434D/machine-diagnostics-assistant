@@ -37,7 +37,30 @@ class ClockConfig:
 # same exception at every future Pydantic row model (docs/ENGINEERING.md's plan for the
 # analysis service), move it to a per-module mypy.ini override instead of repeating this.
 class Settings(BaseSettings):  # type: ignore[explicit-any]
-    model_config = SettingsConfigDict(env_prefix="PLANT_", env_file=".env")
+    # extra="ignore", against pydantic-settings' own default of "forbid", because
+    # `plant/.env` has two consumers and only one of them is this class. Compose reads
+    # the same file for interpolation, and the keys it needs there are not this
+    # object's: HOST_UID and HOST_GID decide the uid every plant container runs as, and
+    # PLANT_HMI_PORT is the *host* port the screen is published on -- not
+    # hmi_server_port, which is where the server binds inside the container.
+    #
+    # Under "forbid", all three abort `Settings()` with "Extra inputs are not
+    # permitted", which means `make check` dies during collection for anyone who did
+    # what `.env.example` line 1 and `make preflight`'s own hint tell them to do. It is
+    # not a quirk of the unprefixed pair either: PLANT_HMI_PORT carries the prefix and
+    # is rejected exactly the same way, so the prefix does not partition this file and
+    # "forbid" was never the right rule for it.
+    #
+    # The cost, stated rather than discovered later: a mistyped PLANT_* key -- the
+    # PLANT_STATION_TAKT_SECONDS spelling the comment below worries about, say -- is now
+    # silently ignored and the default is used. That is a real loss. It is not
+    # separable from the gain: after the dotenv source runs, a typo'd `plant_takt_second`
+    # and a legitimate `plant_hmi_port` are both just extra keys, indistinguishable to
+    # anything downstream. Catching typos needs a check against the raw file, which is a
+    # different guard from this one.
+    model_config = SettingsConfigDict(
+        env_prefix="PLANT_", env_file=".env", extra="ignore"
+    )
 
     # clock — default derives from ClockConfig.DEFAULT_HISTORY_DEPTH so the two
     # spellings of the same number (a timedelta here, hours as a float for env-var

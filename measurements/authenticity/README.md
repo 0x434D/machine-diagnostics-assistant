@@ -30,7 +30,7 @@ covers `make verify`, so §1's four proofs were unrunnable for a milestone and t
 to find out was to run them. **Run `make verify` when a gateway requirement changes,**
 and read the container's own last words: the fixture now prints them.
 
-### M2a adds two of its own
+### M2a adds one of its own
 
 | Claim | Proof | Runs as |
 |---|---|---|
