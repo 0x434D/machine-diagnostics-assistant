@@ -6,6 +6,7 @@ import math
 from dataclasses import dataclass
 from datetime import timedelta
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -78,12 +79,37 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     takt_seconds: float = 6.0
     seed: int = 20260912
     # Additive Gaussian jitter on the takt written to TaktTime, ~0.8 % of a 6 s takt.
-    # Not §3.5's noise model (that arrives in M2) -- this exists so TaktTime is
-    # historised at all: asyncua's monitored-item filter drops a notification
-    # whenever the written value is unchanged, and a bare constant takt (M1, with no
-    # noise model yet) means only the very first write is ever historised. See
-    # stations.base.Station.next_takt.
+    # One of §3.5's two sources of takt variation, the other being `noise`'s micro-stops
+    # (`stations.base.Station.next_takt` adds both).
+    #
+    # **It must be positive, and that is enforced below rather than assumed.** TaktTime
+    # is the one stream whose variation rests on a single knob: asyncua's monitored-item
+    # filter drops a notification whose value is unchanged, and with this at 0 the takt
+    # is the station's nominal except on the ~0.1 % of cycles a micro-stop lands on.
+    # Measured at sigma 0: **30 distinct values in 20,000 cycles, 59 historised rows
+    # instead of 20,000** -- and reconciliation still passes, because `Ledger.record`
+    # applies the same filter and drops the same rows. The other sigmas in this file do
+    # not have this property: a zero `lane_fill_sigma` still leaves the sawtooth, a zero
+    # `joining_force_sigma` still leaves `curve_noise_sigma` in the trace.
+    #
+    # D13 deleted the resample guard in `next_takt`, which also happened to raise on a
+    # sigma of 0 -- "the obvious way someone turns jitter off", in its own words. This
+    # restores that property without restoring the guard: the guard's reconciliation
+    # claim was redundant (`Ledger.record` already did it) and its loud failure was not.
     takt_jitter_sigma: float = 0.05
+
+    @field_validator("takt_jitter_sigma")
+    @classmethod
+    def _jitter_must_vary(cls, value: float) -> float:
+        if value <= 0.0:
+            raise ValueError(
+                f"takt_jitter_sigma={value!r} leaves TaktTime at the station's nominal "
+                "on all but the ~0.1 % of cycles a micro-stop lands on, and asyncua "
+                "historises a stream only where it changes: measured at 59 rows in "
+                "20,000 cycles, with the reconciliation still green because the ledger "
+                "drops the same rows. Turn the noise floor down, not off"
+            )
+        return value
 
     # §3.1's three line defaults. Buffer capacity is the one that matters: it sets how
     # long propagation takes to become visible, and Task 12's authenticity proof

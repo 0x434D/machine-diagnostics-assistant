@@ -31,7 +31,7 @@ from simulator.faults import (
 from simulator.identity import LANES, LotSchedule, load_carrier
 from simulator.inspection_client import DEFECT_CLASSES
 from simulator.line import PartState
-from simulator.stations import FeedingStation, JoiningStation
+from simulator.stations import FeedingStation, JoiningStation, OutfeedStation
 
 T0 = datetime(2026, 9, 13, 6, 0, tzinfo=UTC)
 TAKT = timedelta(seconds=Settings().takt_seconds)
@@ -360,3 +360,45 @@ async def test_a_starved_lane_reads_empty_and_the_other_lane_does_not() -> None:
     assert set(levels) == {f"LaneFill_{lane}" for lane in LANES}
     assert levels["LaneFill_2"] == 0.0
     assert levels["LaneFill_1"] > 0.0
+
+
+@pytest.mark.asyncio
+async def test_a_blocked_outfeed_fills_past_the_level_an_operator_clears_it_at() -> (
+    None
+):
+    """Scenario 2's first observable. `OutfeedFill` normally sawtooths back to zero every
+    `outfeed_capacity` parts, because an operator takes the bin away; a blocked outfeed
+    is that not happening, and it shows up as a level above the point it wraps at.
+
+    Asserted on the published level rather than on the fault, and past the ramp rather
+    than at its start, because the ramp is what makes a blockage build the way a stopped
+    discharge conveyor does instead of appearing between two cycles.
+    """
+    settings = Settings()
+    fault = Fault(
+        FaultKind.OUTFEED_BLOCKAGE,
+        timedelta(0),
+        {
+            "parts": settings.outfeed_blockage_parts,
+            "ramp_seconds": settings.outfeed_blockage_ramp_seconds,
+        },
+    )
+    nodes = RecordingNodes("S4_Outfeed")
+    station = OutfeedStation(
+        nodes, settings, settings.seed, faults=FaultSet([fault], T0)
+    )
+    part = PartState(
+        assembly=load_carrier(LotSchedule(settings, T0), 0, 0, T0), disposition="good"
+    )
+    # One cycle at the instant it fires and one an hour later, past the ten-minute ramp.
+    await station.run_cycle(T0, Carrier(0), part)
+    await station.run_cycle(T0 + HOUR, Carrier(0), part)
+
+    levels = [
+        float(value) for signal, _, value in nodes.writes if signal == "OutfeedFill"
+    ]
+    assert len(levels) == 2
+    # At the instant of injection the ramp has not moved, so the plant is still the
+    # clean one -- the identity property, at the boundary.
+    assert levels[0] < settings.outfeed_capacity
+    assert levels[1] > settings.outfeed_capacity

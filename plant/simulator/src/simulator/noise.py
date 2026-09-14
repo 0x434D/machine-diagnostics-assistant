@@ -105,33 +105,30 @@ class NoiseFloor:
 
     # --- baseline scrap, from a distribution unrelated to any injected fault ---------
 
-    def class_propensity(self, carrier_id: int, classes: int) -> float:
-        """The baseline probability that one named defect class is present on one part.
+    def class_propensity(self, carrier_id: int, draws: int) -> float:
+        """The baseline probability of one of a part's independent defect draws landing.
 
-        Per class and not per part, because §3.4 makes the six classes independent and
-        D11 records that scenarios 4 and 5 each need **two** of them on one part --
-        which a single "pick one class" draw can never produce, however the rate is
-        tuned.
+        `draws` is how many such draws make up one part, **not** the size of the defect
+        vocabulary: `inspection_client` makes one per (lane, class), so it passes
+        `len(LANES) * len(DEFECT_CLASSES)` = 12 and not 6. Supplied by the caller rather
+        than read here -- `inspection_client` owns the plant's copy of the vocabulary and
+        imports `stations.base`, which imports this module, so reading it would be an
+        import cycle.
 
-        The per-class rate is set so that a nominal carrier's chance of carrying at
-        least one defect is exactly `reject_rate`: `1 - (1 - r)^(1/classes)`. Dividing
-        by the class count instead would land a few parts per ten thousand short of
-        §3.5's 1.5 %, which is the kind of drift that becomes a corrected comment three
-        milestones later.
-
-        `classes` is the size of the defect vocabulary, supplied by the caller rather
-        than imported: `inspection_client` owns the plant's copy of that vocabulary and
-        imports `stations.base`, which imports this module, so reading it here would be
-        an import cycle.
+        The per-draw rate is set so that a nominal carrier's chance of carrying at least
+        one defect is exactly `reject_rate`: `1 - (1 - r)^(1/draws)`. Dividing by `draws`
+        instead lands at 1.4897 % against a configured 1.5 % -- 1.0 part per ten
+        thousand, which is arithmetic on the two expressions rather than a measurement,
+        and the kind of drift that becomes a corrected comment three milestones later.
         """
-        if classes < 1:
-            raise ValueError(f"a defect vocabulary needs a class, got {classes!r}")
+        if draws < 1:
+            raise ValueError(f"a part needs at least one defect draw, got {draws!r}")
         rate = self._s.reject_rate
         # `-expm1(log1p(-r)/n)` rather than `1 - (1 - r) ** (1 / n)`: the same number,
         # without losing the low-order bits of a 1.5 % rate to the subtraction from 1.
         # `log1p(-1)` is undefined, so a rate of 1 -- which the client tests use to force
         # every part defective -- is answered directly.
-        base = 1.0 if rate >= 1.0 else -math.expm1(math.log1p(-rate) / classes)
+        base = 1.0 if rate >= 1.0 else -math.expm1(math.log1p(-rate) / draws)
         return base * self.carrier_quality(carrier_id)
 
     def scrap_draws(self, part_id: str, count: int) -> tuple[float, ...]:

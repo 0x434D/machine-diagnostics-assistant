@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from conftest import RecordingNodes, build_running_line
+from pydantic import ValidationError
 from simulator.address_space import (
     PACKML_SIGNALS,
     STATION_LIVE_SIGNALS,
@@ -406,6 +407,28 @@ def test_each_station_takes_its_own_nominal_takt() -> None:
         < means["S4_Outfeed"]
         < means["S3_Inspection"]
     )
+
+
+def test_the_takt_stream_varies_and_a_sigma_that_flattens_it_is_refused() -> None:
+    """What D13 deleted along with the resample guard, restored where it belongs.
+
+    The guard raised on `takt_jitter_sigma=0` -- "the obvious way someone turns jitter
+    off", in its own words -- and its removal turned that loud failure into a silent
+    one: asyncua historises a stream only where it changes, so a zero sigma leaves
+    TaktTime at the station's nominal except on the ~0.1 % of cycles a micro-stop lands
+    on. Measured at 30 distinct values in 20,000 cycles and 59 historised rows, with
+    reconciliation still green, because `Ledger.record` drops exactly the same rows.
+    That is the quiet wrong answer, and it is not what D13 asked for.
+
+    Both halves: the stream is genuinely varied at the shipped sigma, and a sigma that
+    would flatten it is refused while the line is being built.
+    """
+    station, _ = build_one(InspectionStation)
+    draws = [station.next_takt() for _ in range(20_000)]
+    assert len(set(draws)) == len(draws)
+
+    with pytest.raises(ValidationError, match="TaktTime"):
+        Settings(takt_jitter_sigma=0.0)
 
 
 def test_a_station_the_settings_do_not_name_is_refused() -> None:

@@ -33,14 +33,28 @@ TRUTH_DRAWS_PER_PART: Final = len(LANES) * len(DEFECT_CLASSES)
 """How many independent Bernoulli draws decide one part's true defect state.
 
 One per (lane, defect class). **Per class**, because §3.4 makes the six scores
-independent and D11 records that §3.5's scenarios 4 and 5 each need two classes on one
-part -- which M2b's "pick one class if the part scraps" draw could never produce at any
-rate. **Per lane**, because a defect on a component is attributable to the lane that
-component came from, which is what separates scenario 5 (one lane) from a line-wide rise
-and what §5.2's `genealogy.position` exists to record.
+independent -- M2b drew one class if the part scrapped, which cannot express a part
+carrying two however the rate is set. **Per lane**, because a defect on a component is
+attributable to the lane that component came from, which is what separates scenario 5
+(one lane) from a line-wide rise and what §5.2's `genealogy.position` exists to record.
 
 `noise.NoiseFloor.class_propensity` takes this count and sets the per-draw rate so a
 nominal carrier still scraps at `settings.reject_rate`.
+
+**The class pair DP-02 keys on is a pair per carrier and per lane, not a pair per
+part.** D11's wording -- "scenarios 4 and 5 each need two classes on one part" -- reads
+as the second, and at the shipped ratio the plant does not produce it: on carrier 7 under
+scenario 4, P(misalignment) = P(scratch) = 0.00718 per part and the two are independent,
+so P(both) = 5.2e-5, which is 0.06 parts across the carrier's 1,100 in a 33 h run. One
+part carrying both would need a wear factor of ~39 instead of 2.86, and carrier 7 would
+then scrap 19 % of its parts against the line's 1.5 % -- a difference no significance
+test is needed for, and the ratio `carrier_wear_sigmas` exists to set would be gone.
+
+So the correlation the analysis queries is `GROUP BY carrier_id` (or lane) with **both**
+classes elevated on it, which is what `test_noise` measures and what M3 must look for.
+The independent per-class shape is still exactly what D11's `ALTER` was for: §3.4 needs a
+good part to score low on all six at once and scenario 6 needs all six to fall together,
+neither of which a single-class draw or a softmax can produce.
 """
 
 
