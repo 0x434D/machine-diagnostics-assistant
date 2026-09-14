@@ -288,10 +288,35 @@ public sealed partial class HistoryBackfill
             .ToList();
         if (vanished.Count > 0)
         {
+            // The ledger stores the name this method built when the window was read, so
+            // renaming a constant that feeds it renames nothing already written:
+            // Subscriptions.EventStream went "InspectionResult" -> "Events" in M2b, and
+            // against a ledger written before that, every boot found S3.InspectionResult
+            // missing and threw, for ever. The guard is right to be fatal — it cannot tell
+            // the two cases apart — but "no longer published" alone sends the operator to a
+            // plant that is fine, so the message has to carry what separates them: a name on
+            // the same owner that has never been in the ledger, appearing on the boot another
+            // left it. Streams the owner published all along distinguish nothing.
+            var owners = vanished
+                .Select(name => name.Split('.', 2)[0])
+                .ToHashSet(StringComparer.Ordinal);
+            var appeared = discovered
+                .Where(name => owners.Contains(name.Split('.', 2)[0])
+                    && !streamsReadBefore.Contains(name))
+                .Order(StringComparer.Ordinal)
+                .ToList();
+
             throw new InvalidOperationException(
                 $"{vanished.Count} stream(s) this gateway has backfilled before are no longer "
                 + $"published and would be missing from the ledger silently: "
-                + $"{string.Join(", ", vanished)}. {discovered.Count} streams were discovered");
+                + $"{string.Join(", ", vanished)}. {discovered.Count} streams were discovered. "
+                + "The same stations or buffers published for the first time on this boot: "
+                + $"{(appeared.Count > 0 ? string.Join(", ", appeared) : "nothing")}. "
+                + "A name that appears where one vanished is a rename in this gateway, not a "
+                + "plant that stopped publishing: backfill_windows.stream holds the name this "
+                + "gateway built when the window was read, so renaming the constant renames "
+                + "nothing already written. Update those ledger rows to the new name, or "
+                + "restore the old one. With nothing newly published, the plant has stopped.");
         }
 
         // Said out loud for the same reason the subscription says it: a discovered stream that

@@ -549,6 +549,44 @@ public sealed class HistoryBackfillTests
     }
 
     [Fact]
+    public async Task AVanishedStreamNamesWhatTheSameStationPublishesNow()
+    {
+        // The ledger below is what a pre-M2b gateway wrote: Subscriptions.EventStream spelled
+        // "InspectionResult" then and spells "Events" now, so S3's event stream vanishes on
+        // every boot against that database and the guard fires for ever. It is right to fire
+        // -- it cannot tell a rename from a plant that went quiet -- but an operator reading
+        // "no longer published" goes to look at a plant that is publishing fine. The message
+        // has to carry the name that appeared where the old one went, which is the whole
+        // difference between the two. S3.TaktTime, published before and published still,
+        // distinguishes nothing and is left out — the test above holds it out.
+        var plant = new FakeHistorian();
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => RunAsync(
+            plant,
+            [],
+            new AddressSpace(
+                [
+                    new DiscoveredStation(
+                        "S3", "Inspection", plant.Events("S3", Minutes(1)),
+                        [new DiscoveredSignal(
+                            "TaktTime", plant.Variable("S3.TaktTime", Minutes(1)),
+                            BuiltInType.Double)],
+                        EmitsEvents: true, EventTypes: Inspection),
+                ],
+                [],
+                PhaseNodeId: null),
+            streamsReadBefore: new HashSet<string>(StringComparer.Ordinal)
+            {
+                "S3.TaktTime", "S3.InspectionResult",
+            }));
+
+        Assert.Contains("S3.InspectionResult", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("S3.Events", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("rename", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("backfill_windows.stream", exception.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("S3.TaktTime", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task AFirstRunAgainstAnEmptyLedgerAssertsNothingAboutTheStreamCount()
     {
         // The honest limit of the guard above, stated so it is not mistaken for coverage it
