@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 .PHONY: preflight lock-check fmt lint test check verify ci ci-scheduled contract m1-report \
-        m2a-r5 \
+        m2a-r5 m2a-demo m2a-propagation reconcile-backfill \
         m1-demo browse ask verify-no-gaps \
         lint-python test-python check-python \
         lint-dotnet test-dotnet check-dotnet audit-dotnet \
@@ -248,6 +248,35 @@ verify-no-gaps:
 	      sys.exit(0 if r["reconciled"] else "RECONCILIATION FAILED")' \
 	  && echo "reconciled: nothing was read and lost, and no window is recorded as missing"
 
+# The two-sided comparison `verify-no-gaps` cannot make. Its default window ends at UtcNow
+# and so contains live rows no backfill window ever claimed, which makes stored exceed read
+# for a reason that has nothing to do with loss -- so `Lost` clamping at zero is the only
+# thing it can report. Bounding the window at the ledger's own max(to_ts) puts live rows
+# outside it, and read and stored become comparable in both directions: §1's
+# `read_rows == pg_rows`, at 25 streams rather than M1's three.
+#
+# The bounds come from `backfill_windows` rather than from a date typed here, because the
+# window is whatever this boot's history depth produced. Exits non-zero on a stream that
+# lost rows, so it is a demo step rather than a thing to read.
+reconcile-backfill:
+	@bounds=$$(docker compose -f diagnostics/compose.yml exec -T postgres \
+	    psql -U postgres -d diagnostics -t -A \
+	    -c "SELECT to_char(min(from_ts) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.USZ'), \
+	        to_char(max(to_ts) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.USZ') \
+	        FROM backfill_windows" | tr -d '\r'); \
+	 from=$${bounds%%|*}; to=$${bounds##*|}; \
+	 [ -n "$$from" ] && [ "$$from" != "$$to" ] \
+	   || { echo "backfill_windows is empty: there is nothing to reconcile yet"; exit 1; }; \
+	 echo "   window $$from .. $$to"; \
+	 curl -sf "localhost:$${GATEWAY_PORT:-8080}/reconcile?from=$$from&to=$$to" \
+	   | python3 -c 'import json,sys; r = json.load(sys.stdin); \
+	       rows = sorted(r["streams"], key=lambda s: s["stream"]); \
+	       [print("   {stream:24} read={rowsReturned:7} stored={rowsStored:7} lost={lost}".format(**s)) for s in rows]; \
+	       print("   {} streams, {} read, {} stored, {} lost, {} gaps".format(len(rows), \
+	         sum(s["rowsReturned"] for s in rows), sum(s["rowsStored"] for s in rows), \
+	         sum(s["lost"] for s in rows), len(r["gaps"]))); \
+	       sys.exit(0 if r["reconciled"] else "RECONCILIATION FAILED over the backfill window")'
+
 # Aggregates every M1 measurement into one table with a verdict per risk, and exits non-zero
 # if any risk has neither a pass nor a recorded, justified deviation — so an unmeasured risk
 # cannot pass silently.
@@ -259,6 +288,69 @@ m1-report:
 # design rather than the excuses.
 m2a-r5:
 	cd plant && uv run --frozen --package simulator python $(CURDIR)/measurements/run_r5.py
+
+# M2a's authenticity proof on its own, so the demo can show it without running the gate.
+# In process and under a second: it drives the same four station classes `server.build_line`
+# builds, with the address space replaced by recorders.
+m2a-propagation:
+	cd plant && uv run --frozen --package simulator pytest simulator/tests/test_propagation.py -v
+
+# The M2a demo: the line, where M1 had one station. Same shape as m1-demo, same rule about
+# ports -- every published port is read from the environment with the compose file's own
+# default, because the M1 demo could not run on the machine it was written on.
+#
+# What this does NOT do, stated rather than left as a gap a viewer has to notice: it does not
+# let you stop S2 by hand. The HMI is read-only in M2a. §3.5 requires every injection to write
+# the ground-truth log, §3.6 puts that log in M2c, and M5 gates the injection panel -- so a
+# button added here would inject faults nothing records, which is the one thing §13 forbids.
+# Step 6 runs the proof instead, and the proof is the stronger artifact anyway: it asserts the
+# delay rather than inviting you to watch for it.
+m2a-demo: preflight
+	@echo "== 1. plant: four stations, three buffers, 25 historised streams, 33 h of history"
+	docker compose -f plant/compose.yml up -d --build
+	@until docker compose -f plant/compose.yml exec -T line-simulator \
+	    python -c "import urllib.request" >/dev/null 2>&1; do sleep 2; done
+	@echo "== 2. the screen the line is built with (§15)"
+	@until curl -sf -o /dev/null "localhost:$${PLANT_HMI_PORT:-5174}/"; do sleep 2; done
+	@echo "   http://localhost:$${PLANT_HMI_PORT:-5174} -- and what to watch for:"
+	@echo "     * four stations green while the line is producing;"
+	@echo "     * B1_2 and B2_3 fill to capacity and stay there, B3_4 sits at 0-2."
+	@echo "       That is S3 being the bottleneck at 6.00 s against S1's 5.70 and S2's 5.85;"
+	@echo "     * S1 and S2 turn amber every couple of minutes on blocked:B1_2 / blocked:B2_3."
+	@echo "       Amber is the consequence colour and no fault is injected anywhere -- the"
+	@echo "       plant runs a fixed nominal takt in M2a, so every stop you see is the line"
+	@echo "       waiting on itself."
+	@echo "== 3. a foreign client browses the address space, buffers and all"
+	$(MAKE) browse
+	@echo "== 4. diagnostics: discover the topology, subscribe to 25 streams, backfill, go live"
+	docker compose -f diagnostics/compose.yml up -d --build
+	@until curl -sf localhost:$${GATEWAY_PORT:-8080}/status | grep -q '"state":"live"'; do \
+	    curl -s localhost:$${GATEWAY_PORT:-8080}/status; echo; sleep 5; done
+	@echo "== 5a. the claim the default window makes, and the one it does not"
+	@$(MAKE) verify-no-gaps
+	@echo "   ^ read this precisely. /reconcile's default window ends at UtcNow, so it"
+	@echo "     contains rows the live subscription wrote that no backfill window claimed."
+	@echo "     Stored therefore exceeds read, Lost clamps at zero, and the claim is"
+	@echo "     'nothing that was read was lost, and no window is recorded as missing'."
+	@echo "     It is NOT 'nothing was missed'."
+	@echo "== 5b. read_rows == pg_rows, per stream, over the window the backfill covers"
+	@$(MAKE) reconcile-backfill
+	@echo "   ^ still a comparison of what the gateway read against what it stored, and"
+	@echo "     still not a comparison against the plant: the count of what the plant holds"
+	@echo "     is on the far side of a boundary carrying OPC UA and nothing else (§4.5)."
+	@echo "     See measurements/authenticity/README.md for which is which."
+	@echo "== 6. propagation, measured -- the step M1 had no line to show"
+	@echo "   Stop S2, and S3 starves once B2_3 drains. Not before, and not in sympathy."
+	@$(MAKE) m2a-propagation
+	@echo "   ^ the delay is derived from the level B2_3 held at the moment S2 stopped,"
+	@echo "     never the 30 s §3.1 quotes: in steady state that level is 4 or 5, so the"
+	@echo "     real delay is 24-32 s and a hardcoded 30 would be right about half the time."
+	@echo "== 7. ask, with the whole line behind the answer"
+	@until curl -sf -o /dev/null "localhost:$${UI_PORT:-5173}/"; do sleep 2; done
+	@echo "   the chat box is at http://localhost:$${UI_PORT:-5173}"
+	@$(MAKE) ask
+	@echo "== 8. the numbers"
+	$(MAKE) m1-report
 
 contract:
 	cd diagnostics && uv run --frozen --package analysis python $(CURDIR)/scripts/generate-contract.py
