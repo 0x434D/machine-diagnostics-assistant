@@ -27,11 +27,13 @@ from simulator.stations.base import PartOutcome
 
 T0 = datetime(2026, 9, 13, 6, 0, tzinfo=UTC)
 
+# §4.1's browse names, which is what the real address space gives
+# `StationNodes.code` and what `Settings.station_takt_seconds` is keyed by.
 _CODES: dict[type[Station], str] = {
-    FeedingStation: "S1",
-    JoiningStation: "S2",
-    InspectionStation: "S3",
-    OutfeedStation: "S4",
+    FeedingStation: "S1_Feeding",
+    JoiningStation: "S2_Joining",
+    InspectionStation: "S3_Inspection",
+    OutfeedStation: "S4_Outfeed",
 }
 
 
@@ -97,7 +99,8 @@ async def test_every_station_records_its_takt_and_its_part_count() -> None:
     for station, nodes in build_all():
         # S4 refuses a part nobody inspected, so every station is handed the part it
         # would really receive: only S4's predecessor has already stamped one.
-        part = PartState(disposition="good") if station.code == "S4" else PartState()
+        outfeed = station.code == _CODES[OutfeedStation]
+        part = PartState(disposition="good") if outfeed else PartState()
         await station.run_cycle(T0, Carrier(0), part)
         assert {"TaktTime", "PartCount"} <= nodes.signals()
 
@@ -190,8 +193,8 @@ def test_each_station_takes_its_own_nominal_takt() -> None:
         draws = [station.next_takt() for _ in range(500)]
         means[station.code] = sum(draws) / len(draws)
 
-    assert means["S1"] < means["S2"] < means["S3"]
-    assert means["S3"] == pytest.approx(means["S4"], abs=0.05)
+    assert means["S1_Feeding"] < means["S2_Joining"] < means["S3_Inspection"]
+    assert means["S3_Inspection"] == pytest.approx(means["S4_Outfeed"], abs=0.05)
 
 
 _DRAW_PROBE = """
@@ -200,7 +203,7 @@ from simulator.stations import FeedingStation
 
 
 class Nodes:
-    code = "S1"
+    code = "S1_Feeding"
 
     async def write(self, signal, at, value):
         raise AssertionError("the probe never cycles")

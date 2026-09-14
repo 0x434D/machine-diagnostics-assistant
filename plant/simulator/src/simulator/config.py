@@ -92,12 +92,20 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # as the one above produces. The bottleneck is what gives a buffer a level to
     # hold, and the level is what makes propagation delayed rather than immediate.
     #
+    # Keyed by §4.1's station browse names, because that is what `StationNodes.code`
+    # carries and what `Station._nominal_takt` looks this up with. A short "S1" here
+    # would miss, and the miss is silent by design (the lookup falls back to
+    # takt_seconds rather than to zero, which would wedge the queue) -- producing a
+    # perfectly balanced line and the bounded-nothing buffers the paragraph above
+    # rules out, with no error anywhere. test_address_space pins the two spellings
+    # together.
+    #
     # Starting values, confirmed by Task 12's measurement rather than assumed.
     station_takt_seconds: dict[str, float] = {
-        "S1": 5.70,
-        "S2": 5.85,
-        "S3": 6.00,
-        "S4": 6.00,
+        "S1_Feeding": 5.70,
+        "S2_Joining": 5.85,
+        "S3_Inspection": 6.00,
+        "S4_Outfeed": 6.00,
     }
 
     # §4.1's two S2 process signals. Nominal values only -- M2c's scenario 3 drifts

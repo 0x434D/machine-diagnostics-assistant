@@ -49,7 +49,7 @@ async def test_catchup_reconciles_ledger_with_historian_at_production_depth(
     server = new_server()
     await server.init()
     idx = await server.register_namespace("http://machine-agent/plant")
-    space = await build_address_space(server, idx)
+    space = await build_address_space(server, idx, settings.buffer_capacity)
 
     clock = SimulatedClock(
         ClockConfig(ClockConfig.DEFAULT_HISTORY_DEPTH, settings.catchup_speed)
@@ -124,7 +124,7 @@ async def test_source_timestamps_are_simulated_not_wall_clock(tmp_path: Path) ->
     server = new_server()
     await server.init()
     idx = await server.register_namespace("http://machine-agent/plant")
-    space = await build_address_space(server, idx)
+    space = await build_address_space(server, idx, settings.buffer_capacity)
 
     clock = SimulatedClock(ClockConfig(timedelta(hours=1), 600.0))
     ledger = Ledger()
@@ -187,7 +187,7 @@ async def test_live_production_resumes_where_catch_up_stopped(tmp_path: Path) ->
     server = new_server()
     await server.init()
     idx = await server.register_namespace("http://machine-agent/plant")
-    space = await build_address_space(server, idx)
+    space = await build_address_space(server, idx, settings.buffer_capacity)
 
     boot = datetime.now(UTC)
     wall = [boot]

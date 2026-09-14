@@ -48,7 +48,7 @@ def _log(event: str, **fields: object) -> None:
 
 async def build_server(settings: Settings) -> tuple[Server, AddressSpace]:
     """An unstarted OPC UA server on `settings.endpoint_url`, Sign-only, trusting only
-    the certificates in the shared trust store, with S3's address space built.
+    the certificates in the shared trust store, with §4.1's address space built.
 
     Assumes `settings.pki_root` holds the layout `simulator.pki` writes. Raises
     FileNotFoundError if the server's own certificate or key is missing from it.
@@ -117,7 +117,7 @@ async def build_server(settings: Settings) -> tuple[Server, AddressSpace]:
     server.set_match_discovery_client_ip(False)
 
     idx = await server.register_namespace(NAMESPACE)
-    space = await build_address_space(server, idx)
+    space = await build_address_space(server, idx, settings.buffer_capacity)
     return server, space
 
 
