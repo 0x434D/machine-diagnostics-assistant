@@ -10,7 +10,7 @@ import httpx
 
 from simulator.config import Settings
 from simulator.render import render_part
-from simulator.station_s3 import PartOutcome
+from simulator.stations.base import PartOutcome
 
 # Mirrors inspection.classifier.DEFECT_CLASSES. Same §10.7 reason as simulator.render's
 # duplication of inspection.render: the workspace split forbids importing it from there,
@@ -37,12 +37,15 @@ class InspectionClient:
     ) -> None:
         """`seed` defaults to `settings.seed`.
 
-        Construct a second client with a distinguishing `seed` (mirroring
-        `station_s3.run_live`'s `settings.seed ^ 1`) for the live phase, so that
-        changing the configured history depth -- which changes how many catch-up
-        calls happen before live starts -- can never shift live production's defect
-        draws for the same seed (§3.6). A single client instance reused unmodified
-        across both phases would not have that property.
+        Which parts this client marks defective is a function of (`seed`, `part_id`)
+        and `settings.reject_rate` -- never of how many parts came before, which is
+        what lets one client serve catch-up and live alike, as M2a's single continuous
+        line requires (see `produce`). The verdict that comes back is the inspection
+        service's own, over the rendered image, and is not decided here at all.
+
+        `seed` stays a parameter because that order-independence is the property being
+        relied on and this is what makes it testable: two clients differing only in
+        their seed must disagree about the same part.
         """
         self._s = settings
         self._http = client
@@ -53,12 +56,12 @@ class InspectionClient:
 
         The timestamp parameter is unused -- it exists to satisfy `ProduceFn`'s
         signature; only the OPC UA event that wraps this result carries a timestamp
-        (§4.2, applied in station_s3._emit_part). Raises `httpx.HTTPStatusError` if
+        (§4.2, applied in `stations.s3_inspection`). Raises `httpx.HTTPStatusError` if
         the inspection service responds with an error status.
         """
         # A fresh Random keyed by part_id, not a continuing draw from one shared
-        # stream: the defect decision for a given part_id is then a pure function of
-        # (seed, part_id), never of how many other parts this process produced
+        # stream: whether this part is defective then depends on (seed, part_id) and
+        # the configured rate, never on how many other parts this process produced
         # before it -- see the constructor's `seed` docstring.
         rng = random.Random(f"{self._seed}:{part_id}:defect")
         defects = (
@@ -80,10 +83,13 @@ class InspectionClient:
         )
         truth_response.raise_for_status()
 
-        # The request itself carries only what a camera would hand over. carrier_id
-        # is a placeholder: M1's S3-in-isolation skeleton has no S1/S4 carrier pool
-        # yet (the spec's 12 circulating carriers arrive with them), so there is
-        # nothing real for PartContext.carrier_id to report until then.
+        # The request itself carries only what a camera would hand over. carrier_id is
+        # still a placeholder, and no longer for M1's reason -- the carrier pool exists
+        # now and S3 knows which carrier it is looking at. D11 widens
+        # inspection_results to §5.2's shape in M2b, in one ALTER, and the only
+        # question that needs the part-to-carrier link is M2c's scenario 4; plumbing
+        # the real id through a column nothing reads would be M2b's data model
+        # arriving early and unvalidated.
         response = await self._http.post(
             f"{self._s.inspection_url}/inspect",
             json={

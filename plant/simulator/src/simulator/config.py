@@ -37,7 +37,30 @@ class ClockConfig:
 # same exception at every future Pydantic row model (docs/ENGINEERING.md's plan for the
 # analysis service), move it to a per-module mypy.ini override instead of repeating this.
 class Settings(BaseSettings):  # type: ignore[explicit-any]
-    model_config = SettingsConfigDict(env_prefix="PLANT_", env_file=".env")
+    # extra="ignore", against pydantic-settings' own default of "forbid", because
+    # `plant/.env` has two consumers and only one of them is this class. Compose reads
+    # the same file for interpolation, and the keys it needs there are not this
+    # object's: HOST_UID and HOST_GID decide the uid every plant container runs as, and
+    # PLANT_HMI_PORT is the *host* port the screen is published on -- not
+    # hmi_server_port, which is where the server binds inside the container.
+    #
+    # Under "forbid", all three abort `Settings()` with "Extra inputs are not
+    # permitted", which means `make check` dies during collection for anyone who did
+    # what `.env.example` line 1 and `make preflight`'s own hint tell them to do. It is
+    # not a quirk of the unprefixed pair either: PLANT_HMI_PORT carries the prefix and
+    # is rejected exactly the same way, so the prefix does not partition this file and
+    # "forbid" was never the right rule for it.
+    #
+    # The cost, stated rather than discovered later: a mistyped PLANT_* key -- the
+    # PLANT_STATION_TAKT_SECONDS spelling the comment below worries about, say -- is now
+    # silently ignored and the default is used. That is a real loss. It is not
+    # separable from the gain: after the dotenv source runs, a typo'd `plant_takt_second`
+    # and a legitimate `plant_hmi_port` are both just extra keys, indistinguishable to
+    # anything downstream. Catching typos needs a check against the raw file, which is a
+    # different guard from this one.
+    model_config = SettingsConfigDict(
+        env_prefix="PLANT_", env_file=".env", extra="ignore"
+    )
 
     # clock — default derives from ClockConfig.DEFAULT_HISTORY_DEPTH so the two
     # spellings of the same number (a timedelta here, hours as a float for env-var
@@ -58,22 +81,126 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # historised at all: asyncua's monitored-item filter drops a notification
     # whenever the written value is unchanged, and a bare constant takt (M1, with no
     # noise model yet) means only the very first write is ever historised. See
-    # station_s3._next_takt.
+    # stations.base.Station.next_takt.
     takt_jitter_sigma: float = 0.05
+
+    # §3.1's three line defaults. Buffer capacity is the one that matters: it sets how
+    # long propagation takes to become visible, and Task 12's authenticity proof
+    # measures exactly the delay it produces (5 x 6 s ~= 30 s from S2 stopping to S3
+    # starving). Changing it changes that proof's expected value, which is why the
+    # proof derives the number rather than hardcoding 30.
+    #
+    # carrier_count is provisional, and was raised from 12 on measurement. No station
+    # holds a carrier between cycles, so every carrier in the line parks in a buffer
+    # against 15 slots; at 12 the steady-state margin is one carrier, and
+    # takt_jitter_sigma below is what closes it. Over 40,000 steps at the takts above,
+    # free running with no fault injected: with jitter off the pool never emptied, and
+    # at the configured sigma it pinned at 0 and S1 suspended on `carrier-return` for
+    # 145 of its 508 suspended cycles (29 %). That is the plant inventing an upstream
+    # supply fault nobody asked for, and since §5.4 categorises a propagation chain by
+    # direction, it makes S1's reason flip between `blocked` and `starved` on a noise
+    # setting. At 18 -- the 15 slots plus headroom -- carrier-return did not occur at
+    # any sigma from 0.05 to 1.0. Measured against the fake stations of Task 4's
+    # tests; Task 12 confirms it against the real ones.
+    carrier_count: int = 18
+    buffer_capacity: int = 5
+
+    # How far apart two PackML states published for the same station sit on the
+    # simulated timeline. Not cosmetic: §5.2 keys `state_changes` on
+    # `(station_id, source_ts)`, so states sharing an instant are one row in Postgres
+    # and only the last survives -- a bring-up would arrive as `Execute` with nothing
+    # before it, and a hold as `Held` with no `Holding`.
+    #
+    # 0.5 s puts a station's whole bring-up (BRING_UP_TRANSITIONS = 6, so 3 s) inside
+    # the one-takt gap between the historian's priming row and the first cycle, with
+    # half the gap spare; `line.run_catchup` refuses a value that does not fit rather
+    # than publishing state history over the top of production.
+    state_transition_seconds: float = 0.5
+
+    # §3.1: the stations do NOT share one takt. S3 is the slowest and paces the line
+    # at the 6 s every other number is quoted against; S1 and S2 run faster so their
+    # buffers fill, and S4 matches S3 so B3_4 stays near empty without S4 starving on
+    # every single cycle.
+    #
+    # A balanced line would make buffer capacity bound nothing -- every buffer would
+    # oscillate between empty and one, because each station consumes exactly as fast
+    # as the one above produces. The bottleneck is what gives a buffer a level to
+    # hold, and the level is what makes propagation delayed rather than immediate.
+    #
+    # Keyed by §4.1's station browse names, because that is what `StationNodes.code`
+    # carries and what `Station._nominal_takt` looks this up with. A short "S1" here
+    # misses, and a miss is the balanced line the paragraph above rules out -- so
+    # `Station.__init__` refuses a station this does not name rather than falling back
+    # to takt_seconds. That applies to PLANT_STATION_TAKT_SECONDS too, which is the
+    # spelling a deployment can still get wrong after the default is right.
+    #
+    # Starting values, confirmed by Task 12's measurement rather than assumed.
+    station_takt_seconds: dict[str, float] = {
+        "S1_Feeding": 5.70,
+        "S2_Joining": 5.85,
+        "S3_Inspection": 6.00,
+        "S4_Outfeed": 6.00,
+    }
+
+    # §4.1's two S2 process signals. Nominal values only -- M2c's scenario 3 drifts
+    # the force down from here, and M2b replaces both with the force-distance curve
+    # they summarise (§3.4a).
+    joining_force_nominal: float = 4200.0  # newtons
+    joining_distance_nominal: float = 12.5  # millimetres
+    # Part-to-part spread around those nominals, ~1 % of force and ~0.2 % of distance.
+    # Not measured -- §3.5's noise model is M2b's, and these exist so the two signals
+    # vary at all (a constant is coalesced away before the historian sees it, the same
+    # reason takt_jitter_sigma above exists). They are settings rather than literals
+    # because M2c's scenario 3 drifts the force against exactly this spread: a drift
+    # smaller than the noise it hides in is not detectable, and that ratio has to be
+    # tunable to make the scenario provable either way.
+    joining_force_sigma: float = 40.0  # newtons
+    joining_distance_sigma: float = 0.02  # millimetres
+
+    # §4.1's three fill levels -- S1's two feeder lanes and S4's outfeed. Each is a
+    # sawtooth: drawn down (or filled up) by production, reset when an operator
+    # intervenes. The shape carries no diagnosis in M2a; it exists so these are real
+    # varying floats. Settings rather than literals because M2c's scenario 5
+    # contaminates one lane and scenario 2 blocks the outfeed, and both scenarios are
+    # written against the level a station is supposed to sit at.
+    #
+    # A lane holds 100 units and each part draws half of one, so a lane lasts 200 of
+    # the parts it supplies -- long enough that the sawtooth is a slow trend against
+    # the takt rather than a sensor that looks broken.
+    lane_capacity: float = 100.0
+    lane_draw_per_part: float = 0.5
+    # Measurement noise on the level, not variation in the level itself.
+    lane_fill_sigma: float = 0.4
+    # Parts, not units: the outfeed holds whole parts and an operator clears it.
+    outfeed_capacity: int = 50
+    outfeed_fill_sigma: float = 0.3
 
     # catch-up pacing -- asyncua's own per-monitored-item notification queue caps at
     # 10,000 and silently discards the oldest entry past that, so generate_history
     # must give the ~10 ms publish loop a chance to drain before any one stream's
     # backlog gets there. 500 parts is comfortably under the cap even though every
     # part now writes a distinct TaktTime (see takt_jitter_sigma); 0.05 s matches
-    # what was measured to drain a batch that size. See
-    # station_s3.generate_history.
+    # what was measured to drain a batch that size. Re-measured at 25 streams by R5
+    # (measurements/r5-streams.json: 495,000 rows, none dropped). See
+    # line.run_catchup.
     catchup_batch_size: int = 500
     catchup_batch_pause_seconds: float = 0.05
 
-    # inspection — M1's reject rate is a measurement knob for R4, not §3.5's
-    # 1.5 % noise floor, which arrives with the noise model in M2.
-    reject_rate: float = 0.05
+    # inspection — §3.5's noise floor (M2 design D10, closing assumption A16). M1 ran
+    # at 5 % as a declared measurement knob for R4.
+    #
+    # D10 also expected this to cut catch-up's largest cost, on the grounds that rejects
+    # are the only parts that render an image. That half is wrong, and it is written down
+    # here because the argument is persuasive enough to be made again:
+    # `inspection_client.produce` renders *every* part, since the classifier has to be
+    # given an image to classify, and the rate decides only which images are carried into
+    # the OPC UA event (§3.4). Measured over two boots of this stack at 25 streams --
+    # 183.1 s at 0.05 against 182.3 s at 0.015, inside the boot-to-boot spread R3 found --
+    # while the renders did not change at all -- 19,799 inspection events in each boot,
+    # one render behind every one of them -- and only the images *carried* fell, 939 to
+    # 294 and 103 MB to 32 MB. The rate moves how much the history weighs, not how long
+    # it takes to generate.
+    reject_rate: float = 0.015
     # R4 measurement (measurements/r4-image-sizes.txt): at compress_level=1 with the
     # sensor noise below, 320x240 clears OPC UA's MaxBufferSize (65,535 B) with margin
     # while staying inside the ~170 s catch-up wall; 640x480 does not (either PNG
@@ -85,8 +212,8 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # which is already incompressible. See measurements/r4-image-sizes.txt.
     image_compress_level: int = 1
     # The classifier's own /inspect response now carries the authoritative
-    # model_version (PartOutcome.model_version) -- this is no longer threaded through
-    # station_s3._emit_part. Kept as the value a non-HTTP stub producer can fall back
+    # model_version (PartOutcome.model_version) -- it is not threaded through the
+    # station. Kept as the value a non-HTTP stub producer can fall back
     # to, and as documentation of the deployment's expected model version.
     model_version: str = "simulated-1"
 
@@ -100,6 +227,28 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # python -m simulator.status` is never more than one part behind the ledger it
     # reports.
     status_interval_seconds: float = 5.0
+
+    # The plant HMI (§15), served in-process by the simulator (D5). Not a second
+    # container polling the status file above: that would make status_interval_seconds
+    # the screen's frame rate, and would put a second copy of the line's state between
+    # the line and the screen.
+    #
+    # 0.5 s is below one takt at any configured station, so the screen is never a part
+    # behind the line it draws. It is not below `state_transition_seconds`, so a
+    # bring-up's acting states are not all individually visible -- the screen shows
+    # what the line is doing now, and the historian is what holds the sequence.
+    hmi_interval_seconds: float = 0.5
+    # Where that server binds inside the container. 0.0.0.0 because `plant-hmi` reaches
+    # it by service name over plant-net, and the container's own address on that network
+    # is not knowable here. It is deliberately NOT published to the host: the simulator
+    # publishes exactly one port, 4840, and test_compose_invariants pins that count.
+    #
+    # Named *_server_* rather than hmi_port because PLANT_HMI_PORT is the host port
+    # plant/compose.yml publishes the screen on, and line-simulator reads the same .env
+    # -- one spelling for two different ports is how a screen ends up proxying to
+    # nothing.
+    hmi_server_host: str = "0.0.0.0"
+    hmi_server_port: int = 8200
 
     # boundary
     endpoint_url: str = "opc.tcp://line-simulator:4840/plant"

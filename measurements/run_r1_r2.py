@@ -22,6 +22,38 @@ POSTGRES_IMAGE = (
     "051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0"
 )
 ENDPOINT = "opc.tcp://line-simulator:4840/plant"
+
+# THIS IS M1's RUNNER AND IT DOES NOT RUN AGAINST AN M2a GATEWAY. Deliberate; see below.
+#
+# M2a Task 10 qualified backfill_windows.stream by station code ("S2.TaktTime"), because
+# the table is UNIQUE (from_ts, to_ts, stream) and four stations writing a bare "TaktTime"
+# overwrote each other. Two things below no longer hold:
+#
+#   * `WHERE stream = 'TaktTime'` matches no ledger row, so read_rows comes back 0 and
+#     report.py's `read_rows == pg_rows` check reads FAIL on a run that was fine;
+#   * `WHERE s.signal = 'TaktTime'` sums all four stations into one pg_rows.
+#
+# It fails in the safe direction, and Task 12 looked at repairing it and decided not to.
+# Re-deriving the per-signal routing here would be a second copy of Reconciler.StoredAsync
+# -- five tables, a settled-transitions view and a raw_events DISTINCT -- and the way a
+# second copy goes wrong is to report a clean R1 while the gateway stores something else.
+# The right shape is to call the gateway's own /reconcile over an explicit window, and that
+# moves R1's criterion from `read_rows == pg_rows` to `lost == 0`, because at M2a's page
+# counts F2's page-boundary duplicates are expected rather than loss. Changing what R1
+# passes on is the spec owner's call.
+#
+# A second reason it does not run today, found by running `make verify`: _run_gateway below
+# starts r1-gw without mounting diagnostics/gateway/Gateway/config/signals.json, and Task 9
+# made that policy mandatory -- the container exits 139 on its first line. Whoever repairs the
+# queries has to add the mount too, the same one test_authenticity.py's fixture now carries.
+#
+# And the claim IS waiting on it. §1's read_rows == pg_rows is a three-way comparison -- the
+# plant's ledger, what the backfill read, what Postgres stores -- and only a runner outside both
+# stacks can make it, because §4.5 puts the plant's count on the far side of a boundary carrying
+# OPC UA and nothing else. The gateway's own /reconcile cannot stand in: a gateway that
+# reconnected backfills twice, so any window spanning both passes legitimately stores more than
+# it read. Until this file works, M2a has one authenticity proof of its own rather than two --
+# recorded as such in measurements/authenticity/README.md. r1-r2-results.json still describes M1.
 STREAMS = ("TaktTime", "PartCount", "InspectionResult")
 
 # One hour at a 6 s takt is 600 rows per stream; the full depth is 33 h.

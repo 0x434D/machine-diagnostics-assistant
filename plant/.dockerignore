@@ -8,3 +8,7 @@
 **/.pytest_cache
 **/.mypy_cache
 **/.ruff_cache
+# The HMI bundle is built inside its image; a dist/ or tsbuildinfo from a host `pnpm build`
+# in the context would be copied over the top of it.
+**/dist
+**/*.tsbuildinfo

@@ -82,9 +82,10 @@ async def test_defect_draw_does_not_depend_on_prior_calls() -> None:
     how many other parts were produced first. Before this fix, one shared
     `random.Random` advanced across every call, so changing the configured history
     depth (which changes how many catch-up calls precede live production) would have
-    silently shifted what live production draws for the same seed -- exactly the
-    coupling station_s3.run_live's own `settings.seed ^ 1` exists to prevent for
-    TaktTime jitter."""
+    silently shifted what live production draws for the same seed.
+
+    This is the property that lets `server.main` build one client for both phases
+    rather than M1's two."""
     seen: list[bytes] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -110,10 +111,10 @@ async def test_defect_draw_does_not_depend_on_prior_calls() -> None:
 
 @pytest.mark.asyncio
 async def test_constructor_seed_overrides_settings_seed_for_the_defect_draw() -> None:
-    """The `seed` constructor parameter is how a caller gives catch-up and live
-    phases independent defect streams (mirroring station_s3.run_live's
-    `settings.seed ^ 1`); confirm it actually changes the draw rather than being
-    silently ignored."""
+    """The verdict for a part must be a function of (seed, part_id) and of nothing
+    else -- so the seed has to be one of the two things that decide it, rather than a
+    parameter the client accepts and ignores. The test above asserts the part_id half
+    of that claim; this one asserts the seed half."""
     truth_bodies: dict[int, bytes] = {}
 
     def make_handler(seed: int) -> httpx.MockTransport:

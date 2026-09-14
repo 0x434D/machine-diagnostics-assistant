@@ -1,7 +1,8 @@
 name: weekly
 
-# The two backstops that do not belong on a pull request: one because it needs full history,
-# one because it must not be able to break an unrelated build at an arbitrary time.
+# The backstops that do not belong on a pull request: one needs full history, two must not be
+# able to break an unrelated build at an arbitrary time, and one is simply too slow — it builds
+# both stacks and generates 33 h of simulated history before it can assert anything.
 
 on:
   schedule:
@@ -57,3 +58,30 @@ jobs:
             plant/uv.lock
             diagnostics/uv.lock
       - run: make scan-images
+
+  # §1's authenticity proofs — the tests that would fail if a link were a facade. They were in
+  # no workflow at all until M2a Task 12, and all four of the diagnostics ones had been erroring
+  # at setup for three tasks with nothing red to say so: `make verify` is not part of `make
+  # check`, so the only thing that ever ran them was someone remembering to.
+  #
+  # Here rather than on the pull-request gate because `make authenticity` brings up the plant,
+  # waits for 33 h of simulated history, builds the gateway image and stops containers — tens of
+  # minutes, which is a gate people learn to skip.
+  authenticity:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            plant/uv.lock
+            diagnostics/uv.lock
+      # The plant's containers run as whoever owns the bind-mounted pki/, and on a runner that
+      # is not the 1000 the Compose default assumes. `make preflight` refuses rather than
+      # letting pki-init fail with EACCES, so the uid goes in before it runs.
+      - run: printf 'HOST_UID=%s\nHOST_GID=%s\n' "$(id -u)" "$(id -g)" >> plant/.env
+      - run: make authenticity

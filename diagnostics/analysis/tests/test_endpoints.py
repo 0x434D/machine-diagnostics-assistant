@@ -13,7 +13,7 @@ def test_stats_window_is_closed_and_counts_are_exact(client: TestClient) -> None
     body = client.get("/inspection/stats", params=WINDOW).json()
 
     assert body["total"] == 600  # one hour at 6 s takt
-    assert body["rejects"] == 30  # seeded at 5 %
+    assert body["rejects"] == 30  # the fixture's every-20th-part, not the plant's rate
     assert sum(d["count"] for d in body["by_defect_class"]) == 30
 
 

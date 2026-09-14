@@ -179,11 +179,31 @@ Component serials still belong to lots, so lot-level containment survives and ex
 as-built genealogy is gained on top. Three records per assembly instead of one —
 roughly 32,000 rows for an 18-hour history, which is nothing.
 
-Defaults, all configurable: **12 carriers · 6 s takt · buffer capacity 5**.
+Defaults, all configurable: **18 carriers · 6 s takt · buffer capacity 5**.
+
+**The stations do not share one takt — S3 paces the line.** Inspection is the slowest
+operation, so S1 and S2 run slightly faster than it and their buffers fill; S4 matches S3
+and its buffer runs near empty. The line's throughput is therefore S3's 6 s, which is the
+takt every other number here is quoted against.
+
+This is not decoration. On a perfectly balanced line every buffer oscillates between empty
+and one, because each station consumes exactly as fast as the one above produces — and
+buffer capacity then bounds nothing, because no buffer ever holds anything. A bottleneck is
+what gives a buffer a level to hold, and a level is what makes propagation delayed rather
+than immediate.
 
 Buffer capacity is the number that matters — it sets how long propagation takes to become
-visible. Five carriers at 6 s means S3 starves roughly 30 s after S2 stops, and reasoning
-about that delay is exactly the analysis's job.
+visible. With B2_3 full at five and a 6 s takt, S3 starves roughly 30 s after S2 stops, and
+reasoning about that delay is exactly the analysis's job.
+
+The carrier count has to cover what the filled buffers park, and **12 does not** — measured
+in M2a, not estimated. No station holds a carrier between cycles, so every carrier in the
+line parks in a buffer, against three buffers of five. At 12 the steady-state margin is one
+carrier and takt jitter is what closes it: with jitter off the pool never empties, and at the
+configured sigma it pins at zero and S1 suspends for want of a carrier in 29 % of its
+suspended cycles — the plant inventing an upstream shortage that no fault caused. 18 clears
+it at every jitter setting tested. The number stays provisional until M2a's propagation
+measurement confirms it against the real stations rather than a test double.
 
 ### 3.2 The clock
 
@@ -281,6 +301,15 @@ A good part's verdict confidence is high while all six class scores are low; the
 reading — mass spread over six defect classes — reported a good part as 27% confident and ~30%
 misaligned, which is the symptom of treating the vector as a distribution.
 
+**The verdict comes from the truth side channel; the confidence scalar is computed from the
+image.** `SimulatedClassifier` resolves *what is wrong* by part id as above, but derives
+*how sure it is* from a statistic of the rendered image — contrast, local variance. This is
+what turns scenario 6 from a stipulation into a cause: fouled optics render a genuinely
+degraded image, and confidence falls because the image fell. Stated honestly, a
+statistic-to-confidence formula is still a formula, so the stipulation moves one layer down
+rather than vanishing — but the fouling now has a real effect on a real measurement, and the
+confidence field carries information about the thing it claims to describe.
+
 Defect classes: `gap`, `crack`, `misalignment`, `missing_part`, `scratch`, `contamination`.
 
 **Only rejected parts carry their image** into the OPC UA event. Good parts get a result
@@ -352,7 +381,10 @@ realistic noise):
 - baseline scrap ~1.5 % drawn from a distribution unrelated to any injected fault
 - operator interventions — alarms acknowledged after realistic delays, manual restarts,
   the occasional unnecessary reset
-- false rejects and false accepts at a configured rate
+- false rejects and false accepts at a configured rate — **owned by the classifier (§3.4)**,
+  listed here because they are visible as line behaviour. A real `ModelClassifier` has error
+  rates emergently, so modelling them here as well would double-count them the day it is
+  swapped in
 - genuine carrier-to-carrier variation that is **not** a fault
 
 The last item is the point. Without background variation, finding carrier 7 is a
@@ -402,9 +434,23 @@ Objects/
 
 `StateReason` carries `starved`/`blocked` **and the buffer id**.
 
-Buffer nodes reference the stations they sit between. The gateway reads those references
-on connect and fills the `stations` and `buffers` tables — **the line's topology is
-discovered, not configured**. Nothing downstream hardcodes that S2 follows S1. Add a
+**What that tree actually counts to: 37 variable nodes.** Nine are static topology
+(`Capacity`, `UpstreamStation`, `DownstreamStation`) and are read on connect, never
+historised. Three restate what an event already carries authoritatively — `Lane1_Lot`,
+`Lane2_Lot`, `CurrentAssemblySerial` — and are live-only, because a historised second copy
+invites exactly the time-join §3.4a forbids. That leaves **25 historised streams and five
+event types**, against M1's two and one. The count is worth stating because all three of
+§12's truncation defects scale with it.
+
+Buffer nodes **carry** the stations they sit between, as `String` variables holding the
+station's browse name. The gateway reads them on connect and fills the `stations` and
+`buffers` tables — **the line's topology is discovered, not configured**.
+
+Variables rather than a custom OPC UA reference type, decided in M2a: the topology is
+equally discovered either way, and a custom hierarchical reference type adds
+asyncua/UA-.NETStandard interop risk for no diagnostic gain. What matters is that nothing
+downstream is *told* the order — S1 is identifiable as the only station that is no buffer's
+downstream, and the line walks forward from there. Nothing downstream hardcodes that S2 follows S1. Add a
 fifth station and the analysis adapts with no code change; this is also the concrete form
 of "point it at a real plant", whose topology likewise comes from its address space.
 
@@ -543,6 +589,7 @@ genealogy           assembly_serial · component_serial · position      as-buil
 
 part_station_events assembly_serial · station_id · entered_at · left_at · state_at_entry
 part_process_values assembly_serial · station_id · signal · value      authoritative per part
+part_process_curves assembly_serial · station_id · signal · samples[]  §3.4a's force–distance curve
 part_dispositions   assembly_serial · at · disposition · reason
 
 signals             source_ts · station_id · signal · value     PK(station, signal, source_ts)
@@ -1381,6 +1428,8 @@ owns two independent user-facing surfaces on opposite sides of the boundary.
 | **asyncua silently truncates reads at 10,000 values** | a backfill returns 10,000 of 19,800 and reports success — no exception, no bad `StatusCode` | bounded windows with a reconciled count per window; a window returning the ceiling is refused rather than trusted | **found in M1.** M2 multiplies the signal count by roughly ten, so this compounds |
 | **asyncua silently truncates event-history paging** | a client paging smaller than the server's cap receives one page and no continuation point, and stops early believing the window complete | treat a full final page with no continuation point as truncated and halve the window until every part comes back short | **found in M1: 96% of event history lost on a green run.** `read_node_history` has the identical structure, so variables are only safe when the page size happens to equal the server's cap |
 | **asyncua's write path discards the oldest** | the internal subscription queue caps each monitored item at 10,000 and drops the oldest, destroying the earliest history as it is generated | pace generation against the queue, and assert the historian's contents rather than the generator's ledger | **found in M1: the first 16 h 20 min of a 33 h run destroyed** — precisely the shift the history depth exists to guarantee |
+| **asyncua's historian cannot read back the timestamp it wrote** | one row poisons every `HistoryRead` whose window contains it, permanently — the backfill fails rather than returning short, so no data is lost, but the run cannot complete | fix it on the **read**: register a converter that accepts both spellings before the historian is used | **found in M2a.** `HistorySQLite` stores its timestamps via `isoformat()`, which omits microseconds when they are exactly zero; sqlite3's own `TIMESTAMP` converter then fails on what its adapter wrote (`ValueError: b'58+00'`). Measured at one row in 386,782, so `P(clean 33 h run) ≈ 0.68` — roughly one authenticity run in three dies. **It affects `SourceTimestamp` as well as `ServerTimestamp`**, and that is what decides the fix: `SourceTimestamp` is simulated time, written by the plant, so there is no wall-clock jitter to lean on and no value we may quietly perturb — the one column all analysis reads is the one that cannot be worked around on the write side |
+| **the buffer `Level` streams truncate where M1's signals did not** | 16.7 % of every window lost, silently, on a green run | the same full-page-with-no-continuation-point guard M1 built for events, shared by the variable path | **found in M2a, and it is §12's compounding prediction coming true.** The server returned no continuation point in 1,980 windows. `Level` steps by one at ~1,200/h against a 1,000-row page, so a one-hour window returns exactly 1,000 and stops. M1's signals were too sparse to reach the page size; M2a's are not |
 | OIDC in a browser SPA — redirect URIs, token refresh, silent renewal | login works locally and breaks on any change of host or port | `oidc-client-ts` rather than hand-rolled; redirect URIs derived from one configured origin | M5 |
 | Scope | eight milestones is weeks of work | milestone boundaries are releasable; M4 is the first honest demo over API and MCP | open |
 | Knowledge tuning without measurement | SOP edits become guesswork | the harness lands at M6; before/after diffing from then on | M6 |
@@ -1403,10 +1452,15 @@ M1  WALKING SKELETON        one station · two signals · one event with an imag
                             a chat box that answers one question with one real citation
                             ─── answers: does the boundary actually work? ───
 
-M2  THE PLANT IS REAL       4 stations · PackML · buffers · carriers · clock and catch-up
-                            component and assembly serials · lots · genealogy
-                            per-part process values · scenarios 1–8
-                            ground-truth log · noise floor · plant HMI
+M2  THE PLANT IS REAL       three sequenced plans. Each is releasable, and each carries
+                            its own gateway subscriptions and its own migration, so no
+                            milestone ends with streams that nothing reads
+    M2a the line runs       4 stations · PackML · buffers · carriers · clock and catch-up
+    M2b every part          component and assembly serials · lots · genealogy
+        has a name          per-part process values · force–distance curves
+    M2c the line            scenarios 1–8 · noise floor · ground-truth log · alarms
+        misbehaves on
+        purpose             ─── plant HMI grows across all three ───
 
 M3  THE ANALYSIS IS REAL    propagation with derivation · significance · coverage
                             time resolution · traceability and containment queries
@@ -1487,9 +1541,15 @@ Target: all of M1–M8.
   and 3.13 stands.** `asyncua` 2.0.1 runs on 3.13 and every defect M1 found in it (§12's three
   truncation rows) is a logic defect that a newer interpreter would not touch, so there is
   nothing here pulling towards 3.14. What would move it is a dependency that requires it;
-  revisit at M2, when the plant grows nine more signal streams and the dependency set changes.
-- Whether scenario 6 (optics fouling) survives review once confidence decay is visible in
-  practice, given that it is stipulated rather than emergent
+  revisit at M2, when the plant grows twenty-three more historised signal streams and four
+  more event types, and the dependency set changes. M2's own known additions (`fastapi`,
+  `uvicorn` for the plant HMI) are already resolved in the workspace and do not move this.
+- ~~Whether scenario 6 (optics fouling) survives review once confidence decay is visible in
+  practice, given that it is stipulated rather than emergent~~ **Closed at M2, by removing
+  the stipulation.** The simulator renders genuinely degraded images and the classifier
+  derives its confidence from the image (§3.4); the verdict still comes from the truth side
+  channel. The scenario keeps its label as the one that improves most when a real model
+  arrives
 - MCP specification revision to pin — decide at M4 against what clients actually support
 
 **Frontend design — an entire topic, deliberately deferred.** Not yet discussed: visual

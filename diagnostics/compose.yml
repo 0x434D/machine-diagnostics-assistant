@@ -57,9 +57,16 @@ services:
       GATEWAY_SECURITY_MODE: "Sign"
       GATEWAY_PKI_ROOT: "/pki"
       GATEWAY_QUEUE_PATH: "/queue/gateway.db"
+      # Stated beside the mount below, because the two have to name the same path and a
+      # gateway that cannot find its policy refuses to start.
+      GATEWAY_SIGNAL_POLICY: "/config/signals.json"
       GATEWAY_POSTGRES: "Host=postgres;Username=postgres;Password=${POSTGRES_PASSWORD:-diagnostics};Database=diagnostics"
     volumes:
       - ../pki:/pki:ro
+      # §5.1's per-signal deadbands, mounted rather than built in: they are tuned against
+      # jitter measured on a particular plant, and a rebuild is the wrong unit of change
+      # for that. Read-only -- the gateway never writes its own configuration.
+      - ./gateway/Gateway/config/signals.json:/config/signals.json:ro
       - gateway-queue:/queue
     ports:
       # Every number is configuration (§10.3). The default is what the README and the

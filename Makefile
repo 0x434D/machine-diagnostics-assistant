@@ -1,5 +1,6 @@
 SHELL := /bin/bash
 .PHONY: preflight lock-check fmt lint test check verify ci ci-scheduled contract m1-report \
+        m2a-r5 m2a-demo m2a-propagation backfill-counts authenticity \
         m1-demo browse ask verify-no-gaps \
         lint-python test-python check-python \
         lint-dotnet test-dotnet check-dotnet audit-dotnet \
@@ -11,6 +12,7 @@ SHELL := /bin/bash
 # existing; delete the guard when the directory does.
 GATEWAY := diagnostics/gateway
 UI := diagnostics/ui
+HMI := plant/hmi
 
 # Spec §10.7 says "restore with --locked-mode", and that reads like a contradiction here.
 # --locked-mode is a `dotnet restore` switch; `dotnet build` and `dotnet test` forward it to
@@ -64,13 +66,19 @@ define pytest-package
 	cd $(1) && uv run --frozen --package $(2) pytest $(2)/tests -q
 endef
 
-# The same, for a marker. Here exit 5 IS forgiven and stays forgiven: a package with no
-# authenticity-marked test has nothing to prove, not a broken suite, and `make verify` failing
-# on the plant's empty selection is why it had never once run through to the proofs that do
-# exist — which is a worse failure than the one the strictness was guarding against.
+# The same, for a marker, and exit 5 is no longer forgiven. It was, and correctly: the plant
+# then had no authenticity-marked test, so `make verify` died on an empty selection before it
+# ever reached the diagnostics proofs that did exist. Both packages now carry four each, which
+# makes "collected nothing" the failure rather than the cost of the fix — a rename, a dropped
+# `pytestmark`, a marker that stops matching, and `verify`, `authenticity` and weekly.yml all
+# go green having run zero proofs. That is precisely the breakage Task 12 found, re-enabled by
+# the fix for it, in the one guard that stands over all the other guards.
+#
+# "At least one", not an expected count. The count lives in the test files; a copy of it here
+# would have to be edited by whoever adds the fifth proof, and it catches nothing the empty
+# selection does not already catch.
 define pytest-marked
-	cd $(1) && uv run --frozen --package $(2) pytest $(2)/tests -q -m $(3); \
-	  status=$$?; [ $$status -eq 0 ] || [ $$status -eq 5 ]
+	cd $(1) && uv run --frozen --package $(2) pytest $(2)/tests -q -m $(3)
 endef
 
 define in-gateway
@@ -78,9 +86,13 @@ define in-gateway
 	else echo "skip [$(GATEWAY) arrives in M1 Task 7]: $(1)"; fi
 endef
 
-define in-ui
-	@if [ -d "$(UI)" ]; then cd "$(UI)" && $(1); \
-	else echo "skip [no $(UI) in this checkout]: $(1)"; fi
+# Two frontends now, in two different stacks: the diagnostics chat box and the plant HMI.
+# Parameterised on the directory rather than duplicated per frontend, so a step added to
+# one is added to both by construction -- which is the half of §10.8 a second hardcoded
+# copy would quietly stop holding.
+define in-frontend
+	@if [ -d "$(1)" ]; then cd "$(1)" && $(2); \
+	else echo "skip [no $(1) in this checkout]: $(2)"; fi
 endef
 
 # BuildKit attaches attestations only on an exporter that can carry them; the default docker
@@ -89,18 +101,31 @@ endef
 # Docker-format tar, but not an OCI *tar*, which fails with a misleading "manifest.json not
 # found". BUILDKIT_SBOM_SCAN_* widen the scan past the final stage — without them a multi-stage
 # build's SBOM omits everything the builder installed (handbook §9).
-define build-image
+#
+# $(1) build context, $(2) Dockerfile, $(3) image name, $(4) extra build args. Every image in
+# the repository goes through here: four of the seven did, and the three that did not were the
+# gateway, the diagnostics UI and the plant HMI — so `scan-images` passed over the one
+# container that sits on field-net. A second hardcoded copy per Dockerfile is how that
+# happened, and one macro with a context and a file is what stops it happening again.
+define build-image-at
 	SOURCE_DATE_EPOCH=$(SOURCE_EPOCH) docker buildx build $(1) \
+	  --file $(2) \
 	  --builder $(BUILDER) \
-	  --build-arg PACKAGE=$(2) \
+	  $(4) \
 	  --build-arg BUILDKIT_SBOM_SCAN_CONTEXT=true \
 	  --build-arg BUILDKIT_SBOM_SCAN_STAGE=true \
 	  --sbom=generator=$(SYFT) --provenance=true \
 	  --label org.opencontainers.image.source="$(IMAGE_SOURCE)" \
 	  --label org.opencontainers.image.revision="$$(git rev-parse HEAD)" \
 	  --label org.opencontainers.image.created="$$(date -u -d @$(SOURCE_EPOCH) +%Y-%m-%dT%H:%M:%SZ)" \
-	  --tag machine-agent/$(2):$(IMAGE_TAG) \
-	  --output type=oci,tar=false,dest=$(BUILD_DIR)/images/$(2)
+	  --tag machine-agent/$(3):$(IMAGE_TAG) \
+	  --output type=oci,tar=false,dest=$(BUILD_DIR)/images/$(3)
+endef
+
+# The four Python services: one Dockerfile per stack, parameterised on the package, built
+# from the stack's own directory. $(1) stack, $(2) package.
+define build-image
+$(call build-image-at,$(1),$(1)/Dockerfile,$(2),--build-arg PACKAGE=$(2))
 endef
 
 # The /etc/hosts check this used to carry is gone. It existed because the host was
@@ -242,15 +267,138 @@ verify-no-gaps:
 	      sys.exit(0 if r["reconciled"] else "RECONCILIATION FAILED")' \
 	  && echo "reconciled: nothing was read and lost, and no window is recorded as missing"
 
+# A PRINTOUT, NOT A PROOF, and the distinction is the whole reason this comment is long.
+#
+# It shows what the backfill read against what is stored, per stream, over the window the
+# ledger actually covers rather than /reconcile's default one. That is worth showing: at 26
+# streams "reconciled: true" says nothing about which stream holds what.
+#
+# What it does NOT do is assert `read == stored`, and it must not. Bounding the window changes
+# what is printed, not what can be checked: `ReconciliationResult.Reconciled` is
+# `Gaps.Count == 0 && all(Lost == 0)`, and `Lost` is `Math.Max(0, ...)`, so a surplus -- stored
+# exceeding read -- cannot fail it. An earlier version of this target was documented as proving
+# the equality while exiting on exactly the criterion `verify-no-gaps` uses, which is this
+# project's signature defect written into the file that catalogues its proofs.
+#
+# Asserting the equality here would be worse than leaving it unasserted, because the surplus is
+# legitimate. A reconnect runs BackfillFromStorageAsync a second time (Program.cs), so
+# `min(from_ts) .. max(to_ts)` unions two passes and contains the live stretch between them --
+# rows the subscription wrote that no window ever claimed. §1's own proofs cause exactly that,
+# by stopping the plant. Measured both ways on two boots: 402,044 read / 402,044 stored on a
+# clean single-pass boot, and 402,044 read / 427,571 stored on one that had reconnected. A
+# target asserting equality would call the second gateway broken.
+#
+# `read_rows == pg_rows` is therefore not provable from inside the diagnostics stack at all.
+# It needs the three-way comparison against the plant's own ledger, which lives outside both
+# stacks -- see measurements/authenticity/README.md, which lists it as not yet provable and
+# names what it waits on.
+#
+# The exit code is the same `reconciled` verify-no-gaps uses: gaps and losses, honestly, and
+# nothing more. The bounds come from `backfill_windows` rather than from a date typed here,
+# because the window is whatever this boot produced.
+backfill-counts:
+	@bounds=$$(docker compose -f diagnostics/compose.yml exec -T postgres \
+	    psql -U postgres -d diagnostics -t -A \
+	    -c "SELECT to_char(min(from_ts) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.USZ'), \
+	        to_char(max(to_ts) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.USZ') \
+	        FROM backfill_windows" | tr -d '\r'); \
+	 from=$${bounds%%|*}; to=$${bounds##*|}; \
+	 [ -n "$$from" ] && [ "$$from" != "$$to" ] \
+	   || { echo "backfill_windows is empty: nothing has been backfilled yet"; exit 1; }; \
+	 echo "   window $$from .. $$to"; \
+	 curl -sf "localhost:$${GATEWAY_PORT:-8080}/reconcile?from=$$from&to=$$to" \
+	   | python3 -c 'import json,sys; r = json.load(sys.stdin); \
+	       rows = sorted(r["streams"], key=lambda s: s["stream"]); \
+	       [print("   {stream:24} read={rowsReturned:7} stored={rowsStored:7} lost={lost}".format(**s)) for s in rows]; \
+	       print("   {} streams, {} read, {} stored, {} lost, {} gaps".format(len(rows), \
+	         sum(s["rowsReturned"] for s in rows), sum(s["rowsStored"] for s in rows), \
+	         sum(s["lost"] for s in rows), len(r["gaps"]))); \
+	       sys.exit(0 if r["reconciled"] else "gaps or lost rows over the backfill window")'
+
 # Aggregates every M1 measurement into one table with a verdict per risk, and exits non-zero
 # if any risk has neither a pass nor a recorded, justified deviation — so an unmeasured risk
 # cannot pass silently.
 m1-report:
 	cd plant && uv run --frozen --package simulator python $(CURDIR)/measurements/report.py
 
+# R5: the one number M1's results cannot predict -- historian throughput at M2's stream
+# count. Run before Task 2, not after the line is built, so a bad number changes the
+# design rather than the excuses.
+m2a-r5:
+	cd plant && uv run --frozen --package simulator python $(CURDIR)/measurements/run_r5.py
+
+# M2a's authenticity proof on its own, so the demo can show it without running the gate.
+# In process and under a second: it drives the same four station classes `server.build_line`
+# builds, with the address space replaced by recorders.
+m2a-propagation:
+	cd plant && uv run --frozen --package simulator pytest simulator/tests/test_propagation.py -v
+
+# The M2a demo: the line, where M1 had one station. Same shape as m1-demo, same rule about
+# ports -- every published port is read from the environment with the compose file's own
+# default, because the M1 demo could not run on the machine it was written on.
+#
+# What this does NOT do, stated rather than left as a gap a viewer has to notice: it does not
+# let you stop S2 by hand. The HMI is read-only in M2a. §3.5 requires every injection to write
+# the ground-truth log, §3.6 puts that log in M2c, and M5 gates the injection panel -- so a
+# button added here would inject faults nothing records, which is the one thing §13 forbids.
+# Step 6 runs the proof instead, and the proof is the stronger artifact anyway: it asserts the
+# delay rather than inviting you to watch for it.
+m2a-demo: preflight
+	@echo "== 1. plant: four stations, three buffers, 25 historised streams, 33 h of history"
+	docker compose -f plant/compose.yml up -d --build
+	@until docker compose -f plant/compose.yml exec -T line-simulator \
+	    python -c "import urllib.request" >/dev/null 2>&1; do sleep 2; done
+	@echo "== 2. the screen the line is built with (§15)"
+	@until curl -sf -o /dev/null "localhost:$${PLANT_HMI_PORT:-5174}/"; do sleep 2; done
+	@echo "   http://localhost:$${PLANT_HMI_PORT:-5174} -- and what to watch for:"
+	@echo "     * four stations green while the line is producing;"
+	@echo "     * B1_2 and B2_3 fill to capacity and stay there, B3_4 sits at 0-2."
+	@echo "       That is S3 being the bottleneck at 6.00 s against S1's 5.70 and S2's 5.85;"
+	@echo "     * S1 and S2 turn amber every couple of minutes on blocked:B1_2 / blocked:B2_3."
+	@echo "       Amber is the consequence colour and no fault is injected anywhere -- the"
+	@echo "       plant runs a fixed nominal takt in M2a, so every stop you see is the line"
+	@echo "       waiting on itself."
+	@echo "== 3. a foreign client browses the address space, buffers and all"
+	$(MAKE) browse
+	@echo "== 4. diagnostics: discover the topology, subscribe to 25 streams, backfill, go live"
+	docker compose -f diagnostics/compose.yml up -d --build
+	@until curl -sf localhost:$${GATEWAY_PORT:-8080}/status | grep -q '"state":"live"'; do \
+	    curl -s localhost:$${GATEWAY_PORT:-8080}/status; echo; sleep 5; done
+	@echo "== 5a. the one thing this stack can check about its own storage"
+	@$(MAKE) verify-no-gaps
+	@echo "   ^ read this precisely. Reconciled means no recorded gap and no stream whose"
+	@echo "     shortfall page boundaries do not explain. It is NOT 'nothing was missed':"
+	@echo "     Lost clamps at zero, so a surplus -- which every running gateway has, because"
+	@echo "     the live subscription writes rows no backfill window claimed -- carries no"
+	@echo "     information either way."
+	@echo "== 5b. the same comparison, per stream, over the window the backfill covers"
+	@$(MAKE) backfill-counts
+	@echo "   ^ a printout, and deliberately not a proof. Bounding the window changes what is"
+	@echo "     printed, not what is checked, and asserting read == stored here would be wrong:"
+	@echo "     a gateway that reconnected backfills a second time, so this window spans a live"
+	@echo "     stretch and legitimately stores more than it read. §1's read_rows == pg_rows"
+	@echo "     needs the plant's own ledger, which is on the far side of a boundary carrying"
+	@echo "     OPC UA and nothing else (§4.5). measurements/authenticity/README.md lists it as"
+	@echo "     not yet provable, and says what it waits on."
+	@echo "== 6. propagation, measured -- the step M1 had no line to show"
+	@echo "   Stop S2, and S3 starves once B2_3 drains. Not before, and not in sympathy."
+	@$(MAKE) m2a-propagation
+	@echo "   ^ the delay is derived from the level B2_3 held at the moment S2 stopped,"
+	@echo "     never the 30 s §3.1 quotes: in steady state that level is 4 or 5, so the"
+	@echo "     real delay is 24-32 s and a hardcoded 30 would be right about half the time."
+	@echo "== 7. ask, with the whole line behind the answer"
+	@until curl -sf -o /dev/null "localhost:$${UI_PORT:-5173}/"; do sleep 2; done
+	@echo "   the chat box is at http://localhost:$${UI_PORT:-5173}"
+	@$(MAKE) ask
+	@echo "== 8. the numbers -- M1's, and only M1's"
+	$(MAKE) m1-report
+	@echo "   ^ this table is R1-R4 measured against an M1 gateway over three streams. M2a has"
+	@echo "     not re-measured it: measurements/run_r1_r2.py does not run against this gateway"
+	@echo "     and its marker says why. Nothing above this line depends on it."
+
 contract:
 	cd diagnostics && uv run --frozen --package analysis python $(CURDIR)/scripts/generate-contract.py
-	$(call in-ui,pnpm install --frozen-lockfile && pnpm generate)
+	$(call in-frontend,$(UI),pnpm install --frozen-lockfile && pnpm generate)
 
 test-python: lock-check
 	$(call pytest-package,plant,simulator)
@@ -277,15 +425,22 @@ check-dotnet: lint-dotnet test-dotnet
 # worse than none. --build walks the references and --force stops a stale .tsbuildinfo from
 # reporting a pass it did not earn.
 lint-frontend:
-	$(call in-ui,pnpm install --frozen-lockfile && pnpm oxlint && pnpm prettier --check . && pnpm tsc --build --force)
+	$(call in-frontend,$(UI),pnpm install --frozen-lockfile && pnpm oxlint && pnpm prettier --check . && pnpm tsc --build --force)
+	$(call in-frontend,$(HMI),pnpm install --frozen-lockfile && pnpm oxlint && pnpm prettier --check . && pnpm tsc --build --force)
 # The generated types compile whether or not they still match contracts/ -- a stale one is
 # valid TypeScript asserting the shape of an endpoint that has moved on. Regenerating and
 # failing on a diff is the same guard lock-check is, in the one place the handbook left to
 # "it compiles".
-	$(call in-ui,pnpm generate && git diff --exit-code src/generated)
+#
+# $(UI) only, and $(HMI) gets no no-op stand-in for it: the HMI has no generated types --
+# it reads the simulator's own snapshot, which is inside one stack and has no entry in
+# contracts/ -- and a gate step that checks nothing is worse than no step. What holds that
+# payload still is simulator/tests/test_hmi.py.
+	$(call in-frontend,$(UI),pnpm generate && git diff --exit-code src/generated)
 
 test-frontend:
-	$(call in-ui,pnpm vitest run)
+	$(call in-frontend,$(UI),pnpm vitest run)
+	$(call in-frontend,$(HMI),pnpm vitest run)
 
 check-frontend: lint-frontend test-frontend
 
@@ -293,7 +448,8 @@ fmt:
 	cd plant && uv run --frozen ruff format . && uv run --frozen ruff check --fix .
 	cd diagnostics && uv run --frozen ruff format . && uv run --frozen ruff check --fix .
 	$(call in-gateway,dotnet format)
-	$(call in-ui,pnpm oxlint --fix && pnpm prettier --write .)
+	$(call in-frontend,$(UI),pnpm oxlint --fix && pnpm prettier --write .)
+	$(call in-frontend,$(HMI),pnpm oxlint --fix && pnpm prettier --write .)
 
 lint: lint-python lint-dotnet lint-frontend
 
@@ -306,6 +462,36 @@ check: lint test
 verify:
 	$(call pytest-marked,plant,simulator,authenticity)
 	$(call pytest-marked,diagnostics,analysis,authenticity)
+
+# `make verify` plus the plant it needs, brought up and taken down again.
+#
+# `verify`'s diagnostics half starts a gateway of its own against a plant that is *already*
+# running -- it has no stack of its own to bring up -- so `verify` alone cannot be a scheduled
+# job. This is the target a schedule can call, and it is why §1's four proofs could break for
+# three tasks with nothing red: `verify` is in no workflow, and a human habit is what was
+# supposed to run it.
+#
+# Not added to `check` or `ci`: it builds two stacks, generates 33 h of history and stops
+# containers, which is minutes on a laptop and tens of them on a runner. `ci-scheduled` is
+# where the checks that cost that much already live.
+authenticity: preflight
+	docker compose -f plant/compose.yml up -d --build
+# The plant's own phase, read through the HMI's proxy rather than with an OPC UA client:
+# `verify` reads history, and history read mid-catch-up is history still being written.
+# Bounded, so a plant that never comes up fails here rather than hanging the schedule.
+	@for i in $$(seq 1 120); do \
+	   curl -sf "localhost:$${PLANT_HMI_PORT:-5174}/api/plant/snapshot" \
+	     | grep -q '"phase":"live"' && break; \
+	   sleep 10; \
+	 done; \
+	 curl -sf "localhost:$${PLANT_HMI_PORT:-5174}/api/plant/snapshot" \
+	   | grep -q '"phase":"live"' \
+	   || { echo "plant never reached live"; docker compose -f plant/compose.yml logs --tail 40 line-simulator; \
+	        docker compose -f plant/compose.yml down; exit 1; }
+# The teardown runs whether the proofs passed or failed, and the exit status is still theirs.
+	@$(MAKE) verify; status=$$?; \
+	 docker compose -f plant/compose.yml down; \
+	 exit $$status
 
 # --- the rest of the pipeline (handbook §9) -----------------------------------------------
 
@@ -325,6 +511,11 @@ lint-actions:
 lint-commits:
 	uvx $(COMMITTED) $(COMMIT_RANGE)
 
+# All seven containers the two stacks run, so that `scan-images` below covers the whole of
+# what is deployed rather than the subset that happened to share a Dockerfile. Each context
+# and file is the pair its Compose service already declares — the gateway and the UI build
+# from the repository root because they need Directory.Build.props and contracts/
+# respectively, which is why neither fitted the per-stack macro above.
 images:
 	@mkdir -p $(BUILD_DIR)/images
 	@docker buildx inspect $(BUILDER) >/dev/null 2>&1 \
@@ -334,6 +525,9 @@ images:
 	$(call build-image,plant,inspection)
 	$(call build-image,diagnostics,analysis)
 	$(call build-image,diagnostics,agent)
+	$(call build-image-at,.,diagnostics/gateway/Dockerfile,edge-gateway,)
+	$(call build-image-at,.,diagnostics/ui/Dockerfile,diagnostics-ui,)
+	$(call build-image-at,plant,plant/hmi/Dockerfile,plant-hmi,)
 
 # Handbook §9: fail on HIGH and CRITICAL "with fixes available". --ignore-unfixed is that
 # second half, and it is not a softening — without it the gate fails on vulnerabilities nobody
@@ -350,12 +544,20 @@ scan-images: images
 # "at least top-level dependencies" the CRA asks for (handbook §9).
 # The format value is `cyclonedx1.5`; handbook §9 names it `cyclonedx`, which uv rejects.
 #
-# Covers the two Python workspaces and nothing else. The gateway's NuGet graph and the UI's
-# npm graph are NOT in here, and both have lock files that could produce one — dotnet through
-# CycloneDX.NET, pnpm through @cyclonedx/cyclonedx-npm, each a third-party tool this repository
-# would have to adopt and pin. Stated rather than left to be inferred from a file listing two
-# of the four stacks: an SBOM that silently covers half the dependencies is worse than one that
-# says which half, because the first gets believed.
+# Covers the two Python workspaces and nothing else. Named in full, because there are four
+# dependency graphs in this repository and two of them are not in here:
+#
+#   in    plant/uv.lock        -> build/sbom/plant.cdx.json        (simulator, inspection)
+#   in    diagnostics/uv.lock  -> build/sbom/diagnostics.cdx.json  (analysis, agent)
+#   NOT   diagnostics/gateway/Gateway/packages.lock.json           (NuGet, the edge gateway)
+#   NOT   diagnostics/ui/pnpm-lock.yaml AND plant/hmi/pnpm-lock.yaml  (npm, two frontends)
+#
+# All four have lock files that could produce one — dotnet through CycloneDX.NET, pnpm through
+# @cyclonedx/cyclonedx-npm, each a third-party tool this repository would have to adopt and
+# pin. Stated rather than left to be inferred from a build directory holding two files: an
+# SBOM that silently covers half the dependencies is worse than one that says which half,
+# because the first gets believed. `scan-images` is the other half of the answer and it does
+# cover all seven images, the gateway and both frontends included.
 sbom:
 	@mkdir -p $(BUILD_DIR)/sbom
 	cd plant && uv export --frozen --all-packages --no-dev --format cyclonedx1.5 \
@@ -381,6 +583,8 @@ audit-dotnet:
 ci: lint-commits lint-actions check sbom
 
 # What weekly.yml runs. Split from `ci` so that `ci` keeps meaning "what the pull-request
-# gate runs" — the claim CLAUDE.md makes. These are the time-dependent checks: their
-# verdict moves when a third party publishes, not when this repository changes.
-ci-scheduled: secrets-scan audit-dotnet scan-images
+# gate runs" — the claim CLAUDE.md makes. Two kinds of check live here: the time-dependent
+# ones, whose verdict moves when a third party publishes rather than when this repository
+# changes; and `authenticity`, which is too slow for a pull request and was in nothing at all
+# until §1's four proofs turned out to have been broken for three tasks with no run to say so.
+ci-scheduled: secrets-scan audit-dotnet scan-images authenticity

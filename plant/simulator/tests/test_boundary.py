@@ -131,7 +131,7 @@ async def test_the_trusted_gateway_certificate_connects_and_browses(pki: Path) -
             mode=ua.MessageSecurityMode.Sign,
         )
         async with client:
-            node = client.get_node(space.s3.nodeid)
+            node = client.get_node(space.inspection.node.nodeid)
             names = {
                 (await c.read_browse_name()).Name for c in await node.get_children()
             }

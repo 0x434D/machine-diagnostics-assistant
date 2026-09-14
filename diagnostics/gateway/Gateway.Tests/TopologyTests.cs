@@ -1,9 +1,14 @@
 using Gateway.Opc;
+using Opc.Ua;
 
 namespace Gateway.Tests;
 
 public sealed class TopologyTests
 {
+    private static readonly string[] Line = ["S1", "S2", "S3", "S4"];
+    private static readonly string[] OneStation = ["S1"];
+    private static readonly NodeId CapacityNode = new("B2_3.Capacity", 2);
+
     [Theory]
     [InlineData("S3_Inspection", "S3", "Inspection")]
     [InlineData("S1_Feeding", "S1", "Feeding")]
@@ -26,13 +31,114 @@ public sealed class TopologyTests
     }
 
     [Fact]
-    public void TheIngestPathAndDiscoveryAgreeOnTheStationCode()
+    public void TheLineIsOrderedByItsBuffers()
     {
-        // The one that would actually bite: PostgresWriter keys stations on the code carried
-        // in each record's payload, and discovery writes the stations table. If these drift,
-        // the line acquires a second station that does not exist.
-        Assert.Equal(
-            AddressSpace.StationCode,
-            TopologyDiscovery.SplitBrowseName("S3_Inspection").Code);
+        // §5.2's position_in_line, left null in M1 because it is derivable from the buffers
+        // and the buffers arrive now. The station no buffer feeds is first, and each buffer's
+        // downstream is one past its upstream -- so the order survives a Stations folder that
+        // browses out in any order at all.
+        Assert.Equal(Line, TopologyDiscovery.OrderStations(["S3", "S1", "S4", "S2"], Buffers()));
     }
+
+    [Fact]
+    public void ALineThatBranchesCannotBeOrderedAndSaysSo()
+    {
+        // Two buffers leaving one station is a tree, not a line. Picking either branch would
+        // write a position_in_line that every propagation query downstream then trusts, with
+        // nothing to distinguish it from a real one.
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            TopologyDiscovery.OrderStations(
+                Line, [Buffer("B1_2", "S1", "S2"), Buffer("B1_3", "S1", "S3")]));
+        Assert.Contains("branches", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ALineInTwoPiecesCannotBeOrderedAndSaysSo()
+    {
+        // S1->S2 and S3->S4 are two lines, not one. Both halves are internally consistent,
+        // which is exactly why this has to be refused rather than resolved by browse order.
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            TopologyDiscovery.OrderStations(
+                Line, [Buffer("B1_2", "S1", "S2"), Buffer("B3_4", "S3", "S4")]));
+        Assert.Contains("first station", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ABufferNamingAStationTheLineDoesNotHaveIsRefused()
+    {
+        // Discovery browsed the stations and read the buffer's endpoints from the same
+        // server, so this means the two disagree -- and buffers.upstream_station_id is a
+        // foreign key that would fail later and less clearly.
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            TopologyDiscovery.OrderStations(["S1", "S2"], [Buffer("B2_9", "S2", "S9")]));
+        Assert.Contains("S9", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ARingIsRefusedRatherThanWalkedForever()
+    {
+        // Every station has an upstream, so there is no first station and nothing to start
+        // from. Worth its own test because the natural implementation walks the chain.
+        Assert.Throws<InvalidOperationException>(() =>
+            TopologyDiscovery.OrderStations(
+                ["S1", "S2"], [Buffer("B1_2", "S1", "S2"), Buffer("B2_1", "S2", "S1")]));
+    }
+
+    [Fact]
+    public void OneStationWithNoBuffersIsStillAOneStationLine()
+    {
+        Assert.Equal(OneStation, TopologyDiscovery.OrderStations(OneStation, []));
+    }
+
+    [Fact]
+    public void ACapacityThatDidNotReadIsRefusedRatherThanStoredAsZero()
+    {
+        // Convert.ToInt32(null) is 0 and buffers.capacity is SMALLINT NOT NULL, so a Bad read
+        // used to store a buffer that holds nothing -- which is the number §3.3's propagation
+        // is measured against. Browsing the node proves it exists, not that the read answered.
+        var exception = Assert.Throws<ServiceResultException>(() =>
+            TopologyDiscovery.BufferCapacity(
+                new DataValue { StatusCode = StatusCodes.BadNodeIdUnknown }, "B2_3", CapacityNode));
+
+        Assert.Contains("B2_3", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("Capacity", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AGoodReadCarryingNoValueIsRefusedToo()
+    {
+        // The other half of the same hole: status Good, value null, and the conversion still
+        // produces a confident zero.
+        Assert.Throws<ServiceResultException>(() =>
+            TopologyDiscovery.BufferCapacity(new DataValue(Variant.Null), "B2_3", CapacityNode));
+    }
+
+    [Fact]
+    public void ACapacityTooLargeForItsColumnIsRefused()
+    {
+        // The node is UInt32 and the column is SMALLINT. The cast that writes it is what would
+        // otherwise turn 70,000 into a negative capacity, just as quietly.
+        var exception = Assert.Throws<ServiceResultException>(() =>
+            TopologyDiscovery.BufferCapacity(
+                new DataValue(new Variant(70_000u)), "B2_3", CapacityNode));
+
+        Assert.Contains("70000", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ACapacityThatReadIsTheCapacity()
+    {
+        Assert.Equal(
+            5, TopologyDiscovery.BufferCapacity(new DataValue(new Variant(5u)), "B2_3", CapacityNode));
+    }
+
+    private static IReadOnlyList<DiscoveredBuffer> Buffers() =>
+    [
+        Buffer("B1_2", "S1", "S2"),
+        Buffer("B2_3", "S2", "S3"),
+        Buffer("B3_4", "S3", "S4"),
+    ];
+
+    private static DiscoveredBuffer Buffer(string code, string upstream, string downstream) =>
+        new(code, new NodeId(code, 2), BuiltInType.UInt32, upstream, downstream, Capacity: 5);
 }

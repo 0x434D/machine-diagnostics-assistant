@@ -1,0 +1,18 @@
+{
+  "_comment": "Per-signal ingest policy (§5.1, M2 design D3). An unrecognised signal is subscribed with no deadband: topology is discovered, so this file will always be incomplete, and losing a stream is worse than storing a few redundant rows.",
+  "defaults": { "page_size": 1000 },
+  "signals": {
+    "TaktTime":         { "deadband": 0.05,  "why": "noisy float; 0.05 s is under the jitter sigma" },
+    "JoiningForcePeak": { "deadband": 5.0,   "why": "newtons, against a 4200 N nominal and 40 N sigma" },
+    "JoiningDistance":  { "deadband": 0.005, "why": "millimetres, against a 0.02 mm sigma" },
+    "LaneFill_1":       { "deadband": 0.5,   "why": "a slow level; sub-unit noise is not a change" },
+    "LaneFill_2":       { "deadband": 0.5,   "why": "as LaneFill_1" },
+    "OutfeedFill":      { "deadband": 0.5,   "why": "as LaneFill_1" },
+    "Level":            { "deadband": null,  "why": "steps by one; any deadband swallows transitions. NO page_size, and that is a measured choice rather than an omission: a buffer moves ~2 carriers per takt, so an hour holds ~1200 rows (39,603 over 33 h), every window fills the 1000 default with no continuation point and is halved -- 99 reads per stream per depth where 66 would do. Raising it above the plant's own history_page_size is the only way to make asyncua emit a continuation point at all (history_sql emits one only when a result exceeds ITS OWN max_history_data_response_size, never when it merely fills the client's LIMIT), so this server has never returned one for any stream and the gateway's continuation path is UNEXERCISED -- not known broken, and not known good either. The default is what has a verified-complete run behind it: read_rows == pg_rows on all 26 streams. Changing it means re-measuring, not just re-reading this line" },
+    "PartCount":        { "deadband": null,  "why": "monotonic counter; a deadband loses parts" },
+    "GoodCount":        { "deadband": null,  "why": "as PartCount" },
+    "RejectCount":      { "deadband": null,  "why": "as PartCount" },
+    "State":            { "deadband": null,  "why": "string; every transition matters" },
+    "StateReason":      { "deadband": null,  "why": "string; paired with State at one timestamp" }
+  }
+}

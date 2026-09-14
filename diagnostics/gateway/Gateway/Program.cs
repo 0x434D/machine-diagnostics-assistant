@@ -10,6 +10,11 @@ if (args.Contains(ConnectTest.Flag, StringComparer.Ordinal))
     return await ConnectTest.RunAsync(args, options).ConfigureAwait(false);
 }
 
+// Before anything connects or listens. A policy that is missing or malformed is a start-up
+// failure on purpose: an operator who mounted the file wrong has to find out at boot, not
+// from deadbands that quietly stopped applying weeks later.
+var signalPolicy = SignalPolicy.Load(options.SignalPolicyPath);
+
 var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
 var logger = app.Logger;
@@ -93,13 +98,13 @@ var ingest = Task.Run(
             }
         }
 
-        // §4.1: stations are browsed, not configured, before anything writes rows that
-        // reference them.
-        var topology = await TopologyDiscovery.DiscoverAsync(session, stopping).ConfigureAwait(false);
+        // §4.1: stations and buffers are browsed, not configured, and written before anything
+        // that references them arrives. A buffer level for a buffer the table does not have
+        // is refused deliberately, so this cannot wait until after the subscription starts.
         if (!string.IsNullOrWhiteSpace(options.PostgresConnectionString))
         {
             await TopologyDiscovery
-                .UpsertAsync(options.PostgresConnectionString, topology, stopping)
+                .UpsertAsync(options.PostgresConnectionString, space.Topology, stopping)
                 .ConfigureAwait(false);
         }
 
@@ -111,7 +116,10 @@ var ingest = Task.Run(
         // subscription opened before the plant finishes catching up delivers its history
         // through the live path at ~100 events/second, which is the thing §4.3 exists to
         // avoid. Backfill closes exactly the gap this gateway has.
-        var history = new HistoryBackfill(() => connection.Session!, space, EnqueueAsync, options);
+        var history = new HistoryBackfill(
+            HistoryBackfill.Through(() => connection.Session!), space, signalPolicy, EnqueueAsync,
+            options,
+            app.Services.GetRequiredService<ILoggerFactory>().CreateLogger<HistoryBackfill>());
         backfill = history;
 
         // One backfill for all three of §4.3's situations — first boot, a downstream outage
@@ -139,10 +147,21 @@ var ingest = Task.Run(
 
             historyAvailableFrom = from;
             state = "backfilling";
-            var report = await history.RunAsync(from, to, stopping).ConfigureAwait(false);
 
-            // R1's ledger. Written from the backfill's own report rather than recomputed, so
-            // the two cannot disagree about what was pulled.
+            // What the ledger already knows this plant publishes. A discovery that comes back
+            // short of it is a stream that stopped, and the backfill refuses rather than
+            // quietly covering one stream fewer than last time.
+            var knownStreams = writer is null
+                ? new HashSet<string>(StringComparer.Ordinal)
+                : await writer.KnownBackfillStreamsAsync(stopping).ConfigureAwait(false);
+
+            var report = await history.RunAsync(from, to, knownStreams, stopping)
+                .ConfigureAwait(false);
+
+            // R1's ledger, one row per stream per window. Written from the backfill's own
+            // report rather than recomputed, so the two cannot disagree about what was pulled
+            // — and per stream because an aggregate across 25 of them cannot say which one
+            // came back short, which is the only thing the ledger is for.
             if (writer is not null)
             {
                 foreach (var window in report.Windows)
@@ -156,7 +175,11 @@ var ingest = Task.Run(
 
         await BackfillFromStorageAsync().ConfigureAwait(false);
 
-        subscriptions = new Subscriptions(options, EnqueueAsync);
+        subscriptions = new Subscriptions(
+            options,
+            signalPolicy,
+            app.Services.GetRequiredService<ILoggerFactory>().CreateLogger<Subscriptions>(),
+            EnqueueAsync);
         // The returned Subscription is deliberately not held. The session owns it, and the
         // teardown below iterates session.Subscriptions rather than a handle of ours —
         // holding one invited exactly the mistake that comment describes, where a failed

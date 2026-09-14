@@ -32,6 +32,12 @@ public sealed record GatewayOptions
     /// <summary>On a volume, so the queue outlives the container it buffers for (§5.1).</summary>
     public const string DefaultQueuePath = "/queue/gateway.db";
 
+    /// <summary>
+    /// Mounted, not compiled in: §5.1's deadbands are per signal and per plant, and a rebuild
+    /// is the wrong unit of change for a number an engineer tunes against jitter they measured.
+    /// </summary>
+    public const string DefaultSignalPolicyPath = "/config/signals.json";
+
     public required string ApplicationUri { get; init; }
     public required string EndpointUrl { get; init; }
     public required string SecurityMode { get; init; }
@@ -40,6 +46,7 @@ public sealed record GatewayOptions
     public int MaxMessageSize { get; init; } = DefaultMaxMessageSize;
     public int ConnectTimeoutSeconds { get; init; } = DefaultConnectTimeoutSeconds;
     public string QueuePath { get; init; } = DefaultQueuePath;
+    public string SignalPolicyPath { get; init; } = DefaultSignalPolicyPath;
 
     /// <summary>Empty until Postgres exists for this deployment; the queue then simply fills.</summary>
     public string PostgresConnectionString { get; init; } = "";
@@ -51,14 +58,22 @@ public sealed record GatewayOptions
     public int PhasePollMs { get; init; } = 1_000;
 
     /// <summary>
-    /// One backfill window. At a 6 s takt this is 600 values per signal — sixteen times under
-    /// the 10,000 ceiling F1 measured, so a window can never silently truncate.
+    /// One backfill window, and the unit the reconciliation ledger records.
+    ///
+    /// <para>It is not a guarantee against truncation and never was. An hour holds ~600 values
+    /// of a station signal at a 6 s takt, but ~1,200 of a buffer <c>Level</c> — measured
+    /// against the live plant, above the page the policy gives it, and truncated silently
+    /// every window until <see cref="HistoryBackfill.ClassifyPage"/> was the thing deciding.
+    /// What this number actually governs is how much work a window that cannot be believed
+    /// costs before it is halved.</para>
     /// </summary>
     public TimeSpan BackfillWindow { get; init; } = TimeSpan.FromHours(1);
-    public int HistoryPageSize { get; init; } = 1_000;
 
     /// <summary>
     /// The event stream needs its own, far smaller page because its rows carry images.
+    /// It is the only page size that is not a signal's: every variable stream is paged at
+    /// <see cref="SignalPolicy"/>'s <c>page_size</c>, because a page size that lived here as
+    /// well would be a second mechanism for one number, free to disagree with the mounted file.
     /// R4 measured a reject image at up to 110,486 B, so a worst-case page of 25 all-reject
     /// events is ~2.7 MB against the 4 MiB response limit. At the plan's shared page size of
     /// 1,000 the response exceeds that limit and the read fails as BadEncodingLimitsExceeded
@@ -67,9 +82,14 @@ public sealed record GatewayOptions
     public int HistoryEventPageSize { get; init; } = 25;
 
     /// <summary>
-    /// The floor for subdividing an event window. At a 6 s takt a 30 s window holds ~5 parts,
-    /// well under any page size, so reaching this floor means something other than volume is
-    /// wrong and the run should fail rather than lose rows quietly.
+    /// How far subdivision may go, for any stream. At a 6 s takt a 30 s window holds ~5 parts
+    /// and ~10 buffer moves, far under any page size, so reaching this floor means something
+    /// other than volume is wrong and the run fails rather than storing a short window quietly.
+    ///
+    /// <para>Measured: against a one-hour window the event stream halves to 1 m 52.5 s, which
+    /// leaves two halvings of headroom and no more. A denser event stream — M2b adds four
+    /// event types — is answered by shortening <see cref="BackfillWindow"/>, not by lowering
+    /// this: the floor is what stops subdivision from hiding a defect that is not volume.</para>
     /// </summary>
     public TimeSpan MinimumBackfillWindow { get; init; } = TimeSpan.FromSeconds(30);
 
@@ -87,9 +107,6 @@ public sealed record GatewayOptions
     public int SamplingIntervalMs { get; init; } = 250;
     public uint QueueSize { get; init; } = 100;
     public uint EventQueueSize { get; init; } = 200;
-
-    /// <summary>Absolute deadband on TaktTime, in seconds.</summary>
-    public double TaktDeadband { get; init; } = 0.05;
 
     public string OwnStoreRoot => Path.Join(PkiRoot, "edge-gateway");
     public string TrustedStoreRoot => Path.Join(PkiRoot, "trusted");
@@ -132,12 +149,17 @@ public sealed record GatewayOptions
             RejectedStoreRoot = Read(
                 environment, "GATEWAY_REJECTED_STORE_ROOT", DefaultRejectedStoreRoot),
             QueuePath = Read(environment, "GATEWAY_QUEUE_PATH", DefaultQueuePath),
+            SignalPolicyPath = Read(
+                environment, "GATEWAY_SIGNAL_POLICY", DefaultSignalPolicyPath),
             PostgresConnectionString = Read(environment, "GATEWAY_POSTGRES", ""),
             DrainBatchSize = ReadInt(environment, "GATEWAY_DRAIN_BATCH_SIZE", 200),
             HistoryEventPageSize = ReadInt(environment, "GATEWAY_HISTORY_EVENT_PAGE_SIZE", 25),
+            BackfillWindow = TimeSpan.FromMinutes(
+                ReadWindowLength(environment, "GATEWAY_BACKFILL_WINDOW_MINUTES", 60)),
+            MinimumBackfillWindow = TimeSpan.FromSeconds(
+                ReadWindowLength(environment, "GATEWAY_MINIMUM_BACKFILL_WINDOW_SECONDS", 30)),
             HistoryDepth = TimeSpan.FromHours(
                 ReadInt(environment, "GATEWAY_HISTORY_DEPTH_HOURS", 33)),
-            HistoryPageSize = ReadInt(environment, "GATEWAY_HISTORY_PAGE_SIZE", 1_000),
             MaxByteStringLength = ReadInt(
                 environment, "GATEWAY_MAX_BYTE_STRING_LENGTH", DefaultMaxByteStringLength),
             MaxMessageSize = ReadInt(
@@ -156,4 +178,36 @@ public sealed record GatewayOptions
     private static int ReadInt(
         IReadOnlyDictionary<string, string?> environment, string key, int fallback) =>
         int.TryParse(Read(environment, key, string.Empty), out var value) ? value : fallback;
+
+    /// <summary>
+    /// A window length, refused unless it is a positive whole number.
+    ///
+    /// <para>Zero is the one value in this file that cannot make progress rather than merely
+    /// being wrong: <c>HistoryBackfill.RunAsync</c> walks its windows with
+    /// <c>start = start.Add(BackfillWindow)</c>, so a zero-length window never advances and the
+    /// backfill spins for ever, accumulating ledger entries — a hang with no error, which is
+    /// worse than every misconfiguration this file can otherwise produce. Negative is the same
+    /// loop running backwards.</para>
+    ///
+    /// <para>Unparseable is refused too, and unlike the other keys here. The value is a
+    /// length of time that governs whether a truncated stream can be subdivided at all; a typo
+    /// silently becoming the default is the shape §5.1's policy keys were made to fail on.</para>
+    /// </summary>
+    /// <exception cref="ArgumentException">the value is set and is not a positive integer.</exception>
+    private static int ReadWindowLength(
+        IReadOnlyDictionary<string, string?> environment, string key, int fallback)
+    {
+        var raw = Read(environment, key, string.Empty);
+        if (raw.Length == 0)
+        {
+            return fallback;
+        }
+
+        return int.TryParse(raw, out var value) && value > 0
+            ? value
+            : throw new ArgumentException(
+                $"{key} is '{raw}'; a backfill window must be a whole number greater than zero, "
+                + "and a window of zero never advances",
+                nameof(environment));
+    }
 }

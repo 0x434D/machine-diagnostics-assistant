@@ -20,4 +20,12 @@
     <ProjectReference Include="..\Gateway\Gateway.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- The policy the container mounts, at the path the tests read it from. Copied rather
+         than duplicated: a test fixture that merely resembled the shipped file would pass
+         while the real deadbands were wrong. -->
+    <Content Include="..\Gateway\config\signals.json" Link="config\signals.json"
+             CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

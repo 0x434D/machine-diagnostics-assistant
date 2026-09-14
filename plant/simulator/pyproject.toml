@@ -16,6 +16,21 @@ dependencies = [
     # module builds SANs and key usage with. Pinned to the version already resolved
     # transitively via asyncua, so this adds no new version to the dependency graph.
     "cryptography==50.0.1",
+    # simulator.hmi serves §15's plant screen from inside this process (D5): one source
+    # of truth for what the line is doing, and M2c's fault injection reaches the
+    # scenario engine directly instead of needing a channel back in. Both are already
+    # resolved in this workspace at these versions by the inspection package, so
+    # neither adds a version to the graph -- only an edge.
+    "fastapi==0.141.1",
+    "uvicorn==0.52.4",
+    # This one *is* new to the graph, and the brief that asked for a WebSocket assumed
+    # it was not. uvicorn ships no WebSocket protocol implementation of its own: without
+    # `websockets` or `wsproto` installed, `uvicorn.protocols.websockets.auto` resolves
+    # to None and every upgrade request is answered 501, silently as far as the server
+    # log is concerned. `websockets` is the one uvicorn's own `[standard]` extra pulls
+    # and the one its sans-io protocol is written against, so it is the choice that adds
+    # no second opinion about framing. Pinned like everything else here.
+    "websockets==17.1",
 ]
 
 [dependency-groups]
@@ -35,3 +50,14 @@ dev = [
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+# Registered so `make verify`'s `-m authenticity` selects rather than warns.
+#
+# Deliberately WITHOUT diagnostics/analysis's `addopts = -m 'not authenticity'`. That
+# exclusion exists because those proofs stop and start real containers and take
+# minutes; the plant's propagation proof runs a `Line` in process in a few seconds, so
+# excluding it from the gate would cost nothing and lose the one test that would fail
+# if §3.1's whole propagation claim stopped being true. It runs in `make check` and is
+# also what `make verify` selects.
+markers = ["authenticity: §1's proofs (make verify), in process here"]

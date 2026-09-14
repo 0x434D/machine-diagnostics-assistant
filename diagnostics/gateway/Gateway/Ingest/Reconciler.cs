@@ -1,3 +1,4 @@
+using Gateway.Opc;
 using Npgsql;
 
 namespace Gateway.Ingest;
@@ -68,12 +69,21 @@ public sealed class Reconciler
         await using var connection = new NpgsqlConnection(_connectionString);
         await connection.OpenAsync(ct).ConfigureAwait(false);
 
-        var streams = new List<StreamReconciliation>
+        // Every stream the ledger names, rather than a list stated here. A list would be a
+        // second enumeration of a discovered topology, and the way it fails is the worst one
+        // available: a stream nobody reconciles is a stream that reports "reconciled" while
+        // it holds nothing, which is exactly what naming M1's three streams did the moment
+        // the ledger started qualifying them by station.
+        var streams = new List<StreamReconciliation>();
+        foreach (var ledger in await LedgerAsync(connection, from, to, ct).ConfigureAwait(false))
         {
-            await ForSignalAsync(connection, "TaktTime", from, to, ct).ConfigureAwait(false),
-            await ForSignalAsync(connection, "PartCount", from, to, ct).ConfigureAwait(false),
-            await ForEventsAsync(connection, from, to, ct).ConfigureAwait(false),
-        };
+            streams.Add(new StreamReconciliation(
+                ledger.Stream,
+                ledger.Returned,
+                await StoredAsync(connection, ledger.Stream, from, to, ct).ConfigureAwait(false),
+                ledger.Pages,
+                ledger.Windows));
+        }
 
         return new ReconciliationResult(
             from, to, streams,
@@ -104,58 +114,125 @@ public sealed class Reconciler
         return gaps;
     }
 
-    private static async Task<StreamReconciliation> ForSignalAsync(
-        NpgsqlConnection connection, string signal, DateTime from, DateTime to,
-        CancellationToken ct)
-    {
-        var ledger = await LedgerAsync(connection, signal, from, to, ct).ConfigureAwait(false);
-
-        await using var command = new NpgsqlCommand(
-            "SELECT count(*) FROM signals WHERE signal = $1 AND source_ts >= $2 AND source_ts < $3",
-            connection);
-        command.Parameters.AddWithValue(signal);
-        command.Parameters.AddWithValue(from);
-        command.Parameters.AddWithValue(to);
-        var stored = Convert.ToInt32(await command.ExecuteScalarAsync(ct).ConfigureAwait(false));
-
-        return new StreamReconciliation(
-            signal, ledger.Returned, stored, ledger.Pages, ledger.Windows);
-    }
-
-    private static async Task<StreamReconciliation> ForEventsAsync(
-        NpgsqlConnection connection, DateTime from, DateTime to, CancellationToken ct)
-    {
-        var ledger = await LedgerAsync(connection, "InspectionResult", from, to, ct)
-            .ConfigureAwait(false);
-
-        await using var command = new NpgsqlCommand(
-            "SELECT count(*) FROM inspection_results WHERE source_ts >= $1 AND source_ts < $2",
-            connection);
-        command.Parameters.AddWithValue(from);
-        command.Parameters.AddWithValue(to);
-        var stored = Convert.ToInt32(await command.ExecuteScalarAsync(ct).ConfigureAwait(false));
-
-        return new StreamReconciliation(
-            "InspectionResult", ledger.Returned, stored, ledger.Pages, ledger.Windows);
-    }
-
-    private static async Task<(int Returned, int Pages, int Windows)> LedgerAsync(
+    /// <summary>
+    /// How many rows one stream's values are stored as, in the table
+    /// <see cref="PostgresWriter"/> derives that stream into. The routing below mirrors the
+    /// writer's, because a count taken from a different table than the one the rows went into
+    /// is not a reconciliation of anything.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// the ledger row names a stream with no owner. Every row this gateway writes is
+    /// <c>code.signal</c>; an unqualified one predates that and cannot be attributed to a
+    /// station, so it is refused rather than counted against an arbitrary one.
+    /// </exception>
+    private static async Task<int> StoredAsync(
         NpgsqlConnection connection, string stream, DateTime from, DateTime to,
         CancellationToken ct)
     {
+        var separator = stream.IndexOf('.', StringComparison.Ordinal);
+        if (separator <= 0 || separator == stream.Length - 1)
+        {
+            throw new InvalidOperationException(
+                $"backfill_windows names a stream '{stream}' with no owner; it predates the "
+                + "station qualifier and cannot be reconciled against one station's rows");
+        }
+
+        var code = stream[..separator];
+        var signal = stream[(separator + 1)..];
+
+        var query = signal switch
+        {
+            Subscriptions.EventStream => new StoredQuery(
+                """
+                SELECT count(*) FROM inspection_results r
+                JOIN stations s ON s.id = r.station_id
+                WHERE s.code = $1 AND r.source_ts >= $2 AND r.source_ts < $3
+                """,
+                new object[] { code, from, to }),
+
+            Subscriptions.BufferLevelSignal => new StoredQuery(
+                """
+                SELECT count(*) FROM buffer_levels l
+                JOIN buffers b ON b.id = l.buffer_id
+                WHERE b.code = $1 AND l.source_ts >= $2 AND l.source_ts < $3
+                """,
+                new object[] { code, from, to }),
+
+            // One State value is one settled transition, so this is exact. The view is what
+            // "settled" means, stated once (§5.2), rather than a `to_state IS NOT NULL`
+            // repeated in every query that has to remember it.
+            PostgresWriter.StateSignal => new StoredQuery(
+                """
+                SELECT count(*) FROM state_changes_settled c
+                JOIN stations s ON s.id = c.station_id
+                WHERE s.code = $1 AND c.source_ts >= $2 AND c.source_ts < $3
+                """,
+                new object[] { code, from, to }),
+
+            // raw_events, not state_changes, and this is the one stream that has to be counted
+            // there. A StateReason value is not a row of its own: it is a column on the row its
+            // paired State keys, and the empty one a station publishes when it stops being
+            // suspended is deliberately stored as the NULL that already says so. Counting rows
+            // carrying text reports every unsuspend as lost; counting the station's rows counts
+            // what State put there, so Returned == Stored identically and the check cannot fire
+            // under any input at all -- a row on /reconcile that can only ever say "fine".
+            //
+            // raw_events is verbatim and InsertRawAsync runs before the empty-reason return, so
+            // every value the read handed over is there. DISTINCT on the timestamp because a
+            // page boundary re-delivers one and raw_events is append-only.
+            PostgresWriter.StateReasonSignal => new StoredQuery(
+                """
+                SELECT count(DISTINCT source_ts) FROM raw_events
+                WHERE kind = 'datachange'
+                  AND payload->>'Station' = $1 AND payload->>'Signal' = $2
+                  AND source_ts >= $3 AND source_ts < $4
+                """,
+                new object[] { code, signal, from, to }),
+
+            _ => new StoredQuery(
+                """
+                SELECT count(*) FROM signals g
+                JOIN stations s ON s.id = g.station_id
+                WHERE s.code = $1 AND g.signal = $2 AND g.source_ts >= $3 AND g.source_ts < $4
+                """,
+                new object[] { code, signal, from, to }),
+        };
+
+        await using var command = new NpgsqlCommand(query.Sql, connection);
+        foreach (var parameter in query.Parameters)
+        {
+            command.Parameters.AddWithValue(parameter);
+        }
+
+        return Convert.ToInt32(await command.ExecuteScalarAsync(ct).ConfigureAwait(false));
+    }
+
+    private static async Task<IReadOnlyList<LedgerEntry>> LedgerAsync(
+        NpgsqlConnection connection, DateTime from, DateTime to, CancellationToken ct)
+    {
         await using var command = new NpgsqlCommand(
-            "SELECT coalesce(sum(rows_returned), 0), coalesce(sum(pages), 0), count(*) "
-            + "FROM backfill_windows WHERE stream = $1 AND from_ts >= $2 AND to_ts <= $3",
+            "SELECT stream, coalesce(sum(rows_returned), 0), coalesce(sum(pages), 0), count(*) "
+            + "FROM backfill_windows WHERE from_ts >= $1 AND to_ts <= $2 "
+            + "GROUP BY stream ORDER BY stream",
             connection);
-        command.Parameters.AddWithValue(stream);
         command.Parameters.AddWithValue(from);
         command.Parameters.AddWithValue(to);
 
+        var entries = new List<LedgerEntry>();
         await using var reader = await command.ExecuteReaderAsync(ct).ConfigureAwait(false);
-        await reader.ReadAsync(ct).ConfigureAwait(false);
-        return (
-            Convert.ToInt32(reader.GetValue(0)),
-            Convert.ToInt32(reader.GetValue(1)),
-            Convert.ToInt32(reader.GetValue(2)));
+        while (await reader.ReadAsync(ct).ConfigureAwait(false))
+        {
+            entries.Add(new LedgerEntry(
+                reader.GetString(0),
+                Convert.ToInt32(reader.GetValue(1)),
+                Convert.ToInt32(reader.GetValue(2)),
+                Convert.ToInt32(reader.GetValue(3))));
+        }
+
+        return entries;
     }
+
+    private sealed record LedgerEntry(string Stream, int Returned, int Pages, int Windows);
+
+    private sealed record StoredQuery(string Sql, object[] Parameters);
 }

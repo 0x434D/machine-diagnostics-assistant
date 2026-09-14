@@ -8,6 +8,10 @@ public sealed class PostgresWriterTests : IAsyncLifetime
 {
     private static readonly DateTime Instant = new(2026, 9, 12, 2, 14, 0, DateTimeKind.Utc);
 
+    // Fixture topology only. The plant's capacity is configuration (§3.1); nothing here
+    // asserts on the number, it just has to satisfy the NOT NULL column.
+    private const short BufferCapacity = 5;
+
     // Pinned by digest, not by tag (§10.7). scripts/pin-images.sh re-resolves it.
     private const string PostgresImage =
         "postgres:17-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0";
@@ -32,12 +36,8 @@ public sealed class PostgresWriterTests : IAsyncLifetime
         // genuinely malformed record (an event with no assembly serial, which violates the
         // inspection_results primary key) rather than by a test-only failure switch, so the
         // test cannot pass while the real failure path is broken.
-        var malformed = new IngestRecord(
-            Kind: "event", NodeId: "ns=2;i=9", SourceTs: Instant, ServerTs: Instant,
-            StatusCode: 0, PayloadJson: """{"Station":"S3","ModelVersion":"sim-1"}""",
-            ImageBytes: null);
-
-        await Assert.ThrowsAnyAsync<Exception>(() => _writer.WriteBatchAsync([malformed]));
+        await Assert.ThrowsAnyAsync<Exception>(
+            () => _writer.WriteBatchAsync([MalformedEvent("S3")]));
 
         Assert.Equal(0, await CountAsync("raw_events"));
         Assert.Equal(0, await CountAsync("inspection_results"));
@@ -126,11 +126,11 @@ public sealed class PostgresWriterTests : IAsyncLifetime
 
         // Three returned, two stored: the third was the duplicate a page boundary re-included.
         await _writer.RecordBackfillWindowAsync(
-            window, Instant, "TaktTime", rowsReturned: 3, pages: 2, durationMs: 10);
+            window, Instant, "S3.TaktTime", rowsReturned: 3, pages: 2, durationMs: 10);
 
         var result = await new Reconciler(_postgres.GetConnectionString())
             .CheckAsync(window, Instant);
-        var takt = result.Streams.Single(s => s.Stream == "TaktTime");
+        var takt = result.Streams.Single(s => s.Stream == "S3.TaktTime");
 
         Assert.Equal(3, takt.RowsReturned);
         Assert.Equal(2, takt.RowsStored);
@@ -148,13 +148,13 @@ public sealed class PostgresWriterTests : IAsyncLifetime
         await _writer.WriteBatchAsync([SampleDataChange("TaktTime", window.AddMinutes(1), 6.0)]);
         await _writer.WriteBatchAsync([SampleDataChange("TaktTime", window.AddMinutes(2), 6.1)]);
         await _writer.RecordBackfillWindowAsync(
-            window, Instant, "TaktTime", rowsReturned: 8, pages: 1, durationMs: 10);
+            window, Instant, "S3.TaktTime", rowsReturned: 8, pages: 1, durationMs: 10);
 
         var result = await new Reconciler(_postgres.GetConnectionString())
             .CheckAsync(window, Instant);
 
         Assert.False(result.Reconciled);
-        Assert.Equal(6, result.Streams.Single(s => s.Stream == "TaktTime").Lost);
+        Assert.Equal(6, result.Streams.Single(s => s.Stream == "S3.TaktTime").Lost);
     }
 
     [Fact]
@@ -170,7 +170,7 @@ public sealed class PostgresWriterTests : IAsyncLifetime
         await _writer.WriteBatchAsync([SampleDataChange("TaktTime", window.AddMinutes(1), 6.0)]);
         await _writer.WriteBatchAsync([SampleDataChange("TaktTime", window.AddMinutes(2), 6.1)]);
         await _writer.RecordBackfillWindowAsync(
-            window, Instant, "TaktTime", rowsReturned: 1, pages: 1, durationMs: 10);
+            window, Instant, "S3.TaktTime", rowsReturned: 1, pages: 1, durationMs: 10);
 
         var result = await new Reconciler(_postgres.GetConnectionString())
             .CheckAsync(window, Instant);
@@ -188,15 +188,226 @@ public sealed class PostgresWriterTests : IAsyncLifetime
         var window = Instant.AddHours(-1);
         await _writer.WriteBatchAsync([SampleDataChange("TaktTime", window.AddMinutes(1), 6.0)]);
         await _writer.RecordBackfillWindowAsync(
-            window, Instant, "TaktTime", rowsReturned: 4, pages: 4, durationMs: 10);
+            window, Instant, "S3.TaktTime", rowsReturned: 4, pages: 4, durationMs: 10);
 
         var result = await new Reconciler(_postgres.GetConnectionString())
             .CheckAsync(window, Instant);
 
-        var takt = result.Streams.Single(s => s.Stream == "TaktTime");
+        var takt = result.Streams.Single(s => s.Stream == "S3.TaktTime");
         Assert.Equal(3, takt.ExpectedFromPageBoundaries);
         Assert.Equal(0, takt.Lost);
         Assert.True(result.Reconciled);
+    }
+
+    [Fact]
+    public async Task EveryStreamGetsItsOwnReconciliationRow()
+    {
+        // R1's ledger is per stream. One aggregate row across 25 streams cannot say which one
+        // came back short, which is the only thing the ledger is for.
+        foreach (var stream in new[] { "S2.TaktTime", "S2.JoiningForcePeak" })
+        {
+            await _writer.RecordBackfillWindowAsync(
+                Instant, Instant.AddHours(1), stream, rowsReturned: 600, pages: 1, durationMs: 12);
+        }
+
+        var rows = await QueryAsync(
+            "SELECT stream, rows_returned FROM backfill_windows ORDER BY stream");
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal("S2.JoiningForcePeak", rows[0]["stream"]);
+        Assert.Equal("S2.TaktTime", rows[1]["stream"]);
+    }
+
+    [Fact]
+    public async Task TwoStationsOneSignalAndOneWindowAreTwoLedgerRows()
+    {
+        // The defect the qualifier exists for: backfill_windows is UNIQUE (from_ts, to_ts,
+        // stream) and the write upserts on it, so four stations recording a bare "TaktTime"
+        // over the same window leave one row holding the last station's numbers — and the
+        // reconciliation then reports that station's count for all four. Station CODE, not
+        // browse name: two identifiers for one station means two rows for one station.
+        foreach (var station in new[] { "S1", "S2", "S3", "S4" })
+        {
+            await _writer.RecordBackfillWindowAsync(
+                Instant, Instant.AddHours(1), $"{station}.TaktTime",
+                rowsReturned: 600, pages: 1, durationMs: 12);
+        }
+
+        Assert.Equal(4, await CountAsync("backfill_windows"));
+    }
+
+    [Fact]
+    public async Task AStreamTheLedgerCannotAttributeToAnOwnerIsRefused()
+    {
+        // An unqualified row predates the qualifier and could belong to any of four stations.
+        // Counted against one of them it would report a loss or a surplus that is an artefact
+        // of the guess, so /reconcile fails loudly instead of answering.
+        await _writer.RecordBackfillWindowAsync(
+            Instant, Instant.AddHours(1), "TaktTime", rowsReturned: 600, pages: 1, durationMs: 12);
+
+        var reconciler = new Reconciler(_postgres.GetConnectionString());
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(
+            () => reconciler.CheckAsync(Instant, Instant.AddHours(1)));
+
+        Assert.Contains("TaktTime", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task EveryKindOfStreamIsReconciledAgainstTheTableItsRowsWentInto()
+    {
+        // A signal, a buffer level and an inspection event land in three different tables, and
+        // a stream counted against the wrong one reconciles against nothing at all.
+        await SeedTopologyAsync();
+        var window = Instant.AddHours(-1);
+
+        await _writer.WriteBatchAsync([
+            SampleDataChange("TaktTime", window.AddMinutes(1), 6.0),
+            SampleBufferLevel("B1_2", window.AddMinutes(1), 3),
+            SampleEvent("A-1", reject: false, image: null),
+        ]);
+
+        foreach (var stream in new[] { "S3.TaktTime", "B1_2.Level", "S3.InspectionResult" })
+        {
+            await _writer.RecordBackfillWindowAsync(
+                window, Instant, stream, rowsReturned: 1, pages: 1, durationMs: 10);
+        }
+
+        // Past Instant, because SampleEvent is stamped on it and the window is half-open.
+        var result = await new Reconciler(_postgres.GetConnectionString())
+            .CheckAsync(window, Instant.AddMinutes(1));
+
+        Assert.Equal(3, result.Streams.Count);
+        Assert.All(result.Streams, stream => Assert.Equal(1, stream.RowsStored));
+        Assert.True(result.Reconciled);
+    }
+
+    [Fact]
+    public async Task AnUnsuspendCarriesNoReasonAndIsNotALostStateReasonRow()
+    {
+        // A StateReason value is not a row of its own: it is a column on the row its paired
+        // State keys. The empty string a station publishes when it stops being suspended is
+        // deliberately stored as the NULL that already says so, and counting only the rows
+        // carrying text would report every unsuspend in the history as read and lost.
+        await SeedTopologyAsync();
+        var window = Instant.AddHours(-1);
+        var suspended = window.AddMinutes(1);
+        var running = window.AddMinutes(2);
+
+        await _writer.WriteBatchAsync([
+            SampleDataChange("S2", "State", suspended, "Suspended"),
+            SampleDataChange("S2", "StateReason", suspended, "starved:B1_2"),
+            SampleDataChange("S2", "State", running, "Execute"),
+            SampleDataChange("S2", "StateReason", running, ""),
+        ]);
+
+        await _writer.RecordBackfillWindowAsync(
+            window, Instant, "S2.State", rowsReturned: 2, pages: 1, durationMs: 10);
+        await _writer.RecordBackfillWindowAsync(
+            window, Instant, "S2.StateReason", rowsReturned: 2, pages: 1, durationMs: 10);
+
+        var result = await new Reconciler(_postgres.GetConnectionString())
+            .CheckAsync(window, Instant);
+
+        Assert.Equal(2, result.Streams.Single(s => s.Stream == "S2.State").RowsStored);
+        Assert.Equal(2, result.Streams.Single(s => s.Stream == "S2.StateReason").RowsStored);
+        Assert.True(result.Reconciled);
+    }
+
+    [Fact]
+    public async Task AStateReasonStreamThatCameBackShortIsReportedAsLost()
+    {
+        // The check has to be able to fire. Counted against state_changes it could not: a
+        // StateReason shares its (station_id, source_ts) key with the State it is paired with,
+        // so the stored count is decided entirely by State and Returned == Stored under every
+        // input, including a StateReason read that lost half its rows. raw_events is verbatim
+        // and holds the empty reasons the derivation drops, so it is 1:1 with what was read.
+        await SeedTopologyAsync();
+        var window = Instant.AddHours(-1);
+
+        // The plant's own shape: an unchanged value is never published, so a station runs
+        // through six State transitions while StateReason moves twice — once to a reason and
+        // once back to the empty string. The two streams are different lengths, which is what
+        // makes counting one of them against the other's rows useless.
+        var states = new[] { "Idle", "Starting", "Execute", "Suspended", "Execute", "Idle" };
+        for (var minute = 1; minute <= states.Length; minute++)
+        {
+            await _writer.WriteBatchAsync(
+                [SampleDataChange("S2", "State", window.AddMinutes(minute), states[minute - 1])]);
+        }
+
+        await _writer.WriteBatchAsync([
+            SampleDataChange("S2", "StateReason", window.AddMinutes(4), "starved:B1_2"),
+        ]);
+        await _writer.WriteBatchAsync([
+            SampleDataChange("S2", "StateReason", window.AddMinutes(5), ""),
+        ]);
+
+        // The reader claims three where two arrived: one row read and lost, on one page, so no
+        // page boundary explains it. Counted against state_changes the station's six rows swamp
+        // it and the loss reads as a surplus.
+        await _writer.RecordBackfillWindowAsync(
+            window, Instant, "S2.StateReason", rowsReturned: 3, pages: 1, durationMs: 10);
+
+        var result = await new Reconciler(_postgres.GetConnectionString())
+            .CheckAsync(window, Instant);
+        var reason = result.Streams.Single(s => s.Stream == "S2.StateReason");
+
+        Assert.Equal(2, reason.RowsStored);
+        Assert.Equal(1, reason.Lost);
+        Assert.False(result.Reconciled);
+    }
+
+    [Fact]
+    public async Task ARereadStateRowDoesNotInventTheTransitionItCameFrom()
+    {
+        // What a subdivided backfill window does: the truncated read hands its rows over
+        // before the halves re-read the same range from the start, so this memory is asked
+        // about a row that precedes what it holds. Standing at the last row of the truncated
+        // read it would name that as what the first row transitioned from -- and the upsert's
+        // COALESCE cannot catch it, because the first State the gateway ever sees is stored
+        // with a null from_state and anything beats null. d28fc78 fixed one way of inventing a
+        // PackML transition; this is the other.
+        await SeedTopologyAsync();
+        var window = Instant.AddHours(-1);
+        var first = window.AddMinutes(1);
+        var second = window.AddMinutes(2);
+
+        // The truncated pass.
+        await _writer.WriteBatchAsync([SampleDataChange("S2", "State", first, "Execute")]);
+        await _writer.WriteBatchAsync([SampleDataChange("S2", "State", second, "Suspended")]);
+
+        // The halves, re-reading the same range from its start.
+        await _writer.WriteBatchAsync([SampleDataChange("S2", "State", first, "Execute")]);
+        await _writer.WriteBatchAsync([SampleDataChange("S2", "State", second, "Suspended")]);
+
+        var rows = await QueryAsync(
+            "SELECT c.source_ts, c.from_state, c.to_state FROM state_changes c "
+            + "JOIN stations s ON s.id = c.station_id WHERE s.code = 'S2' ORDER BY c.source_ts");
+
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(DBNull.Value, rows[0]["from_state"]);
+        Assert.Equal("Execute", rows[0]["to_state"]);
+        Assert.Equal("Execute", rows[1]["from_state"]);
+        Assert.Equal("Suspended", rows[1]["to_state"]);
+    }
+
+    [Fact]
+    public async Task TheLedgerNamesEveryStreamThisGatewayHasEverBackfilled()
+    {
+        // What a discovery that came back short is held against. Without it, a plant that
+        // stopped publishing one stream backfills the rest, writes one ledger row fewer, and
+        // answers /reconcile with every remaining stream green.
+        foreach (var stream in new[] { "S1.TaktTime", "S2.TaktTime", "B1_2.Level" })
+        {
+            await _writer.RecordBackfillWindowAsync(
+                Instant, Instant.AddHours(1), stream, rowsReturned: 1, pages: 1, durationMs: 1);
+        }
+
+        var known = await _writer.KnownBackfillStreamsAsync();
+
+        Assert.Equal(
+            ["B1_2.Level", "S1.TaktTime", "S2.TaktTime"],
+            known.Order(StringComparer.Ordinal));
     }
 
     [Fact]
@@ -260,6 +471,260 @@ public sealed class PostgresWriterTests : IAsyncLifetime
         Assert.Equal("ns=2;i=7", (string?)await command.ExecuteScalarAsync());
     }
 
+    [Fact]
+    public async Task StateAndItsReasonBecomeOneRow()
+    {
+        // They arrive as two data changes sharing a SourceTimestamp, because that is how
+        // the station writes them. One transition must not become two rows.
+        await _writer.WriteBatchAsync([
+            SampleDataChange("S2", "State", Instant, "Suspended"),
+            SampleDataChange("S2", "StateReason", Instant, "starved:B1_2"),
+        ]);
+
+        var rows = await QueryAsync("SELECT to_state, reason FROM state_changes");
+        var row = Assert.Single(rows);
+        Assert.Equal("Suspended", row["to_state"]);
+        Assert.Equal("starved:B1_2", row["reason"]);
+    }
+
+    [Fact]
+    public async Task TheReasonFillsTheRowWhicheverOrderTheTwoArriveIn()
+    {
+        // A backfill reads history one node at a time, so the whole StateReason series for a
+        // station can land before its State series. Depending on the order would turn that
+        // into either a lost reason or a failed batch.
+        await _writer.WriteBatchAsync([
+            SampleDataChange("S2", "StateReason", Instant, "blocked:B2_3"),
+        ]);
+        await _writer.WriteBatchAsync([
+            SampleDataChange("S2", "State", Instant, "Suspended"),
+        ]);
+
+        var rows = await QueryAsync("SELECT to_state, reason FROM state_changes");
+        var row = Assert.Single(rows);
+        Assert.Equal("Suspended", row["to_state"]);
+        Assert.Equal("blocked:B2_3", row["reason"]);
+    }
+
+    [Fact]
+    public async Task TheSuspendReasonResolvesToTheBufferItNames()
+    {
+        // §3.3 makes this field non-optional because it is what turns propagation from
+        // inferred into verifiable. A reason stored only as text would leave every
+        // propagation query doing string surgery.
+        await SeedTopologyAsync();
+        await _writer.WriteBatchAsync([
+            SampleDataChange("S3", "State", Instant, "Suspended"),
+            SampleDataChange("S3", "StateReason", Instant, "starved:B2_3"),
+        ]);
+
+        var rows = await QueryAsync(
+            "SELECT b.code FROM state_changes s JOIN buffers b ON b.id = s.reason_buffer_id");
+        Assert.Equal("B2_3", Assert.Single(rows)["code"]);
+    }
+
+    [Fact]
+    public async Task AReasonNamingSomethingThatIsNotABufferStillStores()
+    {
+        // "starved:carrier-return" is a real condition with no buffer behind it — the carrier
+        // pool, not a buffer, is what binds when the line backs up. The row must survive with
+        // a null reason_buffer_id rather than being dropped.
+        await SeedTopologyAsync();
+        await _writer.WriteBatchAsync([
+            SampleDataChange("S1", "State", Instant, "Suspended"),
+            SampleDataChange("S1", "StateReason", Instant, "starved:carrier-return"),
+        ]);
+
+        var row = Assert.Single(await QueryAsync(
+            "SELECT reason, reason_buffer_id FROM state_changes"));
+        Assert.Equal("starved:carrier-return", row["reason"]);
+        Assert.Equal(DBNull.Value, row["reason_buffer_id"]);
+    }
+
+    [Fact]
+    public async Task AStateWhoseReasonNeverArrivesIsStillATransition()
+    {
+        // The bring-up case, and it is the common one: each station publishes six State
+        // transitions while StateReason stays "", and an unchanged value is never sent. Six
+        // rows per station therefore arrive with no reason data change at all.
+        await _writer.WriteBatchAsync([SampleDataChange("S1", "State", Instant, "Execute")]);
+
+        var row = Assert.Single(await QueryAsync("SELECT to_state, reason FROM state_changes"));
+        Assert.Equal("Execute", row["to_state"]);
+        Assert.Equal(DBNull.Value, row["reason"]);
+    }
+
+    [Fact]
+    public async Task TheFirstStateSeenAfterAConnectHasNoPredecessor()
+    {
+        await _writer.WriteBatchAsync([SampleDataChange("S1", "State", Instant, "Execute")]);
+
+        var row = Assert.Single(await QueryAsync("SELECT from_state FROM state_changes"));
+        Assert.Equal(DBNull.Value, row["from_state"]);
+    }
+
+    [Fact]
+    public async Task ATransitionNamesTheStateItCameFrom()
+    {
+        // A data change carries only the new value, so the only source for from_state is what
+        // the gateway last saw. Without it every row says a station arrived from nowhere.
+        await _writer.WriteBatchAsync([SampleDataChange("S1", "State", Instant, "Execute")]);
+        await _writer.WriteBatchAsync([
+            SampleDataChange("S1", "State", Instant.AddSeconds(30), "Suspended"),
+        ]);
+
+        var rows = await QueryAsync(
+            "SELECT from_state, to_state FROM state_changes ORDER BY source_ts");
+        Assert.Equal(2, rows.Count);
+        Assert.Equal("Execute", rows[1]["from_state"]);
+        Assert.Equal("Suspended", rows[1]["to_state"]);
+    }
+
+    [Fact]
+    public async Task AFailedBatchDoesNotMoveTheGatewaysMemoryOfWhereAStationWas()
+    {
+        // QueueDrain retries a failed batch with nothing acked — that is the local queue's
+        // whole purpose — so the retry re-reads records the attempt already consumed. When the
+        // attempt's memory survived the rollback, the retry wrote the FIRST row as arriving
+        // from the state the LAST row moved to: Execute@T1 came out as
+        // "from Suspended to Execute", a transition PackML does not permit and the plant never
+        // published, in the one table that exists to record real ones. Nothing logged, and
+        // raw_events agreed with it.
+        await Assert.ThrowsAnyAsync<Exception>(() => _writer.WriteBatchAsync([
+            SampleDataChange("S1", "State", Instant, "Execute"),
+            SampleDataChange("S1", "State", Instant.AddSeconds(30), "Suspended"),
+            MalformedEvent("S1"),
+        ]));
+
+        await _writer.WriteBatchAsync([
+            SampleDataChange("S1", "State", Instant, "Execute"),
+            SampleDataChange("S1", "State", Instant.AddSeconds(30), "Suspended"),
+        ]);
+
+        var rows = await QueryAsync(
+            "SELECT from_state, to_state FROM state_changes ORDER BY source_ts");
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(DBNull.Value, rows[0]["from_state"]);
+        Assert.Equal("Execute", rows[1]["from_state"]);
+    }
+
+    [Fact]
+    public async Task AStationLearnedByAFailedBatchIsNotTakenOnTrustByTheRetry()
+    {
+        // The same shape one method over: the id is produced by an INSERT inside the
+        // transaction, and SMALLSERIAL does not roll back with it. A cached id therefore
+        // named a row that no longer existed, and every later write for that station failed
+        // its foreign key against a stations table that never had it.
+        await Assert.ThrowsAnyAsync<Exception>(() => _writer.WriteBatchAsync([
+            SampleDataChange("TaktTime", Instant, 6.0),
+            MalformedEvent("S3"),
+        ]));
+
+        await _writer.WriteBatchAsync([SampleDataChange("TaktTime", Instant, 6.0)]);
+
+        Assert.Equal(1, await CountAsync("signals"));
+    }
+
+    [Fact]
+    public async Task AReasonOnItsOwnThatSaysNothingWritesNoRow()
+    {
+        // "" is what StateReason reads when a station is not suspended, and it is published
+        // because it changed. On its own it fills no column, so writing it would key a row
+        // carrying no state, no reason and no transition — and a batch boundary that split it
+        // from its State half would leave that empty row in the table for good.
+        await _writer.WriteBatchAsync([SampleDataChange("S1", "StateReason", Instant, "")]);
+
+        Assert.Empty(await QueryAsync("SELECT 1 FROM state_changes"));
+        Assert.Equal(1, await CountAsync("raw_events"));   // raw is append-only and verbatim
+    }
+
+    [Fact]
+    public async Task OnlySettledTransitionsAreVisibleToTheAnalysisView()
+    {
+        // to_state is nullable so a reason can land before its state, which leaves a row that
+        // is not yet a transition. §5.2 has the analysis service read views, so the filter is
+        // the schema's job — a propagation query that forgot it would not fail, it would count
+        // half rows as transitions.
+        await _writer.WriteBatchAsync([
+            SampleDataChange("S1", "StateReason", Instant, "blocked:B1_2"),
+            SampleDataChange("S2", "State", Instant, "Execute"),
+        ]);
+
+        Assert.Equal(2, (await QueryAsync("SELECT 1 FROM state_changes")).Count);
+        var settled = Assert.Single(await QueryAsync(
+            "SELECT to_state FROM state_changes_settled"));
+        Assert.Equal("Execute", settled["to_state"]);
+    }
+
+    [Fact]
+    public async Task ApplyingTheSchemaTwiceLeavesWhatIsAlreadyThere()
+    {
+        // It runs at every boot, against a database that already holds M1's tables and now
+        // M2a's. The IF NOT EXISTS clauses are the whole of that guarantee, and an unapplied
+        // one only shows up against a live database.
+        await SeedTopologyAsync();
+        await _writer.WriteBatchAsync([SampleBufferLevel("B2_3", Instant, 3)]);
+
+        await PostgresWriter.ApplySchemaAsync(_postgres.GetConnectionString());
+
+        Assert.Single(await QueryAsync("SELECT 1 FROM buffer_levels"));
+        Assert.Equal(4, await CountAsync("stations"));
+    }
+
+    [Fact]
+    public async Task BufferLevelsDoNotLandInTheSignalsTable()
+    {
+        // signals is keyed on a station. A buffer level keyed to a station would have to
+        // pick one of the two it sits between, and either choice is wrong.
+        await SeedTopologyAsync();
+        await _writer.WriteBatchAsync([SampleBufferLevel("B2_3", Instant, 3)]);
+
+        Assert.Empty(await QueryAsync("SELECT 1 FROM signals"));
+        Assert.Single(await QueryAsync("SELECT 1 FROM buffer_levels"));
+    }
+
+    [Fact]
+    public async Task ABufferLevelAndAStateChangeInOneBatchEachTakeTheirOwnRoute()
+    {
+        // The mixed batch. A level record names no station, so the routing `continue`s before
+        // the station lookup that every other record needs -- and one batch really does carry
+        // both, because the subscription delivers all 25 streams into the same queue. Every
+        // other test here feeds the writer one kind at a time, which is exactly the shape that
+        // cannot tell a `continue` from a `return`: a routing bug that dropped the rest of the
+        // batch after a level, or that sent a level down the station path, passes all of them.
+        await SeedTopologyAsync();
+
+        await _writer.WriteBatchAsync([
+            SampleBufferLevel("B2_3", Instant, 3),
+            SampleDataChange("S2", "State", Instant, "Suspending"),
+            SampleDataChange("S2", "StateReason", Instant, "blocked:B2_3"),
+            SampleBufferLevel("B1_2", Instant.AddSeconds(1), 4),
+            SampleDataChange("TaktTime", Instant, 6.02),
+        ]);
+
+        Assert.Equal(2, await CountAsync("buffer_levels"));
+        Assert.Single(await QueryAsync("SELECT 1 FROM state_changes"));
+        Assert.Equal(1, await CountAsync("signals"));
+        Assert.Equal(5, await CountAsync("raw_events"));
+
+        var transition = Assert.Single(await QueryAsync(
+            "SELECT to_state, reason FROM state_changes"));
+        Assert.Equal("Suspending", transition["to_state"]);
+        Assert.Equal("blocked:B2_3", transition["reason"]);
+    }
+
+    [Fact]
+    public async Task ABufferLevelForAnUndiscoveredBufferFailsRatherThanDisappears()
+    {
+        // A station is created from the code its signals carry; a buffer cannot be, because
+        // its two stations and its capacity are read by browsing. Levels arriving before
+        // discovery are discovery not having run, and §5.1 has no quiet half-write.
+        await Assert.ThrowsAnyAsync<Exception>(
+            () => _writer.WriteBatchAsync([SampleBufferLevel("B2_3", Instant, 3)]));
+
+        Assert.Equal(0, await CountAsync("raw_events"));
+    }
+
     private static IngestRecord SampleDataChange(string signal, DateTime ts, double value) => new(
         Kind: "datachange", NodeId: "ns=2;i=7", SourceTs: ts, ServerTs: ts, StatusCode: 0,
         PayloadJson: $$"""{"Station":"S3","Signal":"{{signal}}","Value":{{value}}}""",
@@ -272,6 +737,83 @@ public sealed class PostgresWriterTests : IAsyncLifetime
              "DefectClass":{{(reject ? "\"gap\"" : "null")}},"Confidence":0.87,"ModelVersion":"sim-1"}
             """,
         ImageBytes: image);
+
+    /// <summary>
+    /// An event with no assembly serial, which violates inspection_results' primary key. A
+    /// genuinely malformed record rather than a test-only failure switch, so a test using it
+    /// cannot pass while the real failure path is broken.
+    /// </summary>
+    private static IngestRecord MalformedEvent(string station) => new(
+        Kind: "event", NodeId: "ns=2;i=9", SourceTs: Instant, ServerTs: Instant, StatusCode: 0,
+        PayloadJson: $$"""{"Station":"{{station}}","ModelVersion":"sim-1"}""",
+        ImageBytes: null);
+
+    /// <summary>A string-valued data change: State and StateReason, which signals cannot hold.</summary>
+    private static IngestRecord SampleDataChange(
+        string station, string signal, DateTime ts, string value) => new(
+        Kind: "datachange", NodeId: $"ns=2;s={station}.{signal}", SourceTs: ts, ServerTs: ts,
+        StatusCode: 0,
+        PayloadJson: $$"""{"Station":"{{station}}","Signal":"{{signal}}","Value":"{{value}}"}""",
+        ImageBytes: null);
+
+    /// <summary>Named by its buffer, because the address space gives a level no station.</summary>
+    private static IngestRecord SampleBufferLevel(string buffer, DateTime ts, int level) => new(
+        Kind: "datachange", NodeId: $"ns=2;s={buffer}.Level", SourceTs: ts, ServerTs: ts,
+        StatusCode: 0,
+        PayloadJson: $$"""{"Buffer":"{{buffer}}","Signal":"Level","Value":{{level}}}""",
+        ImageBytes: null);
+
+    /// <summary>
+    /// What Task 9's browse will write: §3.1's four stations and the three buffers between
+    /// them, under the codes <c>TopologyDiscovery.SplitBrowseName</c> produces.
+    /// </summary>
+    private async Task SeedTopologyAsync()
+    {
+        await using var connection = new NpgsqlConnection(_postgres.GetConnectionString());
+        await connection.OpenAsync();
+        // Two commands, not one batch: Npgsql prepares a parameterised statement, and a
+        // prepared statement holds exactly one command.
+        await using var stations = new NpgsqlCommand(
+            """
+            INSERT INTO stations (code, name) VALUES
+              ('S1', 'Feeding'), ('S2', 'Joining'), ('S3', 'Inspection'), ('S4', 'Outfeed')
+            """, connection);
+        await stations.ExecuteNonQueryAsync();
+
+        await using var buffers = new NpgsqlCommand(
+            """
+            INSERT INTO buffers (code, upstream_station_id, downstream_station_id, capacity)
+            SELECT b.code, u.id, d.id, $1
+            FROM (VALUES ('B1_2', 'S1', 'S2'), ('B2_3', 'S2', 'S3'), ('B3_4', 'S3', 'S4'))
+                 AS b (code, upstream, downstream)
+            JOIN stations u ON u.code = b.upstream
+            JOIN stations d ON d.code = b.downstream
+            """, connection);
+        buffers.Parameters.AddWithValue(BufferCapacity);
+        await buffers.ExecuteNonQueryAsync();
+    }
+
+    private async Task<IReadOnlyList<IReadOnlyDictionary<string, object>>> QueryAsync(string sql)
+    {
+        await using var connection = new NpgsqlConnection(_postgres.GetConnectionString());
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(sql, connection);
+        await using var reader = await command.ExecuteReaderAsync();
+
+        var rows = new List<IReadOnlyDictionary<string, object>>();
+        while (await reader.ReadAsync())
+        {
+            var row = new Dictionary<string, object>(StringComparer.Ordinal);
+            for (var i = 0; i < reader.FieldCount; i++)
+            {
+                row[reader.GetName(i)] = reader.GetValue(i);
+            }
+
+            rows.Add(row);
+        }
+
+        return rows;
+    }
 
     private async Task<int> CountAsync(string table)
     {
