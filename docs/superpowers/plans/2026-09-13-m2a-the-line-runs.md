@@ -2865,7 +2865,10 @@ public async Task EveryStreamGetsItsOwnReconciliationRow()
 {
     // R1's ledger is per stream. One aggregate row across 25 streams cannot say
     // which one came back short, which is the only thing the ledger is for.
-    foreach (var stream in new[] { "S2_Joining.TaktTime", "S2_Joining.JoiningForcePeak" })
+    // Station CODE, not browse name. "two codes for one station means two rows" is the
+    // rule Task 9 enforced at the buffer boundary, and the ledger must not reintroduce a
+    // second station identifier into the schema.
+    foreach (var stream in new[] { "S2.TaktTime", "S2.JoiningForcePeak" })
     {
         await writer.RecordBackfillWindowAsync(
             Ts, Ts.AddHours(1), stream, rowsReturned: 600, pages: 1, durationMs: 12);
@@ -2873,8 +2876,8 @@ public async Task EveryStreamGetsItsOwnReconciliationRow()
 
     var rows = await Query("SELECT stream, rows_returned FROM backfill_windows ORDER BY stream");
     Assert.Equal(2, rows.Count);
-    Assert.Equal("S2_Joining.JoiningForcePeak", rows[0]["stream"]);
-    Assert.Equal("S2_Joining.TaktTime", rows[1]["stream"]);
+    Assert.Equal("S2.JoiningForcePeak", rows[0]["stream"]);
+    Assert.Equal("S2.TaktTime", rows[1]["stream"]);
 }
 ```
 
