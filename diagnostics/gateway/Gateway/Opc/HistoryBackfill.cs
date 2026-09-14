@@ -67,6 +67,15 @@ public sealed class HistoryBackfill
 
     public async Task<BackfillReport> RunAsync(DateTime from, DateTime to, CancellationToken ct)
     {
+        // M1's three streams, unchanged — Task 10 widens this to all 25 and gives the ledger a
+        // row per stream, which backfill_windows' (from_ts, to_ts, stream) key needs before
+        // more than one station can be read. Anchored on the station that publishes the
+        // inspection event rather than on a hardcoded S3, because the browse paths this used
+        // to resolve are gone: the topology is discovered now.
+        var station = _space.Stations.FirstOrDefault(s => s.EmitsEvents)
+            ?? throw new InvalidOperationException(
+                "no discovered station publishes events; there is nothing to backfill from");
+
         var windows = new List<WindowReport>();
         var total = (to - from).TotalSeconds;
 
@@ -78,18 +87,20 @@ public sealed class HistoryBackfill
                 end = to;
             }
 
-            windows.Add(await ReadWindowAsync(
-                "TaktTime", start, end,
-                (a, b, token) => ReadVariablePagesAsync(_space.TaktNodeId, "TaktTime", a, b, token),
-                ct).ConfigureAwait(false));
+            foreach (var signal in station.Signals
+                .Where(s => s.Name is "TaktTime" or "PartCount"))
+            {
+                var key = new StreamKey(StreamOwner.Station, station.Code, signal.Name);
+                windows.Add(await ReadWindowAsync(
+                    signal.Name, start, end,
+                    (a, b, token) => ReadVariablePagesAsync(signal.NodeId, key, a, b, token),
+                    ct).ConfigureAwait(false));
+            }
 
             windows.Add(await ReadWindowAsync(
-                "PartCount", start, end,
-                (a, b, token) => ReadVariablePagesAsync(_space.PartCountNodeId, "PartCount", a, b, token),
+                "InspectionResult", start, end,
+                (a, b, token) => ReadEventPagesAsync(station, a, b, token),
                 ct).ConfigureAwait(false));
-
-            windows.Add(await ReadWindowAsync(
-                "InspectionResult", start, end, ReadEventPagesAsync, ct).ConfigureAwait(false));
 
             Progress = total <= 0 ? 1.0 : (start - from).TotalSeconds / total;
         }
@@ -141,7 +152,7 @@ public sealed class HistoryBackfill
     }
 
     private async Task<PageOutcome> ReadVariablePagesAsync(
-        NodeId node, string signal, DateTime from, DateTime to, CancellationToken ct)
+        NodeId node, StreamKey key, DateTime from, DateTime to, CancellationToken ct)
     {
         var details = new ReadRawModifiedDetails
         {
@@ -161,7 +172,7 @@ public sealed class HistoryBackfill
                 var data = (HistoryData)ExtensionObject.ToEncodeable(result);
                 foreach (var value in data.DataValues)
                 {
-                    await _onRecord(Subscriptions.ToDataChangeRecord(signal, node.ToString(), value))
+                    await _onRecord(Subscriptions.ToDataChangeRecord(key, node.ToString(), value))
                         .ConfigureAwait(false);
                 }
 
@@ -171,9 +182,9 @@ public sealed class HistoryBackfill
     }
 
     private async Task<PageOutcome> ReadEventPagesAsync(
-        DateTime from, DateTime to, CancellationToken ct)
+        DiscoveredStation station, DateTime from, DateTime to, CancellationToken ct)
     {
-        var node = _space.S3NodeId;
+        var node = station.NodeId;
         var details = new ReadEventDetails
         {
             StartTime = from,
@@ -191,8 +202,8 @@ public sealed class HistoryBackfill
                 var data = (HistoryEvent)ExtensionObject.ToEncodeable(result);
                 foreach (var entry in data.Events)
                 {
-                    await _onRecord(Subscriptions.ToEventRecord(node.ToString(), entry.EventFields))
-                        .ConfigureAwait(false);
+                    await _onRecord(Subscriptions.ToEventRecord(
+                        station.Code, node.ToString(), entry.EventFields)).ConfigureAwait(false);
                 }
 
                 return data.Events.Count;

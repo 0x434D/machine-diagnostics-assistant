@@ -32,6 +32,12 @@ public sealed record GatewayOptions
     /// <summary>On a volume, so the queue outlives the container it buffers for (§5.1).</summary>
     public const string DefaultQueuePath = "/queue/gateway.db";
 
+    /// <summary>
+    /// Mounted, not compiled in: §5.1's deadbands are per signal and per plant, and a rebuild
+    /// is the wrong unit of change for a number an engineer tunes against jitter they measured.
+    /// </summary>
+    public const string DefaultSignalPolicyPath = "/config/signals.json";
+
     public required string ApplicationUri { get; init; }
     public required string EndpointUrl { get; init; }
     public required string SecurityMode { get; init; }
@@ -40,6 +46,7 @@ public sealed record GatewayOptions
     public int MaxMessageSize { get; init; } = DefaultMaxMessageSize;
     public int ConnectTimeoutSeconds { get; init; } = DefaultConnectTimeoutSeconds;
     public string QueuePath { get; init; } = DefaultQueuePath;
+    public string SignalPolicyPath { get; init; } = DefaultSignalPolicyPath;
 
     /// <summary>Empty until Postgres exists for this deployment; the queue then simply fills.</summary>
     public string PostgresConnectionString { get; init; } = "";
@@ -88,9 +95,6 @@ public sealed record GatewayOptions
     public uint QueueSize { get; init; } = 100;
     public uint EventQueueSize { get; init; } = 200;
 
-    /// <summary>Absolute deadband on TaktTime, in seconds.</summary>
-    public double TaktDeadband { get; init; } = 0.05;
-
     public string OwnStoreRoot => Path.Join(PkiRoot, "edge-gateway");
     public string TrustedStoreRoot => Path.Join(PkiRoot, "trusted");
     public string RejectedStoreRoot { get; init; } = DefaultRejectedStoreRoot;
@@ -132,6 +136,8 @@ public sealed record GatewayOptions
             RejectedStoreRoot = Read(
                 environment, "GATEWAY_REJECTED_STORE_ROOT", DefaultRejectedStoreRoot),
             QueuePath = Read(environment, "GATEWAY_QUEUE_PATH", DefaultQueuePath),
+            SignalPolicyPath = Read(
+                environment, "GATEWAY_SIGNAL_POLICY", DefaultSignalPolicyPath),
             PostgresConnectionString = Read(environment, "GATEWAY_POSTGRES", ""),
             DrainBatchSize = ReadInt(environment, "GATEWAY_DRAIN_BATCH_SIZE", 200),
             HistoryEventPageSize = ReadInt(environment, "GATEWAY_HISTORY_EVENT_PAGE_SIZE", 25),

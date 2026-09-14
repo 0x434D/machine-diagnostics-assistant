@@ -10,6 +10,11 @@ if (args.Contains(ConnectTest.Flag, StringComparer.Ordinal))
     return await ConnectTest.RunAsync(args, options).ConfigureAwait(false);
 }
 
+// Before anything connects or listens. A policy that is missing or malformed is a start-up
+// failure on purpose: an operator who mounted the file wrong has to find out at boot, not
+// from deadbands that quietly stopped applying weeks later.
+var signalPolicy = SignalPolicy.Load(options.SignalPolicyPath);
+
 var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
 var logger = app.Logger;
@@ -93,13 +98,13 @@ var ingest = Task.Run(
             }
         }
 
-        // §4.1: stations are browsed, not configured, before anything writes rows that
-        // reference them.
-        var topology = await TopologyDiscovery.DiscoverAsync(session, stopping).ConfigureAwait(false);
+        // §4.1: stations and buffers are browsed, not configured, and written before anything
+        // that references them arrives. A buffer level for a buffer the table does not have
+        // is refused deliberately, so this cannot wait until after the subscription starts.
         if (!string.IsNullOrWhiteSpace(options.PostgresConnectionString))
         {
             await TopologyDiscovery
-                .UpsertAsync(options.PostgresConnectionString, topology, stopping)
+                .UpsertAsync(options.PostgresConnectionString, space.Topology, stopping)
                 .ConfigureAwait(false);
         }
 
@@ -156,7 +161,7 @@ var ingest = Task.Run(
 
         await BackfillFromStorageAsync().ConfigureAwait(false);
 
-        subscriptions = new Subscriptions(options, EnqueueAsync);
+        subscriptions = new Subscriptions(options, signalPolicy, EnqueueAsync);
         // The returned Subscription is deliberately not held. The session owns it, and the
         // teardown below iterates session.Subscriptions rather than a handle of ours —
         // holding one invited exactly the mistake that comment describes, where a failed

@@ -1,43 +1,56 @@
+using System.Globalization;
 using Npgsql;
 using Opc.Ua;
 
 namespace Gateway.Opc;
 
+/// <summary>One historised variable under a station, with the data type the server declares.</summary>
+public sealed record DiscoveredSignal(string Name, NodeId NodeId, BuiltInType Type);
+
 public sealed record DiscoveredStation(
-    string Code, string Name, NodeId NodeId, NodeId? TaktNodeId, NodeId? PartCountNodeId);
+    string Code,
+    string Name,
+    NodeId NodeId,
+    IReadOnlyList<DiscoveredSignal> Signals,
+    bool EmitsEvents);
 
 /// <summary>
-/// §4.1: the line's topology is discovered, not configured. Nothing downstream hardcodes
-/// which stations exist or that S2 follows S1, so M2 adds three more stations with no change
-/// here — and pointing this at a real plant works the same way, because a real plant's
-/// topology also comes from its address space.
+/// A buffer between two stations. <paramref name="Upstream"/> and <paramref name="Downstream"/>
+/// are station <i>codes</i>: the plant publishes browse names ("S2_Joining") and §5.2's
+/// stations table is keyed on the code ("S2"), so the conversion happens here, once, at the
+/// boundary that reads them. Two codes for one station means two rows for one station.
+/// </summary>
+public sealed record DiscoveredBuffer(
+    string Code,
+    NodeId LevelNodeId,
+    BuiltInType LevelType,
+    string Upstream,
+    string Downstream,
+    int Capacity);
+
+public sealed record DiscoveredTopology(
+    IReadOnlyList<DiscoveredStation> Stations, IReadOnlyList<DiscoveredBuffer> Buffers);
+
+/// <summary>
+/// §4.1: the line's topology is discovered, not configured. Nothing here hardcodes which
+/// stations exist, which signals they carry or that S2 follows S1 — M2a's four stations and
+/// three buffers are browsed the same way a real plant's would be.
 /// </summary>
 public static class TopologyDiscovery
 {
-    public static async Task<IReadOnlyList<DiscoveredStation>> DiscoverAsync(
+    private const string LevelSignal = "Level";
+    private const string CapacityVariable = "Capacity";
+    private const string UpstreamVariable = "UpstreamStation";
+    private const string DownstreamVariable = "DownstreamStation";
+
+    public static async Task<DiscoveredTopology> DiscoverAsync(
         ISession session, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(session);
 
-        var stationsFolder = await AddressSpace
-            .TranslateAsync(session, ["Line", "Stations"], ct).ConfigureAwait(false);
-
-        var discovered = new List<DiscoveredStation>();
-        foreach (var (browseName, nodeId) in await BrowseChildrenAsync(session, stationsFolder, ct)
-            .ConfigureAwait(false))
-        {
-            var children = await BrowseChildrenAsync(session, nodeId, ct).ConfigureAwait(false);
-            var (code, name) = SplitBrowseName(browseName);
-
-            discovered.Add(new DiscoveredStation(
-                Code: code,
-                Name: name,
-                NodeId: nodeId,
-                TaktNodeId: children.GetValueOrDefault("TaktTime"),
-                PartCountNodeId: children.GetValueOrDefault("PartCount")));
-        }
-
-        return discovered;
+        var stations = await DiscoverStationsAsync(session, ct).ConfigureAwait(false);
+        var buffers = await DiscoverBuffersAsync(session, ct).ConfigureAwait(false);
+        return new DiscoveredTopology(stations, buffers);
     }
 
     /// <summary>
@@ -55,42 +68,314 @@ public static class TopologyDiscovery
             : (browseName[..separator], browseName[(separator + 1)..]);
     }
 
-    /// <summary>Idempotent: re-running after a reconnect updates names and adds no rows.</summary>
-    public static async Task UpsertAsync(
-        string connectionString, IReadOnlyList<DiscoveredStation> stations, CancellationToken ct)
+    /// <summary>
+    /// Line order, derived from the buffers rather than from the order the stations browsed
+    /// out in: the station that is no buffer's downstream is first, and each buffer's
+    /// downstream is one past its upstream.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// the buffers do not form one chain over every station — they branch, they skip a
+    /// station, or they name one that was not discovered. §5.2's position_in_line orders
+    /// every propagation query, so an arbitrary order here is a wrong answer everywhere
+    /// later, with nothing to distinguish it from a right one.
+    /// </exception>
+    public static IReadOnlyList<string> OrderStations(
+        IReadOnlyList<string> stationCodes, IReadOnlyList<DiscoveredBuffer> buffers)
     {
-        ArgumentNullException.ThrowIfNull(stations);
+        ArgumentNullException.ThrowIfNull(stationCodes);
+        ArgumentNullException.ThrowIfNull(buffers);
+
+        var known = new HashSet<string>(stationCodes, StringComparer.Ordinal);
+        if (known.Count != stationCodes.Count)
+        {
+            throw new InvalidOperationException(
+                "two stations browsed out under the same code; the line cannot be ordered");
+        }
+
+        var downstreamOf = new Dictionary<string, string>(StringComparer.Ordinal);
+        var hasUpstream = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var buffer in buffers)
+        {
+            if (!known.Contains(buffer.Upstream) || !known.Contains(buffer.Downstream))
+            {
+                throw new InvalidOperationException(
+                    $"buffer {buffer.Code} sits between {buffer.Upstream} and {buffer.Downstream}, "
+                    + "and at least one of those stations was not discovered");
+            }
+
+            if (!downstreamOf.TryAdd(buffer.Upstream, buffer.Downstream))
+            {
+                throw new InvalidOperationException(
+                    $"{buffer.Upstream} feeds two buffers; the line branches and has no single order");
+            }
+
+            if (!hasUpstream.Add(buffer.Downstream))
+            {
+                throw new InvalidOperationException(
+                    $"{buffer.Downstream} is fed by two buffers; the line merges and has no single order");
+            }
+        }
+
+        var first = stationCodes.Where(code => !hasUpstream.Contains(code)).ToList();
+        if (first.Count != 1)
+        {
+            throw new InvalidOperationException(
+                $"{first.Count} stations are no buffer's downstream; a line has exactly one first "
+                + $"station (found: {string.Join(", ", first)})");
+        }
+
+        // Terminates: every station is at most one buffer's downstream and the head is none's,
+        // so no cycle is reachable from it. A cycle elsewhere leaves the chain short, below.
+        var order = new List<string>();
+        for (var code = first[0]; ;)
+        {
+            order.Add(code);
+            if (!downstreamOf.TryGetValue(code, out var next))
+            {
+                break;
+            }
+
+            code = next;
+        }
+
+        return order.Count == stationCodes.Count
+            ? order
+            : throw new InvalidOperationException(
+                $"the buffers chain {order.Count} of {stationCodes.Count} stations "
+                + $"({string.Join(" -> ", order)}); the rest of the line is unreachable");
+    }
+
+    /// <summary>
+    /// Writes the discovered topology. Idempotent: re-running after a reconnect updates what
+    /// changed and adds no rows. One transaction, because a half-written topology is a line
+    /// whose buffers reference stations that are not there.
+    /// </summary>
+    public static async Task UpsertAsync(
+        string connectionString, DiscoveredTopology topology, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(topology);
 
         await using var connection = new NpgsqlConnection(connectionString);
         await connection.OpenAsync(ct).ConfigureAwait(false);
+        await using var transaction =
+            await connection.BeginTransactionAsync(ct).ConfigureAwait(false);
 
-        foreach (var station in stations)
+        foreach (var station in topology.Stations)
         {
             // INSERT ... SELECT ... WHERE NOT EXISTS, not ON CONFLICT. Both DO UPDATE and
             // DO NOTHING evaluate the id column's nextval before the conflict is detected, so
             // either form advances the SMALLSERIAL sequence once per station per discovery —
             // measured: one reconnect moved it from 1 to 2 against an unchanged table. This
             // form produces no row at all when the station exists, so nextval never runs.
-            await using var insert = new NpgsqlCommand(
+            await ExecuteAsync(
+                connection,
                 """
                 INSERT INTO stations (code, name)
                 SELECT $1, $2 WHERE NOT EXISTS (SELECT 1 FROM stations WHERE code = $1)
                 """,
-                connection);
-            insert.Parameters.AddWithValue(station.Code);
-            insert.Parameters.AddWithValue(station.Name);
-            await insert.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                ct, station.Code, station.Name).ConfigureAwait(false);
 
-            await using var update = new NpgsqlCommand(
+            await ExecuteAsync(
+                connection,
                 "UPDATE stations SET name = $2 WHERE code = $1 AND name IS DISTINCT FROM $2",
-                connection);
-            update.Parameters.AddWithValue(station.Code);
-            update.Parameters.AddWithValue(station.Name);
-            await update.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+                ct, station.Code, station.Name).ConfigureAwait(false);
         }
+
+        // position_in_line was left null in M1 because it is derivable from the buffers, and
+        // the buffers arrive in M2a. With no buffers at all there is still nothing to derive
+        // it from, and an unknown position is written as null rather than guessed — absence of
+        // evidence. Buffers that contradict each other are the other case, and OrderStations
+        // throws for that one.
+        if (topology.Buffers.Count > 0)
+        {
+            var order = OrderStations(
+                [.. topology.Stations.Select(station => station.Code)], topology.Buffers);
+
+            for (var position = 0; position < order.Count; position++)
+            {
+                await ExecuteAsync(
+                    connection,
+                    """
+                    UPDATE stations SET position_in_line = $2
+                    WHERE code = $1 AND position_in_line IS DISTINCT FROM $2
+                    """,
+                    ct, order[position], (short)(position + 1)).ConfigureAwait(false);
+            }
+        }
+
+        foreach (var buffer in topology.Buffers)
+        {
+            // Resolved here rather than as a subselect inside the INSERT: a subselect that
+            // matches nothing inserts nothing and reports success, and the first buffer level
+            // to arrive then fails against a buffers table that quietly has no row for it.
+            var upstream = await StationIdAsync(connection, buffer, buffer.Upstream, ct)
+                .ConfigureAwait(false);
+            var downstream = await StationIdAsync(connection, buffer, buffer.Downstream, ct)
+                .ConfigureAwait(false);
+
+            // Same form and the same reason as stations above: buffers.id is SMALLSERIAL, and
+            // M1 measured 55,956 discoveries exhausting its range on a table holding one row.
+            await ExecuteAsync(
+                connection,
+                """
+                INSERT INTO buffers (code, upstream_station_id, downstream_station_id, capacity)
+                SELECT $1, $2, $3, $4 WHERE NOT EXISTS (SELECT 1 FROM buffers WHERE code = $1)
+                """,
+                ct, buffer.Code, upstream, downstream, (short)buffer.Capacity)
+                .ConfigureAwait(false);
+
+            await ExecuteAsync(
+                connection,
+                """
+                UPDATE buffers
+                SET upstream_station_id = $2, downstream_station_id = $3, capacity = $4
+                WHERE code = $1
+                  AND (upstream_station_id, downstream_station_id, capacity)
+                      IS DISTINCT FROM ($2, $3, $4)
+                """,
+                ct, buffer.Code, upstream, downstream, (short)buffer.Capacity)
+                .ConfigureAwait(false);
+        }
+
+        await transaction.CommitAsync(ct).ConfigureAwait(false);
     }
 
-    private static async Task<Dictionary<string, NodeId>> BrowseChildrenAsync(
+    private static async Task<IReadOnlyList<DiscoveredStation>> DiscoverStationsAsync(
+        ISession session, CancellationToken ct)
+    {
+        var folder = await AddressSpace.TranslateAsync(session, ["Line", "Stations"], ct)
+            .ConfigureAwait(false);
+
+        var stations = new List<DiscoveredStation>();
+        foreach (var child in await BrowseChildrenAsync(session, folder, ct).ConfigureAwait(false))
+        {
+            var variables = (await BrowseChildrenAsync(session, child.NodeId, ct)
+                    .ConfigureAwait(false))
+                .Where(node => node.NodeClass == NodeClass.Variable)
+                .ToList();
+
+            var types = await ReadAsync(
+                session,
+                [.. variables.Select(v => Attribute(v.NodeId, Attributes.DataType))],
+                ct).ConfigureAwait(false);
+
+            var signals = new List<DiscoveredSignal>(variables.Count);
+            for (var i = 0; i < variables.Count; i++)
+            {
+                signals.Add(new DiscoveredSignal(
+                    variables[i].Name, variables[i].NodeId, BuiltInTypeOf(types[i])));
+            }
+
+            var (code, name) = SplitBrowseName(child.Name);
+            stations.Add(new DiscoveredStation(
+                Code: code,
+                Name: name,
+                NodeId: child.NodeId,
+                Signals: signals,
+                EmitsEvents: await EmitsEventsAsync(session, child.NodeId, ct)
+                    .ConfigureAwait(false)));
+        }
+
+        return stations;
+    }
+
+    private static async Task<IReadOnlyList<DiscoveredBuffer>> DiscoverBuffersAsync(
+        ISession session, CancellationToken ct)
+    {
+        // A line with no Buffers folder is a line this gateway still ingests from; only its
+        // order is then unknown. §4.1's plant always has one.
+        var folder = await AddressSpace
+            .TryTranslateAsync(session, ["Line", "Buffers"], ct).ConfigureAwait(false);
+        if (folder is null)
+        {
+            return [];
+        }
+
+        var buffers = new List<DiscoveredBuffer>();
+        foreach (var child in await BrowseChildrenAsync(session, folder, ct).ConfigureAwait(false))
+        {
+            var children = (await BrowseChildrenAsync(session, child.NodeId, ct)
+                .ConfigureAwait(false)).ToDictionary(node => node.Name, StringComparer.Ordinal);
+
+            var values = await ReadAsync(
+                session,
+                [
+                    Attribute(Required(children, child.Name, LevelSignal), Attributes.DataType),
+                    Attribute(Required(children, child.Name, CapacityVariable), Attributes.Value),
+                    Attribute(Required(children, child.Name, UpstreamVariable), Attributes.Value),
+                    Attribute(Required(children, child.Name, DownstreamVariable), Attributes.Value),
+                ],
+                ct).ConfigureAwait(false);
+
+            buffers.Add(new DiscoveredBuffer(
+                Code: child.Name,
+                LevelNodeId: children[LevelSignal].NodeId,
+                LevelType: BuiltInTypeOf(values[0]),
+                Upstream: SplitBrowseName(Text(values[2], child.Name, UpstreamVariable)).Code,
+                Downstream: SplitBrowseName(Text(values[3], child.Name, DownstreamVariable)).Code,
+                Capacity: Convert.ToInt32(values[1].Value, CultureInfo.InvariantCulture)));
+        }
+
+        return buffers;
+    }
+
+    /// <summary>
+    /// Which station the inspection event stream hangs off, per the server rather than per a
+    /// hardcoded S3. A bad status is the server saying this object notifies nothing, which is
+    /// an answer and not a failure — the same distinction Clock.Phase's absence gets.
+    /// </summary>
+    private static async Task<bool> EmitsEventsAsync(
+        ISession session, NodeId station, CancellationToken ct)
+    {
+        var read = await ReadAsync(
+            session, [Attribute(station, Attributes.EventNotifier)], ct).ConfigureAwait(false);
+
+        return !StatusCode.IsBad(read[0].StatusCode)
+            && read[0].Value is byte notifier
+            && (notifier & EventNotifiers.SubscribeToEvents) != 0;
+    }
+
+    private static NodeId Required(
+        IReadOnlyDictionary<string, ChildNode> children, string buffer, string variable) =>
+        children.TryGetValue(variable, out var node)
+            ? node.NodeId
+            : throw new ServiceResultException(
+                StatusCodes.BadNotFound, $"buffer {buffer} publishes no {variable}");
+
+    private static string Text(DataValue value, string buffer, string variable) =>
+        value.Value as string
+        ?? throw new ServiceResultException(
+            StatusCodes.BadTypeMismatch, $"buffer {buffer}'s {variable} is not a string");
+
+    private static BuiltInType BuiltInTypeOf(DataValue value) =>
+        value.Value is NodeId dataType && !StatusCode.IsBad(value.StatusCode)
+            // Fully qualified: inside Gateway.Opc, "Opc.Ua" would bind to this namespace.
+            ? global::Opc.Ua.TypeInfo.GetBuiltInType(dataType)
+
+            // Not a failure: a type this client cannot name is a signal with no deadband, which
+            // is what the policy gives an unknown signal anyway.
+            : BuiltInType.Null;
+
+    private static ReadValueId Attribute(NodeId node, uint attribute) =>
+        new() { NodeId = node, AttributeId = attribute };
+
+    private static async Task<DataValueCollection> ReadAsync(
+        ISession session, ReadValueIdCollection nodesToRead, CancellationToken ct)
+    {
+        if (nodesToRead.Count == 0)
+        {
+            return [];
+        }
+
+        var response = await session
+            .ReadAsync(null, 0, TimestampsToReturn.Neither, nodesToRead, ct)
+            .ConfigureAwait(false);
+        return response.Results;
+    }
+
+    private sealed record ChildNode(string Name, NodeId NodeId, NodeClass NodeClass);
+
+    private static async Task<IReadOnlyList<ChildNode>> BrowseChildrenAsync(
         ISession session, NodeId parent, CancellationToken ct)
     {
         var response = await session.BrowseAsync(
@@ -110,13 +395,39 @@ public static class TopologyDiscovery
             ],
             ct).ConfigureAwait(false);
 
-        var children = new Dictionary<string, NodeId>(StringComparer.Ordinal);
-        foreach (var reference in response.Results[0].References)
+        // Browse order, not dictionary order: it is the order the plant declares its stations
+        // in, which is what anyone holding UaExpert sees. Line order comes from the buffers.
+        return
+        [
+            .. response.Results[0].References.Select(reference => new ChildNode(
+                reference.BrowseName.Name,
+                ExpandedNodeId.ToNodeId(reference.NodeId, session.NamespaceUris),
+                reference.NodeClass)),
+        ];
+    }
+
+    private static async Task<short> StationIdAsync(
+        NpgsqlConnection connection, DiscoveredBuffer buffer, string code, CancellationToken ct)
+    {
+        await using var command = new NpgsqlCommand(
+            "SELECT id FROM stations WHERE code = $1", connection);
+        command.Parameters.AddWithValue(code);
+        var id = await command.ExecuteScalarAsync(ct).ConfigureAwait(false);
+        return id is short resolved
+            ? resolved
+            : throw new InvalidOperationException(
+                $"buffer {buffer.Code} names station {code}, which the line does not have");
+    }
+
+    private static async Task ExecuteAsync(
+        NpgsqlConnection connection, string sql, CancellationToken ct, params object[] parameters)
+    {
+        await using var command = new NpgsqlCommand(sql, connection);
+        foreach (var parameter in parameters)
         {
-            children[reference.BrowseName.Name] =
-                ExpandedNodeId.ToNodeId(reference.NodeId, session.NamespaceUris);
+            command.Parameters.AddWithValue(parameter);
         }
 
-        return children;
+        await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 }

@@ -1,0 +1,18 @@
+{
+  "_comment": "Per-signal ingest policy (§5.1, M2 design D3). An unrecognised signal is subscribed with no deadband: topology is discovered, so this file will always be incomplete, and losing a stream is worse than storing a few redundant rows.",
+  "defaults": { "page_size": 1000 },
+  "signals": {
+    "TaktTime":         { "deadband": 0.05,  "why": "noisy float; 0.05 s is under the jitter sigma" },
+    "JoiningForcePeak": { "deadband": 5.0,   "why": "newtons, against a 4200 N nominal and 40 N sigma" },
+    "JoiningDistance":  { "deadband": 0.005, "why": "millimetres, against a 0.02 mm sigma" },
+    "LaneFill_1":       { "deadband": 0.5,   "why": "a slow level; sub-unit noise is not a change" },
+    "LaneFill_2":       { "deadband": 0.5,   "why": "as LaneFill_1" },
+    "OutfeedFill":      { "deadband": 0.5,   "why": "as LaneFill_1" },
+    "Level":            { "deadband": null,  "why": "steps by one; any deadband swallows transitions" },
+    "PartCount":        { "deadband": null,  "why": "monotonic counter; a deadband loses parts" },
+    "GoodCount":        { "deadband": null,  "why": "as PartCount" },
+    "RejectCount":      { "deadband": null,  "why": "as PartCount" },
+    "State":            { "deadband": null,  "why": "string; every transition matters" },
+    "StateReason":      { "deadband": null,  "why": "string; paired with State at one timestamp" }
+  }
+}

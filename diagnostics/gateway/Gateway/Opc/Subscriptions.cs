@@ -8,7 +8,24 @@ using Opc.Ua.Client;
 namespace Gateway.Opc;
 
 /// <summary>
-/// Live ingest: two variables and one event stream, per §4.2's three kinds of traffic.
+/// What a sample belongs to. A station signal and a buffer level are different payload shapes
+/// to <see cref="PostgresWriter"/>: a buffer sits between two stations and belongs to neither,
+/// so its records carry no Station key at all and asking one for a station would force it to
+/// pick a side.
+/// </summary>
+public enum StreamOwner
+{
+    Station,
+    Buffer,
+}
+
+/// <summary>Which stream one sample came from — the ingest payload's identity.</summary>
+public sealed record StreamKey(StreamOwner Owner, string Code, string Signal);
+
+/// <summary>
+/// Live ingest across the discovered topology, per §4.2's three kinds of traffic. Every
+/// browsed variable becomes a monitored item; what varies between them is the deadband, and
+/// that comes from the mounted <see cref="SignalPolicy"/> rather than from this file.
 /// </summary>
 public sealed class Subscriptions
 {
@@ -24,23 +41,29 @@ public sealed class Subscriptions
     ];
 
     private const string ImageField = "Image";
+    private const string EventStream = "InspectionResult";
+    private const string BufferLevelSignal = "Level";
 
     private readonly GatewayOptions _options;
+    private readonly SignalPolicy _policy;
     private readonly Func<IngestRecord, Task> _onRecord;
 
     /// <summary>
-    /// The last SourceTimestamp delivered per monitored item. The overflow bit means values
-    /// were dropped between the previous delivery and this one, so this is what turns "some
-    /// were lost" into the interval §4.4 asks a gap marker to name.
+    /// The last SourceTimestamp delivered per monitored item, for every stream rather than
+    /// the two M1 had. The overflow bit means values were dropped between the previous
+    /// delivery and this one, so this is what turns "some were lost" into the interval §4.4
+    /// asks a gap marker to name.
     /// </summary>
     private readonly ConcurrentDictionary<string, DateTime> _lastSourceTs =
         new(StringComparer.Ordinal);
 
     public int OverflowCount { get; private set; }
 
-    public Subscriptions(GatewayOptions options, Func<IngestRecord, Task> onRecord)
+    public Subscriptions(
+        GatewayOptions options, SignalPolicy policy, Func<IngestRecord, Task> onRecord)
     {
         _options = options;
+        _policy = policy;
         _onRecord = onRecord;
     }
 
@@ -52,7 +75,7 @@ public sealed class Subscriptions
 
         var subscription = new Subscription(session.DefaultSubscription)
         {
-            DisplayName = "machine-agent S3",
+            DisplayName = "machine-agent line",
             PublishingEnabled = true,
             PublishingInterval = _options.PublishingIntervalMs,
             KeepAliveCount = 10,
@@ -62,53 +85,62 @@ public sealed class Subscriptions
         session.AddSubscription(subscription);
         await subscription.CreateAsync(ct).ConfigureAwait(false);
 
-        // TaktTime is a noisy float, so a deadband is meaningful.
-        var takt = new MonitoredItem(subscription.DefaultItem)
+        var items = new List<MonitoredItem>();
+        foreach (var station in space.Stations)
         {
-            StartNodeId = space.TaktNodeId,
-            AttributeId = Attributes.Value,
-            DisplayName = "TaktTime",
-            SamplingInterval = _options.SamplingIntervalMs,
-            QueueSize = _options.QueueSize,
-            DiscardOldest = true,
-            Filter = new DataChangeFilter
+            foreach (var signal in station.Signals)
             {
-                Trigger = DataChangeTrigger.StatusValue,
-                DeadbandType = (uint)DeadbandType.Absolute,
-                DeadbandValue = _options.TaktDeadband,
-            },
-        };
-        takt.Notification += OnDataChange;
+                AddDataItem(
+                    items, subscription,
+                    new StreamKey(StreamOwner.Station, station.Code, signal.Name),
+                    signal.NodeId, _policy.For(signal.Name, signal.Type));
+            }
 
-        // PartCount is monotonic. A deadband here would silently lose parts, so there is
-        // none. §5.1 makes deadbands the gateway's job but never says they are per-signal;
-        // this pair settles that they must be.
-        var partCount = new MonitoredItem(subscription.DefaultItem)
+            if (station.EmitsEvents)
+            {
+                var events = new MonitoredItem(subscription.DefaultItem)
+                {
+                    StartNodeId = station.NodeId,
+                    AttributeId = Attributes.EventNotifier,
+                    NodeClass = NodeClass.Object,
+                    DisplayName = $"{station.Code}.{EventStream}",
+                    Handle = new StreamKey(StreamOwner.Station, station.Code, EventStream),
+                    SamplingInterval = 0,
+                    QueueSize = _options.EventQueueSize,
+                    Filter = BuildInspectionFilter(),
+                };
+                events.Notification += OnEvent;
+                items.Add(events);
+            }
+        }
+
+        foreach (var buffer in space.Buffers)
         {
-            StartNodeId = space.PartCountNodeId,
-            AttributeId = Attributes.Value,
-            DisplayName = "PartCount",
-            SamplingInterval = _options.SamplingIntervalMs,
-            QueueSize = _options.QueueSize,
-            DiscardOldest = false,   // prefer failing loudly over dropping a count
-            Filter = null,
-        };
-        partCount.Notification += OnDataChange;
+            AddDataItem(
+                items, subscription,
+                new StreamKey(StreamOwner.Buffer, buffer.Code, BufferLevelSignal),
+                buffer.LevelNodeId, _policy.For(BufferLevelSignal, buffer.LevelType));
+        }
 
-        var events = new MonitoredItem(subscription.DefaultItem)
-        {
-            StartNodeId = space.S3NodeId,
-            AttributeId = Attributes.EventNotifier,
-            NodeClass = NodeClass.Object,
-            DisplayName = "S3.InspectionResult",
-            SamplingInterval = 0,
-            QueueSize = _options.EventQueueSize,
-            Filter = BuildInspectionFilter(),
-        };
-        events.Notification += OnEvent;
-
-        subscription.AddItems([takt, partCount, events]);
+        subscription.AddItems(items);
         await subscription.ApplyChangesAsync(ct).ConfigureAwait(false);
+
+        // ApplyChanges reports per-item status and the SDK does not raise on a rejected one,
+        // so an item the server refused — a filter it will not accept, a node it will not
+        // monitor — would leave that stream silently unsubscribed. That is the same loss the
+        // policy's fail-open default exists to prevent, one layer down.
+        var refused = items
+            .Where(item => !item.Created)
+            .Select(item => $"{item.DisplayName} ({item.Status.Error})")
+            .ToList();
+        if (refused.Count > 0)
+        {
+            throw new ServiceResultException(
+                StatusCodes.BadMonitoredItemIdInvalid,
+                $"the server refused {refused.Count} of {items.Count} monitored items, and those "
+                + $"streams would be lost silently: {string.Join("; ", refused)}");
+        }
+
         return subscription;
     }
 
@@ -133,18 +165,26 @@ public sealed class Subscriptions
     /// backfill. Two decoders would be two chances to disagree about the payload shape the
     /// writer depends on.
     /// </summary>
-    public static IngestRecord ToDataChangeRecord(string signal, string nodeId, DataValue value)
+    public static IngestRecord ToDataChangeRecord(StreamKey key, string nodeId, DataValue value)
     {
+        ArgumentNullException.ThrowIfNull(key);
         ArgumentNullException.ThrowIfNull(value);
 
-        // Shape is the contract with PostgresWriter: station, signal, and a numeric value,
-        // because signals.value is DOUBLE PRECISION and a stringified number would land as
-        // text that only fails at insert time.
+        // Shape is the contract with PostgresWriter, which routes on it: a station signal
+        // carries Station, a buffer level carries Buffer, and neither carries the other.
         var payload = JsonSerializer.Serialize(new Dictionary<string, object?>(StringComparer.Ordinal)
         {
-            ["Station"] = AddressSpace.StationCode,
-            ["Signal"] = signal,
-            ["Value"] = Convert.ToDouble(value.Value, CultureInfo.InvariantCulture),
+            [key.Owner == StreamOwner.Station ? "Station" : "Buffer"] = key.Code,
+            ["Signal"] = key.Signal,
+
+            // By the value's own type, not by the signal's name. State and StateReason are
+            // strings and signals.value is DOUBLE PRECISION, so they are different streams
+            // rather than a special case of one — and an unforeseen string signal lands in
+            // raw_events truthfully and fails its derivation loudly, rather than being
+            // converted to a number that was never sent.
+            ["Value"] = value.Value is string text
+                ? text
+                : Convert.ToDouble(value.Value, CultureInfo.InvariantCulture),
         });
 
         return new IngestRecord(
@@ -158,14 +198,15 @@ public sealed class Subscriptions
     }
 
     /// <summary>One decoder for an inspection event, shared for the same reason.</summary>
-    public static IngestRecord ToEventRecord(string nodeId, IList<Variant> fields)
+    public static IngestRecord ToEventRecord(
+        string station, string nodeId, IList<Variant> fields)
     {
         ArgumentNullException.ThrowIfNull(fields);
 
         byte[]? image = null;
         var payload = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
-            ["Station"] = AddressSpace.StationCode,
+            ["Station"] = station,
         };
         var sourceTs = DateTime.UtcNow;
 
@@ -214,6 +255,53 @@ public sealed class Subscriptions
             ImageBytes: image);
     }
 
+    private void AddDataItem(
+        List<MonitoredItem> items, Subscription subscription, StreamKey key, NodeId node,
+        SignalRule rule)
+    {
+        if (!rule.Subscribe)
+        {
+            return;
+        }
+
+        var item = new MonitoredItem(subscription.DefaultItem)
+        {
+            StartNodeId = node,
+            AttributeId = Attributes.Value,
+            DisplayName = $"{key.Code}.{key.Signal}",
+            Handle = key,
+            SamplingInterval = _options.SamplingIntervalMs,
+            QueueSize = _options.QueueSize,
+
+            // A deadbanded stream is a noisy float whose older samples say nothing the newer
+            // ones do not; everything else here is a counter, a level or a PackML state, where
+            // dropping the oldest queued value loses a part, a transition or a move. §4.4's
+            // overflow bit is then the honest report, which DiscardOldest=true would suppress.
+            DiscardOldest = rule.Deadband is not null,
+            Filter = rule.Deadband is { } deadband
+                ? new DataChangeFilter
+                {
+                    Trigger = DataChangeTrigger.StatusValue,
+                    DeadbandType = (uint)DeadbandType.Absolute,
+                    DeadbandValue = deadband,
+                }
+                : null,
+        };
+
+        item.Notification += OnDataChange;
+        items.Add(item);
+    }
+
+    /// <summary>
+    /// Every item this class creates is tagged with the stream it carries, and nothing else
+    /// adds items to this subscription — an untagged notification is a bug in this file, not a
+    /// condition to absorb quietly into a record with no owner.
+    /// </summary>
+    private static StreamKey KeyOf(MonitoredItem item) =>
+        item.Handle as StreamKey
+        ?? throw new InvalidOperationException(
+            $"monitored item '{item.DisplayName}' carries no stream key");
+
     private void OnDataChange(MonitoredItem item, MonitoredItemNotificationEventArgs e)
     {
         if (e.NotificationValue is not MonitoredItemNotification notification)
@@ -221,6 +309,7 @@ public sealed class Subscriptions
             return;
         }
 
+        var key = KeyOf(item);
         var nodeId = item.StartNodeId.ToString();
         var sourceTs = notification.Value.SourceTimestamp;
 
@@ -248,7 +337,7 @@ public sealed class Subscriptions
         }
 
         _lastSourceTs[nodeId] = sourceTs;
-        _ = _onRecord(ToDataChangeRecord(item.DisplayName, nodeId, notification.Value));
+        _ = _onRecord(ToDataChangeRecord(key, nodeId, notification.Value));
     }
 
     private void OnEvent(MonitoredItem item, MonitoredItemNotificationEventArgs e)
@@ -258,6 +347,8 @@ public sealed class Subscriptions
             return;
         }
 
-        _ = _onRecord(ToEventRecord(item.StartNodeId.ToString(), fields.EventFields));
+        var key = KeyOf(item);
+        _ = _onRecord(
+            ToEventRecord(key.Code, item.StartNodeId.ToString(), fields.EventFields));
     }
 }
