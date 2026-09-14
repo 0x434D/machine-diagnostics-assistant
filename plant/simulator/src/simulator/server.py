@@ -163,7 +163,12 @@ def build_line(writer: LedgerWriter, settings: Settings, produce: ProduceFn) -> 
         Buffer(buffer_id, settings.buffer_capacity, upstream, downstream)
         for buffer_id, upstream, downstream in BUFFERS
     ]
-    return Line(stations, buffers, CarrierPool(settings.carrier_count))
+    return Line(
+        stations,
+        buffers,
+        CarrierPool(settings.carrier_count),
+        timedelta(seconds=settings.state_transition_seconds),
+    )
 
 
 async def main() -> None:

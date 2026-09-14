@@ -34,12 +34,13 @@ def _ledger() -> Ledger:
     return ledger
 
 
-def test_the_snapshot_reports_the_phase_and_the_ledger_it_was_taken_at() -> None:
+@pytest.mark.asyncio
+async def test_the_snapshot_reports_the_phase_and_the_ledger_it_was_taken_at() -> None:
     boot = datetime(2026, 9, 12, 12, 0, tzinfo=UTC)
     wall = [boot]
     clock = _clock(wall)
     ledger = _ledger()
-    line, _ = build_fake_line()
+    line, _ = await build_fake_line()
 
     during_catchup = snapshot(clock, Settings(), ledger, line)
     wall[0] = boot + timedelta(seconds=600)
@@ -66,7 +67,7 @@ async def test_the_snapshot_reports_what_the_line_is_doing() -> None:
     """A starved line is invisible in a row count -- the stations still running keep
     raising theirs -- and this file is the only way to see one without an OPC UA
     client."""
-    line, _ = build_fake_line()
+    line, _ = await build_fake_line()
     await line.step()  # S4 first, and B3_4 is empty
 
     taken = snapshot(
@@ -82,11 +83,12 @@ async def test_the_snapshot_reports_what_the_line_is_doing() -> None:
     assert taken["buffers"] == {"B1_2": 0, "B2_3": 0, "B3_4": 0}
 
 
-def test_the_snapshot_is_json() -> None:
+@pytest.mark.asyncio
+async def test_the_snapshot_is_json() -> None:
     """The ledger keys its rows by (owner, signal), and json.dumps refuses a tuple
     key outright -- so the field that made this file readable at a shell prompt is
     also the one that can stop it being written at all."""
-    line, _ = build_fake_line()
+    line, _ = await build_fake_line()
     json.dumps(
         snapshot(
             _clock([datetime(2026, 9, 12, 12, 0, tzinfo=UTC)]),
@@ -104,7 +106,7 @@ async def test_the_published_file_is_always_complete_json(tmp_path: Path) -> Non
     JSON would look like a crashed plant rather than a race."""
     path = tmp_path / "status.json"
     ledger = Ledger()
-    line, _ = build_fake_line()
+    line, _ = await build_fake_line()
     settings = Settings(status_interval_seconds=0.01)
     task = asyncio.create_task(
         publish(path, _clock([datetime.now(UTC)]), settings, ledger, line)

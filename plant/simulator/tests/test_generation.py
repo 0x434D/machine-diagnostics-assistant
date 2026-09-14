@@ -30,6 +30,15 @@ from simulator.stations.base import PartOutcome, ProduceFn
 EXPECTED_STREAMS = 25
 
 
+def _utc(stamp: datetime | None) -> datetime:
+    """HistorySQLite round-trips SourceTimestamp through sqlite3's PARSE_DECLTYPES
+    "timestamp" converter, which always comes back naive -- confirmed against the
+    installed asyncua 2.0.1. The instant itself is still the UTC one that was written.
+    """
+    assert stamp is not None
+    return stamp if stamp.tzinfo is not None else stamp.replace(tzinfo=UTC)
+
+
 async def _stub_produce(part_id: str, _ts: datetime) -> PartOutcome:
     reject = part_id.endswith("7")
     return PartOutcome(
@@ -221,6 +230,68 @@ async def test_the_priming_rows_carry_a_simulated_timestamp(tmp_path: Path) -> N
     # not a generated zero: a station that has never been cleared is Aborted.
     assert oldest[("S2_Joining", "State")][1] == "Aborted"
     assert oldest[("B1_2", "Level")][1] == 0
+
+
+@pytest.mark.asyncio
+async def test_the_historian_says_a_station_is_running_from_the_part_it_starts_on(
+    tmp_path: Path,
+) -> None:
+    """The state history has to be true from the first part, not from the first
+    suspension.
+
+    S1_Feeding is the case that was wrong: nothing starves it, so before the line
+    published its bring-up the first `State` row after priming was whatever its first
+    *blockage* wrote -- 894.9 simulated seconds and ~157 parts into a shipped-settings
+    run. Until then the historian answered "was S1 running?" with `Aborted` while
+    `PartCount` climbed beside it, and the reconciliation was silent because the ledger
+    and the historian were wrong together.
+
+    Asserted against the rows in sqlite rather than against the Line's own state:
+    what is wrong in that defect is what reached the historian.
+    """
+    settings = Settings(history_depth_hours=60.0 / 3600.0)
+    clock = SimulatedClock(ClockConfig(timedelta(seconds=60), settings.catchup_speed))
+    plant = await _build_plant(settings, clock, tmp_path / "h.db")
+
+    async with plant.server:
+        await run_catchup(plant.line, plant.writer, clock, settings, plant.storage)
+        state = plant.space.stations["S1_Feeding"].historised["State"]
+        rows = await state.read_raw_history(
+            clock.history_start - timedelta(minutes=1),
+            datetime.now(UTC) + timedelta(days=1),
+            0,
+        )
+        parts = plant.space.stations["S1_Feeding"].historised["PartCount"]
+        part_rows = await parts.read_raw_history(
+            clock.history_start - timedelta(minutes=1),
+            datetime.now(UTC) + timedelta(days=1),
+            0,
+        )
+
+    history = [
+        (_utc(row.SourceTimestamp), row.Value.Value) for row in rows if row.Value
+    ]
+    assert [value for _, value in history[:7]] == [
+        # The priming row, then PackML's real sequence. Not an Aborted -> Execute jump:
+        # that transition does not exist, and state_changes records the pair.
+        "Aborted",
+        "Clearing",
+        "Stopped",
+        "Resetting",
+        "Idle",
+        "Starting",
+        "Execute",
+    ]
+    stamps = [stamp for stamp, _ in history[:7]]
+    assert stamps == sorted(set(stamps)), (
+        "each transition needs its own SourceTimestamp"
+    )
+
+    # The claim that matters: S1 is on record as running before it is on record as
+    # having made anything.
+    running_at = next(stamp for stamp, value in history if value == "Execute")
+    first_part = min(_utc(row.SourceTimestamp) for row in part_rows[1:])
+    assert running_at < first_part
 
 
 @pytest.mark.asyncio

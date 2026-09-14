@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from asyncua import Server
 from simulator.buffers import Buffer
 from simulator.carriers import Carrier, CarrierPool
-from simulator.line import Line, PartState
+from simulator.config import Settings
+from simulator.line import BRING_UP_TRANSITIONS, Line, PartState
 from simulator.packml import State
 
 T0 = datetime(2026, 9, 13, 6, 0, tzinfo=UTC)
+TRANSITION = timedelta(seconds=Settings().state_transition_seconds)
+"""The configured spacing between two published PackML states, read from Settings
+rather than restated: a test line whose transitions land on top of each other would
+not be exercising what the plant does."""
 
 
 def new_server() -> Server:
@@ -51,17 +56,34 @@ class FakeStation:
         return self.takt
 
 
-def build_fake_line(
-    carriers: int = 12, capacity: int = 5
-) -> tuple[Line, list[FakeStation]]:
-    """Four fake stations, seeded at T0. The buffer names match the station codes,
-    which `Line` refuses to run without."""
+def fake_line(carriers: int = 12, capacity: int = 5) -> tuple[Line, list[FakeStation]]:
+    """Four fake stations and three buffers, neither started nor seeded. The buffer
+    names match the station codes, which `Line` refuses to run without."""
     stations = [FakeStation(code) for code in ("S1", "S2", "S3", "S4")]
     buffers = [
         Buffer("B1_2", capacity, "S1", "S2"),
         Buffer("B2_3", capacity, "S2", "S3"),
         Buffer("B3_4", capacity, "S3", "S4"),
     ]
-    line = Line(stations=stations, buffers=buffers, carriers=CarrierPool(carriers))
+    line = Line(
+        stations=stations,
+        buffers=buffers,
+        carriers=CarrierPool(carriers),
+        transition_interval=TRANSITION,
+    )
+    return line, stations
+
+
+async def build_fake_line(
+    carriers: int = 12, capacity: int = 5
+) -> tuple[Line, list[FakeStation]]:
+    """A fake line brought up and seeded at T0 -- what a caller that wants a *running*
+    line needs, which is all of them but the tests about starting one.
+
+    Async because starting a line publishes six PackML transitions per station; a line
+    that is only constructed is Aborted and cycles nothing.
+    """
+    line, stations = fake_line(carriers, capacity)
+    await line.bring_up(T0 - BRING_UP_TRANSITIONS * TRANSITION)
     line.seed(T0)
     return line, stations

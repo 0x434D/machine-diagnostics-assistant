@@ -82,6 +82,18 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     carrier_count: int = 18
     buffer_capacity: int = 5
 
+    # How far apart two PackML states published for the same station sit on the
+    # simulated timeline. Not cosmetic: §5.2 keys `state_changes` on
+    # `(station_id, source_ts)`, so states sharing an instant are one row in Postgres
+    # and only the last survives -- a bring-up would arrive as `Execute` with nothing
+    # before it, and a hold as `Held` with no `Holding`.
+    #
+    # 0.5 s puts a station's whole bring-up (BRING_UP_TRANSITIONS = 6, so 3 s) inside
+    # the one-takt gap between the historian's priming row and the first cycle, with
+    # half the gap spare; `line.run_catchup` refuses a value that does not fit rather
+    # than publishing state history over the top of production.
+    state_transition_seconds: float = 0.5
+
     # §3.1: the stations do NOT share one takt. S3 is the slowest and paces the line
     # at the 6 s every other number is quoted against; S1 and S2 run faster so their
     # buffers fill, and S4 matches S3 so B3_4 stays near empty without S4 starving on

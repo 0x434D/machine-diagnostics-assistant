@@ -46,6 +46,20 @@ name for each rather than one name stretched over both.
 """
 
 
+_BRING_UP: tuple[Command, ...] = (Command.CLEAR, Command.RESET, Command.START)
+"""The commands that take a station from `Aborted` to `Execute`, in order.
+
+`StateMachine` is what decides the states each one passes through, so this names the
+path and not the result -- see `Line.bring_up`.
+"""
+
+BRING_UP_TRANSITIONS = len(_BRING_UP) * 2
+"""How many `State` rows one station's bring-up publishes: every command is an acting
+state and the waiting state it settles into, and each needs its own instant. Public
+because the driver has to fit them all between the historian's priming row and the
+first cycle."""
+
+
 class StationCycle(Protocol):
     """What the Line needs from a station. Four implementations, in `stations/`.
 
@@ -164,7 +178,17 @@ class Line:
         stations: Sequence[StationCycle],
         buffers: Sequence[Buffer],
         carriers: CarrierPool,
+        transition_interval: timedelta,
     ) -> None:
+        """`transition_interval` is how far apart two PackML states published for the
+        same station are placed on the simulated timeline.
+
+        It is not cosmetic and it has no default. §5.2 keys `state_changes` on
+        `(station_id, source_ts)`, so two states published at one instant are one row
+        in Postgres and the second silently replaces the first: a bring-up would arrive
+        as `Execute` alone and a hold as `Held` alone, with the transitions that led
+        there gone. `Settings.state_transition_seconds` is the configured value.
+        """
         if len(buffers) != len(stations) - 1:
             raise ValueError(
                 f"{len(stations)} stations need {len(stations) - 1} buffers between "
@@ -187,24 +211,18 @@ class Line:
         self._stations = list(stations)
         self._buffers = list(buffers)
         self._carriers = carriers
+        self._transition = transition_interval
         self._queue = CycleQueue()
         # Carrier id -> the part currently riding it. A carrier holds at most one
         # part, so the id is a sufficient key and no buffer has to carry a payload.
         self._parts: dict[int, PartState] = {}
-        # Every station starts Aborted and is walked up through the real sequence
-        # rather than constructed straight into Execute, so each machine's own history
-        # is the one that actually happened. Nothing is published here -- __init__ is
-        # sync and publish_state is not -- so the *observable* history still begins at
-        # an Execute nothing caused. Task 7's driver owns the async side and is where
-        # these bring-up transitions get emitted.
+        # Every station starts Aborted, which is where a machine that has never been
+        # cleared genuinely is. `bring_up` is what walks them to Execute, and it is
+        # async because each of those transitions is published: a line is constructed
+        # here and started there. A Line that is never brought up therefore produces
+        # nothing -- `step` already declines to cycle an Aborted station -- which is
+        # the visible failure, not a silent one.
         self._machines = {station.code: StateMachine() for station in stations}
-        for machine in self._machines.values():
-            machine.apply(Command.CLEAR)
-            machine.settle()
-            machine.apply(Command.RESET)
-            machine.settle()
-            machine.apply(Command.START)
-            machine.settle()
 
     @property
     def buffers(self) -> Sequence[Buffer]:
@@ -222,7 +240,8 @@ class Line:
         For `simulator.status`, which is how the demo and Task 11's HMI fallback see a
         line that has starved without an OPC UA client at hand. Read-only: the state
         machines themselves stay private, because everything that may drive one goes
-        through `hold`, `unhold` or a cycle.
+        through `bring_up`, `hold`, `unhold` or a cycle -- and each of those publishes
+        what it did.
         """
         return {
             code: (machine.state, machine.reason)
@@ -239,10 +258,77 @@ class Line:
         for index in range(len(self._stations)):
             self._queue.schedule(start_ts, index)
 
-    def hold(self, code: str, reason: str) -> None:
+    async def _drive(
+        self, code: str, at: datetime, command: Command, reason: str | None = None
+    ) -> datetime:
+        """Apply one PackML command and publish both states it passes through.
+
+        Returns the instant after the last one published, so a caller sequencing
+        several commands carries the cursor forward rather than recomputing it.
+
+        Both states are published, not just the settled one: `Holding` is the
+        transition and `Held` is the condition, and an analysis that only ever sees
+        `Held` cannot tell a station that was commanded to hold from one that was found
+        holding. They go one `transition_interval` apart because §5.2 keys
+        `state_changes` on `(station_id, source_ts)` and would otherwise keep only the
+        second.
+        """
+        station = self._station_for(code)
+        machine = self._machines[code]
+        machine.apply(command, reason)
+        await station.publish_state(at, machine.state, machine.reason)
+        machine.settle()
+        await station.publish_state(
+            at + self._transition, machine.state, machine.reason
+        )
+        return at + 2 * self._transition
+
+    def _station_for(self, code: str) -> StationCycle:
+        """Raises KeyError for a code this line does not carry, like `_machines`."""
+        for station in self._stations:
+            if station.code == code:
+                return station
+        raise KeyError(code)
+
+    async def bring_up(self, first_at: datetime) -> datetime:
+        """Start every station: Aborted -> Clearing -> Stopped -> Resetting -> Idle ->
+        Starting -> Execute, publishing all six transitions. Returns the instant after
+        the last one.
+
+        Published rather than performed silently, and as the real sequence rather than
+        a jump. Before this existed the line walked its machines to `Execute` inside
+        `__init__` and told no one: the historian's first `State` row for a station was
+        whatever its first *suspension* wrote, so S1_Feeding -- which starts with an
+        empty B1_2 in front of it and runs unimpeded -- read `Aborted` with no reason
+        for the first 894.9 simulated seconds of a shipped-settings run, ~157 parts,
+        while `PartCount` climbed beside it. "Was S1 running 300 s in?" was answered
+        `Aborted`, and both the ledger and the historian agreed, because the two were
+        wrong together. That is the quiet wrong answer this system exists not to give.
+
+        A jump would be the same defect in smaller print: PackML has no Aborted ->
+        Execute transition, and `state_changes` records `from_state`/`to_state`, so an
+        illegal pair in the record is worse than the gap it replaces. The commands below
+        are the ones `StateMachine` accepts from each state, so the sequence is the
+        machine's, not a script that happens to agree with it today.
+
+        `first_at` must sit after the historian's priming row (which puts `Aborted` on
+        record) and before the first cycle. `run_catchup` places the window.
+        """
+        last = first_at
+        for code in self._machines:
+            at = first_at
+            for command in _BRING_UP:
+                at = await self._drive(code, at, command)
+            last = max(last, at)
+        return last
+
+    async def hold(self, code: str, at: datetime, reason: str) -> None:
         """Put a station into `Held` -- §3.3's cause candidate, which does not clear
         itself. M2c injects faults through this; M2a's propagation proof uses it to
         stop S2 and watch S3 starve.
+
+        Publishes `Holding` then `Held`, both carrying `reason` (§3.3 makes the field
+        non-optional), one `transition_interval` apart.
 
         Raises ValueError if the station is not in `Execute`, which is the only state
         PackML accepts Hold from. A running station leaves `Execute` whenever its
@@ -250,19 +336,16 @@ class Line:
         fault at an arbitrary instant must hold at a moment it has established rather
         than assume this succeeds. Raises KeyError if `code` names no station here.
         """
-        machine = self._machines[code]
-        machine.apply(Command.HOLD, reason)
-        machine.settle()
+        await self._drive(code, at, Command.HOLD, reason)
 
-    def unhold(self, code: str) -> None:
-        """Release a `Held` station back to `Execute`.
+    async def unhold(self, code: str, at: datetime) -> None:
+        """Release a `Held` station back to `Execute`, publishing `Unholding` then
+        `Execute`.
 
         Raises ValueError if the station is not `Held`, KeyError if `code` names no
         station here.
         """
-        machine = self._machines[code]
-        machine.apply(Command.UNHOLD)
-        machine.settle()
+        await self._drive(code, at, Command.UNHOLD)
 
     def _source_and_sink(self, index: int) -> tuple[Buffer | None, Buffer | None]:
         upstream = self._buffers[index - 1] if index > 0 else None
@@ -419,10 +502,33 @@ async def run_catchup(
     `settings.catchup_batch_size` and `settings.catchup_batch_pause_seconds`. They are
     measured, not guessed.
 
+    Starts the line before generating anything, and the six PackML transitions that
+    takes are published on the simulated timeline immediately before `history_start`
+    (`Line.bring_up` has what that is worth). The window has to fit between the
+    historian's priming row -- one takt before `history_start`, which is where `Aborted`
+    is on record -- and the first cycle at `history_start`, so a station's own history
+    reads Aborted, the real sequence, Execute, then whatever production did. Publishing
+    at or after `history_start` would collide with the first cycle's own suspensions,
+    which §5.2's `(station_id, source_ts)` key would resolve by keeping one of them.
+
     Reads the historian back through `storage` before returning and raises if it
     disagrees with the ledger (`LedgerWriter.reconcile`), so a caller that gets a
     normal return has R1's guarantee already checked rather than attempted.
+
+    Raises ValueError if the configured bring-up window does not fit in that gap.
     """
+    interval = timedelta(seconds=settings.state_transition_seconds)
+    window = BRING_UP_TRANSITIONS * interval
+    if window >= timedelta(seconds=settings.takt_seconds):
+        raise ValueError(
+            f"bring-up needs {BRING_UP_TRANSITIONS} x "
+            f"{settings.state_transition_seconds} s = {window.total_seconds()} s of "
+            f"simulated timeline, and it has to fit between the historian's priming "
+            f"row (one takt, {settings.takt_seconds} s, before history_start) and the "
+            "first cycle. Lower state_transition_seconds or raise takt_seconds"
+        )
+    await line.bring_up(clock.history_start - window)
+
     line.seed(clock.history_start)
     horizon = clock.history_start + clock.history_depth
     cycles = 0
