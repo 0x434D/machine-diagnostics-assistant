@@ -26,6 +26,11 @@ POSTGRES_IMAGE = (
     "postgres:17-bookworm@sha256:"
     "051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0"
 )
+SIGNAL_POLICY = REPO / "diagnostics" / "gateway" / "Gateway" / "config" / "signals.json"
+"""The same file diagnostics/compose.yml mounts. Named here rather than spelled inline
+because the gateway refuses to start without it, and the two mounts must stay the same
+file: a proof run against a different signal policy is a proof about a different gateway."""
+
 STATUS = "http://localhost:18082/status"
 DSN = "postgresql://postgres:auth@localhost:15434/postgres"
 
@@ -113,6 +118,16 @@ def stack() -> Iterator[None]:
         "--add-host=host.docker.internal:host-gateway",
         "-v",
         f"{REPO / 'pki'}:/pki:ro",
+        # §5.1's deadbands, mounted exactly as diagnostics/compose.yml mounts them. M2a
+        # Task 9 made the policy mandatory -- SignalPolicy.Load raises rather than
+        # defaulting, because a gateway that silently subscribes to everything at no
+        # deadband is a different gateway from the configured one -- and this fixture was
+        # not updated. Every one of §1's four proofs has been erroring at setup since, with
+        # "gateway never reached live" standing in for a container that had exited 139 with
+        # FileNotFoundException on its first line. `make verify` is the only thing that runs
+        # them, and it is not in `make check`, so nothing was red.
+        "-v",
+        f"{SIGNAL_POLICY}:/config/signals.json:ro",
         "-v",
         f"{queue}:/queue",
         "--user",
@@ -126,7 +141,14 @@ def stack() -> Iterator[None]:
         "Password=auth;Database=postgres",
         GATEWAY_IMAGE,
     )
-    assert _wait_for("state", "live", timeout_s=300), "gateway never reached live"
+    if not _wait_for("state", "live", timeout_s=300):
+        # The container's own last words, not just "it never got there". The failure above
+        # was a startup crash, and a fixture that reports only the symptom costs an hour
+        # finding that out -- the logs are gone as soon as teardown removes the container.
+        raise AssertionError(
+            "gateway never reached live; auth-gw said:\n"
+            + _sh("docker", "logs", "--tail", "20", "auth-gw")
+        )
     yield
     _sh("docker", "rm", "-f", "auth-gw", "auth-pg")
     _sh("docker", "start", PLANT_CONTAINER)
