@@ -48,7 +48,9 @@ make m2a-demo
 Brings both stacks up, opens the plant HMI, browses the address space with a foreign client,
 lets the gateway discover the topology and backfill all 25 streams, reconciles, and then runs
 M2a's authenticity proof: **stop S2, and S3 starves once B2_3 drains** — measured, with the
-delay derived from the buffer level rather than asserted. It ends with the measured risk table.
+delay derived from the buffer level rather than asserted. It ends with M1's risk table, which
+is still M1's: R1–R4 were measured against an M1 gateway over three streams and M2a has not
+re-measured them.
 
 `make m1-demo` is still there and still the outage demo: it takes Postgres away and gives it
 back, then takes the **plant** away and asks the same question again, which is the step the

@@ -89,7 +89,9 @@ async def _settle(line: Line) -> dict[str, int]:
     )
 
 
-async def _hold_s2_in_execute(line: Line, reason: str) -> datetime:
+async def _hold_s2_in_execute(
+    line: Line, reason: str
+) -> tuple[datetime, dict[str, int]]:
     """Step until S2 and S3 are both in `Execute`, then hold S2 at the next due
     instant. Returns that instant.
 
@@ -97,6 +99,14 @@ async def _hold_s2_in_execute(line: Line, reason: str) -> datetime:
     which S2 leaves whenever B2_3 is full -- 19 of 755 cycles measured in steady
     state, so holding at an arbitrary moment is a one-in-forty flake. S3 is waited for
     too: a proof that begins with S3 already suspended has nothing left to observe.
+
+    Returns every buffer's level **at that instant**, because the wait above is what
+    makes a level read before the call stale -- and it goes stale exactly when the wait
+    engages rather than never. Measured over 400 warm-up offsets: at the shipped
+    settings the wait moved B2_3 on 6 of them, and at a retune to S3 = 8.0 s on 73. A
+    caller reading the level for itself beforehand therefore passes on every shipped
+    run and is wrong the first time anyone retunes, which is worse than a flake:
+    nothing ever goes red to say so.
     """
     for _ in range(_DRAIN_CEILING):
         if all(line.machine_for(code).state is State.EXECUTE for code in (S2, S3)):
@@ -105,7 +115,7 @@ async def _hold_s2_in_execute(line: Line, reason: str) -> datetime:
                 "every station reschedules itself, so the queue is never dry"
             )
             await line.hold(S2, at, reason)
-            return at
+            return at, {buf.buffer_id: buf.level for buf in line.buffers}
         await line.step()
     raise AssertionError(
         f"S2 and S3 were never both in Execute at once: {line.station_states}"
@@ -118,16 +128,18 @@ async def test_s3_starves_exactly_when_b2_3_drains_and_not_before() -> None:
     stopped -- no fewer, which would be sympathy, and no more, which would be a part
     arriving from somewhere the model does not have.
 
-    The expected delay is derived from the level observed at the moment of the hold,
-    so this survives a retune of the takts or of `buffer_capacity`; §3.1's figure is
-    checked as the interval that level implies, not as the number 30.
+    The expected delay is derived from the level observed **at** the moment of the
+    hold -- `_hold_s2_in_execute` returns it, because it may step the line to reach a
+    moment S2 is in `Execute` -- so this survives a retune of the takts or of
+    `buffer_capacity`; §3.1's figure is checked as the interval that level implies, not
+    as the number 30.
     """
     settings = Settings()
     line, _ = await build_running_line(settings)
     await _settle(line)
 
-    level_at_stop = _buffer(line, B2_3).level
-    held_at = await _hold_s2_in_execute(line, "propagation proof")
+    held_at, levels_at_stop = await _hold_s2_in_execute(line, "propagation proof")
+    level_at_stop = levels_at_stop[B2_3]
     starved_on_b2_3 = str(SuspendReason("starved", B2_3))
 
     produced_by_s3 = 0
@@ -240,8 +252,12 @@ async def test_the_line_settles_where_3_1_says_it_does() -> None:
     2. S1 never suspends for want of a free carrier in free running. `carrier_count`
        was raised 12 -> 18 on a measurement made with `FakeStation`; this is the
        confirmation against the stations that actually hold carriers.
-    3. S3 never suspends at all once the line is warm -- the bottleneck is the one
-       station nothing upstream or downstream ever stops.
+    3. S3 is never starved once the line is warm, and waits less often than the two
+       stations above it. The bottleneck is not "never suspended" -- over 400,000
+       steady-state steps it takes exactly one `blocked:B3_4`, when jitter lets S4 fall
+       a takt behind -- so the claim asserted here is the one that is actually true and
+       actually structural: nothing upstream can starve the slowest station, and the
+       further up the line a station sits, the more it waits.
     """
     settings = Settings()
     line, _ = await build_running_line(settings)
@@ -276,10 +292,26 @@ async def test_the_line_settles_where_3_1_says_it_does() -> None:
         "the raised count recorded"
     )
 
-    # S3 is the bottleneck: it is never waiting on anyone, so it is the one station
-    # whose cycle count is the line's output.
-    assert not [code for code, _ in census if code == S3], (
-        f"S3 suspended in free running: {census}. The slowest station cannot be "
-        "starved or blocked unless the takts no longer make it the slowest"
+    # Nothing upstream can starve the slowest station: S2 outruns it, so B2_3 cannot
+    # empty. A starved S3 means the takts no longer make it the slowest.
+    starved_s3 = {
+        reason: count
+        for (code, reason), count in census.items()
+        if code == S3 and reason.startswith("starved")
+    }
+    assert not starved_s3, (
+        f"S3 was starved in free running: {starved_s3}. The slowest station cannot run "
+        "out of parts unless something above it is now slower still"
+    )
+
+    # And it waits least. A threshold would be a number standing in for the claim; the
+    # ordering IS the claim, and it is what stops being true first if the takts move.
+    waits = {
+        code: sum(count for (owner, _), count in census.items() if owner == code)
+        for code in (S1, S2, S3)
+    }
+    assert waits[S3] < waits[S2] < waits[S1], (
+        f"the further up the line a station sits, the more it should wait: {waits}. "
+        f"Cycle counts were {cycles}"
     )
     assert cycles[S3] < cycles[S2] < cycles[S1]

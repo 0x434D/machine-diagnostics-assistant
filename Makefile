@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 .PHONY: preflight lock-check fmt lint test check verify ci ci-scheduled contract m1-report \
-        m2a-r5 m2a-demo m2a-propagation reconcile-backfill \
+        m2a-r5 m2a-demo m2a-propagation backfill-counts authenticity \
         m1-demo browse ask verify-no-gaps \
         lint-python test-python check-python \
         lint-dotnet test-dotnet check-dotnet audit-dotnet \
@@ -248,17 +248,36 @@ verify-no-gaps:
 	      sys.exit(0 if r["reconciled"] else "RECONCILIATION FAILED")' \
 	  && echo "reconciled: nothing was read and lost, and no window is recorded as missing"
 
-# The two-sided comparison `verify-no-gaps` cannot make. Its default window ends at UtcNow
-# and so contains live rows no backfill window ever claimed, which makes stored exceed read
-# for a reason that has nothing to do with loss -- so `Lost` clamping at zero is the only
-# thing it can report. Bounding the window at the ledger's own max(to_ts) puts live rows
-# outside it, and read and stored become comparable in both directions: §1's
-# `read_rows == pg_rows`, at 25 streams rather than M1's three.
+# A PRINTOUT, NOT A PROOF, and the distinction is the whole reason this comment is long.
 #
-# The bounds come from `backfill_windows` rather than from a date typed here, because the
-# window is whatever this boot's history depth produced. Exits non-zero on a stream that
-# lost rows, so it is a demo step rather than a thing to read.
-reconcile-backfill:
+# It shows what the backfill read against what is stored, per stream, over the window the
+# ledger actually covers rather than /reconcile's default one. That is worth showing: at 26
+# streams "reconciled: true" says nothing about which stream holds what.
+#
+# What it does NOT do is assert `read == stored`, and it must not. Bounding the window changes
+# what is printed, not what can be checked: `ReconciliationResult.Reconciled` is
+# `Gaps.Count == 0 && all(Lost == 0)`, and `Lost` is `Math.Max(0, ...)`, so a surplus -- stored
+# exceeding read -- cannot fail it. An earlier version of this target was documented as proving
+# the equality while exiting on exactly the criterion `verify-no-gaps` uses, which is this
+# project's signature defect written into the file that catalogues its proofs.
+#
+# Asserting the equality here would be worse than leaving it unasserted, because the surplus is
+# legitimate. A reconnect runs BackfillFromStorageAsync a second time (Program.cs), so
+# `min(from_ts) .. max(to_ts)` unions two passes and contains the live stretch between them --
+# rows the subscription wrote that no window ever claimed. §1's own proofs cause exactly that,
+# by stopping the plant. Measured both ways on two boots: 402,044 read / 402,044 stored on a
+# clean single-pass boot, and 402,044 read / 427,571 stored on one that had reconnected. A
+# target asserting equality would call the second gateway broken.
+#
+# `read_rows == pg_rows` is therefore not provable from inside the diagnostics stack at all.
+# It needs the three-way comparison against the plant's own ledger, which lives outside both
+# stacks -- see measurements/authenticity/README.md, which lists it as not yet provable and
+# names what it waits on.
+#
+# The exit code is the same `reconciled` verify-no-gaps uses: gaps and losses, honestly, and
+# nothing more. The bounds come from `backfill_windows` rather than from a date typed here,
+# because the window is whatever this boot produced.
+backfill-counts:
 	@bounds=$$(docker compose -f diagnostics/compose.yml exec -T postgres \
 	    psql -U postgres -d diagnostics -t -A \
 	    -c "SELECT to_char(min(from_ts) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.USZ'), \
@@ -266,7 +285,7 @@ reconcile-backfill:
 	        FROM backfill_windows" | tr -d '\r'); \
 	 from=$${bounds%%|*}; to=$${bounds##*|}; \
 	 [ -n "$$from" ] && [ "$$from" != "$$to" ] \
-	   || { echo "backfill_windows is empty: there is nothing to reconcile yet"; exit 1; }; \
+	   || { echo "backfill_windows is empty: nothing has been backfilled yet"; exit 1; }; \
 	 echo "   window $$from .. $$to"; \
 	 curl -sf "localhost:$${GATEWAY_PORT:-8080}/reconcile?from=$$from&to=$$to" \
 	   | python3 -c 'import json,sys; r = json.load(sys.stdin); \
@@ -275,7 +294,7 @@ reconcile-backfill:
 	       print("   {} streams, {} read, {} stored, {} lost, {} gaps".format(len(rows), \
 	         sum(s["rowsReturned"] for s in rows), sum(s["rowsStored"] for s in rows), \
 	         sum(s["lost"] for s in rows), len(r["gaps"]))); \
-	       sys.exit(0 if r["reconciled"] else "RECONCILIATION FAILED over the backfill window")'
+	       sys.exit(0 if r["reconciled"] else "gaps or lost rows over the backfill window")'
 
 # Aggregates every M1 measurement into one table with a verdict per risk, and exits non-zero
 # if any risk has neither a pass nor a recorded, justified deviation — so an unmeasured risk
@@ -326,19 +345,22 @@ m2a-demo: preflight
 	docker compose -f diagnostics/compose.yml up -d --build
 	@until curl -sf localhost:$${GATEWAY_PORT:-8080}/status | grep -q '"state":"live"'; do \
 	    curl -s localhost:$${GATEWAY_PORT:-8080}/status; echo; sleep 5; done
-	@echo "== 5a. the claim the default window makes, and the one it does not"
+	@echo "== 5a. the one thing this stack can check about its own storage"
 	@$(MAKE) verify-no-gaps
-	@echo "   ^ read this precisely. /reconcile's default window ends at UtcNow, so it"
-	@echo "     contains rows the live subscription wrote that no backfill window claimed."
-	@echo "     Stored therefore exceeds read, Lost clamps at zero, and the claim is"
-	@echo "     'nothing that was read was lost, and no window is recorded as missing'."
-	@echo "     It is NOT 'nothing was missed'."
-	@echo "== 5b. read_rows == pg_rows, per stream, over the window the backfill covers"
-	@$(MAKE) reconcile-backfill
-	@echo "   ^ still a comparison of what the gateway read against what it stored, and"
-	@echo "     still not a comparison against the plant: the count of what the plant holds"
-	@echo "     is on the far side of a boundary carrying OPC UA and nothing else (§4.5)."
-	@echo "     See measurements/authenticity/README.md for which is which."
+	@echo "   ^ read this precisely. Reconciled means no recorded gap and no stream whose"
+	@echo "     shortfall page boundaries do not explain. It is NOT 'nothing was missed':"
+	@echo "     Lost clamps at zero, so a surplus -- which every running gateway has, because"
+	@echo "     the live subscription writes rows no backfill window claimed -- carries no"
+	@echo "     information either way."
+	@echo "== 5b. the same comparison, per stream, over the window the backfill covers"
+	@$(MAKE) backfill-counts
+	@echo "   ^ a printout, and deliberately not a proof. Bounding the window changes what is"
+	@echo "     printed, not what is checked, and asserting read == stored here would be wrong:"
+	@echo "     a gateway that reconnected backfills a second time, so this window spans a live"
+	@echo "     stretch and legitimately stores more than it read. §1's read_rows == pg_rows"
+	@echo "     needs the plant's own ledger, which is on the far side of a boundary carrying"
+	@echo "     OPC UA and nothing else (§4.5). measurements/authenticity/README.md lists it as"
+	@echo "     not yet provable, and says what it waits on."
 	@echo "== 6. propagation, measured -- the step M1 had no line to show"
 	@echo "   Stop S2, and S3 starves once B2_3 drains. Not before, and not in sympathy."
 	@$(MAKE) m2a-propagation
@@ -349,8 +371,11 @@ m2a-demo: preflight
 	@until curl -sf -o /dev/null "localhost:$${UI_PORT:-5173}/"; do sleep 2; done
 	@echo "   the chat box is at http://localhost:$${UI_PORT:-5173}"
 	@$(MAKE) ask
-	@echo "== 8. the numbers"
+	@echo "== 8. the numbers -- M1's, and only M1's"
 	$(MAKE) m1-report
+	@echo "   ^ this table is R1-R4 measured against an M1 gateway over three streams. M2a has"
+	@echo "     not re-measured it: measurements/run_r1_r2.py does not run against this gateway"
+	@echo "     and its marker says why. Nothing above this line depends on it."
 
 contract:
 	cd diagnostics && uv run --frozen --package analysis python $(CURDIR)/scripts/generate-contract.py
@@ -418,6 +443,36 @@ check: lint test
 verify:
 	$(call pytest-marked,plant,simulator,authenticity)
 	$(call pytest-marked,diagnostics,analysis,authenticity)
+
+# `make verify` plus the plant it needs, brought up and taken down again.
+#
+# `verify`'s diagnostics half starts a gateway of its own against a plant that is *already*
+# running -- it has no stack of its own to bring up -- so `verify` alone cannot be a scheduled
+# job. This is the target a schedule can call, and it is why §1's four proofs could break for
+# three tasks with nothing red: `verify` is in no workflow, and a human habit is what was
+# supposed to run it.
+#
+# Not added to `check` or `ci`: it builds two stacks, generates 33 h of history and stops
+# containers, which is minutes on a laptop and tens of them on a runner. `ci-scheduled` is
+# where the checks that cost that much already live.
+authenticity: preflight
+	docker compose -f plant/compose.yml up -d --build
+# The plant's own phase, read through the HMI's proxy rather than with an OPC UA client:
+# `verify` reads history, and history read mid-catch-up is history still being written.
+# Bounded, so a plant that never comes up fails here rather than hanging the schedule.
+	@for i in $$(seq 1 120); do \
+	   curl -sf "localhost:$${PLANT_HMI_PORT:-5174}/api/plant/snapshot" \
+	     | grep -q '"phase":"live"' && break; \
+	   sleep 10; \
+	 done; \
+	 curl -sf "localhost:$${PLANT_HMI_PORT:-5174}/api/plant/snapshot" \
+	   | grep -q '"phase":"live"' \
+	   || { echo "plant never reached live"; docker compose -f plant/compose.yml logs --tail 40 line-simulator; \
+	        docker compose -f plant/compose.yml down; exit 1; }
+# The teardown runs whether the proofs passed or failed, and the exit status is still theirs.
+	@$(MAKE) verify; status=$$?; \
+	 docker compose -f plant/compose.yml down; \
+	 exit $$status
 
 # --- the rest of the pipeline (handbook §9) -----------------------------------------------
 
@@ -493,6 +548,8 @@ audit-dotnet:
 ci: lint-commits lint-actions check sbom
 
 # What weekly.yml runs. Split from `ci` so that `ci` keeps meaning "what the pull-request
-# gate runs" — the claim CLAUDE.md makes. These are the time-dependent checks: their
-# verdict moves when a third party publishes, not when this repository changes.
-ci-scheduled: secrets-scan audit-dotnet scan-images
+# gate runs" — the claim CLAUDE.md makes. Two kinds of check live here: the time-dependent
+# ones, whose verdict moves when a third party publishes rather than when this repository
+# changes; and `authenticity`, which is too slow for a pull request and was in nothing at all
+# until §1's four proofs turned out to have been broken for three tasks with no run to say so.
+ci-scheduled: secrets-scan audit-dotnet scan-images authenticity

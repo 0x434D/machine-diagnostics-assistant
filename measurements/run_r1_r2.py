@@ -47,9 +47,13 @@ ENDPOINT = "opc.tcp://line-simulator:4840/plant"
 # made that policy mandatory -- the container exits 139 on its first line. Whoever repairs the
 # queries has to add the mount too, the same one test_authenticity.py's fixture now carries.
 #
-# The claim itself is not waiting on any of that: measurements/authenticity/README.md records
-# it measured on a full 33 h boot -- 26 streams, 402,044 rows read, 402,044 stored, 0 lost --
-# and gives the two commands. What this file and r1-r2-results.json still describe is M1.
+# And the claim IS waiting on it. §1's read_rows == pg_rows is a three-way comparison -- the
+# plant's ledger, what the backfill read, what Postgres stores -- and only a runner outside both
+# stacks can make it, because §4.5 puts the plant's count on the far side of a boundary carrying
+# OPC UA and nothing else. The gateway's own /reconcile cannot stand in: a gateway that
+# reconnected backfills twice, so any window spanning both passes legitimately stores more than
+# it read. Until this file works, M2a has one authenticity proof of its own rather than two --
+# recorded as such in measurements/authenticity/README.md. r1-r2-results.json still describes M1.
 STREAMS = ("TaktTime", "PartCount", "InspectionResult")
 
 # One hour at a 6 s takt is 600 rows per stream; the full depth is 33 h.

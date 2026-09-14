@@ -43,6 +43,30 @@ def _sh(*args: str) -> str:
     ).stdout.strip()
 
 
+def _container_logs(name: str, lines: int = 20) -> str:
+    """A container's last words, both streams.
+
+    Not `_sh("docker", "logs", ...)`: `docker logs` reproduces the container's own
+    stdout and stderr on the corresponding stream, and a .NET process that dies of an
+    unhandled exception writes every word of it to stderr. `_sh` keeps stdout only, so
+    the version of this that used it rendered the crash that had broken these four
+    proofs as a blank line -- reporting the symptom, which is the thing it was added to
+    stop doing. Merged here rather than in `_sh`, because `_status` parses `_sh`'s
+    output as JSON and must not be handed a stray diagnostic.
+    """
+    # stdout=PIPE with stderr=STDOUT, not capture_output=True: the two cannot be
+    # combined -- subprocess raises "stdout and stderr arguments may not be used with
+    # capture_output" -- and it is the merge that is the point here.
+    completed = subprocess.run(
+        ["docker", "logs", "--tail", str(lines), name],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        check=False,
+    )
+    return completed.stdout.strip() or "(nothing on either stream)"
+
+
 def _status() -> dict[str, object]:
     raw = _sh("curl", "-s", "--max-time", "5", STATUS)
     if not raw:
@@ -146,8 +170,7 @@ def stack() -> Iterator[None]:
         # was a startup crash, and a fixture that reports only the symptom costs an hour
         # finding that out -- the logs are gone as soon as teardown removes the container.
         raise AssertionError(
-            "gateway never reached live; auth-gw said:\n"
-            + _sh("docker", "logs", "--tail", "20", "auth-gw")
+            "gateway never reached live; auth-gw said:\n" + _container_logs("auth-gw")
         )
     yield
     _sh("docker", "rm", "-f", "auth-gw", "auth-pg")

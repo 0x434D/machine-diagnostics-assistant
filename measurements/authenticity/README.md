@@ -35,7 +35,10 @@ and read the container's own last words: the fixture now prints them.
 | Claim | Proof | Runs as |
 |---|---|---|
 | Propagation is real and measured: stop S2 and S3 starves once B2_3 drains — not before, and not in sympathy | `plant/simulator/tests/test_propagation.py` | `make check` **and** `make verify` |
-| `read_rows == pg_rows` per stream at §4.1's 25 streams, not M1's three | the gateway's own `/reconcile`, over an explicit window | `make m2a-demo` step 5, and by hand — below |
+
+**One, not two.** M2a's plan named a second — `read_rows == pg_rows` per stream at
+§4.1's 25 streams — and it is not provable from inside the diagnostics stack. It is in
+the next table with the reason.
 
 The propagation proof is in process and takes under a second, so excluding it from the
 gate would cost nothing and would lose the one test that fails if §3.1's propagation
@@ -43,39 +46,6 @@ claim stops being true. It derives its expected delay from the level B2_3 is hol
 the moment S2 stops; §3.1's "roughly 30 s" is that level times S3's takt, and in steady
 state the level is 4 or 5, so the delay is 24–32 s. A test asserting 30 would prove the
 constant rather than the plant.
-
-The reconciliation is made by asking `/reconcile` for the window the backfill ledger
-actually covers, rather than for its default:
-
-```
-psql -c "SELECT min(from_ts), max(to_ts) FROM backfill_windows"
-curl "localhost:${GATEWAY_PORT:-8080}/reconcile?from=<min>&to=<max>"
-```
-
-Bounding the window at `max(to_ts)` is what turns the default's one-sided claim into the
-two-sided one: rows the live subscription wrote land after it, so stored no longer
-exceeds read for a reason that has nothing to do with loss. Measured on a full 33 h
-boot, 2026-09-14: **26 streams, 402,044 rows read, 402,044 stored, 0 lost, 0
-duplicates, 0 recorded gaps.** `S3.State` and `S4.State` read zero, and that is correct
-rather than missing — the plant's own ledger holds 9 and 11 rows for them, all of them
-bring-up and start-up transitions from the nine minutes of simulated history that
-precede the gateway's window. The bottleneck and the station behind it did not change
-state once in 19,800 parts.
-
-**`measurements/run_r1_r2.py` is not what makes this claim, and was not repaired here.**
-It is M1's runner: it names three unqualified streams, and M2a's ledger qualifies a
-stream by station (`S2_Joining.TaktTime`), so its ledger query matches nothing and its
-stored query sums four stations into one count. It fails in the safe direction — it
-reports FAIL on a healthy run — and it is left that way deliberately. Repairing it by
-re-deriving the SQL would put a second copy of `Reconciler.StoredAsync` in Python:
-five tables, a settled-transitions view and a `raw_events` DISTINCT, whose way of going
-wrong is to report a clean R1 while the gateway stores something else. Calling
-`/reconcile` instead — the shape above — would also mean moving R1's criterion from
-`read_rows == pg_rows` to `lost == 0`, because at a larger page count F2's
-page-boundary duplicates are expected rather than loss. That is a change to what R1
-passes on, and it belongs to the spec owner rather than to the task shipping the
-milestone's proof. `measurements/r1-r2-results.json` and `make m1-report` therefore
-still describe M1: three streams, an M1 gateway, and the risk table M1 closed.
 
 ## Not provable yet
 
@@ -86,10 +56,68 @@ still describe M1: three streams, an M1 gateway, and the risk table M1 closed.
 | 1.7 | Tool layer | M4 | there is no MCP server. "The same tools, the same results" needs two callers to compare |
 | 1.8 | Identity | M5 | there is no identity layer, so every diagnostics endpoint answers unauthenticated requests. The README says so in those words, and that is the whole of the current posture |
 | 1.9 | Traceability | M2b + M7 | a containment query returns the affected serials scored against ground truth: M2b creates the serials and the genealogy, and M7 is the harness that scores. Neither exists |
+| — | `read_rows == pg_rows` at 25 streams | a working `measurements/run_r1_r2.py` | it is a three-way comparison — the plant's ledger, what the backfill read, what Postgres stores — and only the runner outside both stacks can make it. See below |
 
 **Ground truth never reaches the diagnostics stack**, so every proof in this column is
 scored outside both stacks or not at all. That is the invariant, not an obstacle to route
 around: a proof made by giving the analysis the answer proves nothing.
+
+## Why `read_rows == pg_rows` is not provable from inside the stack
+
+An earlier revision of this file listed it as provable, by asking `/reconcile` for the
+window `backfill_windows` actually covers rather than for its default. That was wrong,
+and wrong in this project's signature way — **the check was in the code but not in the
+path that decided.** `ReconciliationResult.Reconciled` is
+`Gaps.Count == 0 && all(Lost == 0)`, and `Lost` is `Math.Max(0, …)`. Bounding the
+window changes what is *printed*; the exit condition is the same one `verify-no-gaps`
+uses, and a surplus — stored exceeding read — cannot fail it either way. Nothing was
+comparing the two numbers.
+
+Asserting the equality instead would be worse, because the surplus is legitimate. A
+reconnect runs the backfill a second time, so `min(from_ts) … max(to_ts)` unions two
+passes and contains the live stretch between them: rows the subscription wrote that no
+window ever claimed. §1's own proofs cause exactly that, by stopping the plant.
+Measured on two boots: **402,044 read / 402,044 stored** on a clean single-pass 33 h
+boot, and **402,044 read / 427,571 stored** on one that had reconnected — both healthy.
+A target asserting equality would call the second gateway broken.
+
+So the equality needs the plant's own ledger, which is on the far side of a boundary
+carrying OPC UA and nothing else (§4.5). That is what `measurements/run_r1_r2.py` is
+for, and why leaving it broken has a cost rather than being free.
+
+`make backfill-counts` prints the per-stream comparison over the bounded window, which
+is worth seeing — at 26 streams "reconciled: true" says nothing about which stream holds
+what — and its exit code is honestly the `reconciled` one, gaps and losses only:
+
+```
+psql -c "SELECT min(from_ts), max(to_ts) FROM backfill_windows"
+curl "localhost:${GATEWAY_PORT:-8080}/reconcile?from=<min>&to=<max>"
+```
+
+On the clean 33 h boot, `S3.State` and `S4.State` read zero, and that is correct rather
+than missing: the plant's own ledger holds 9 and 11 rows for them, all bring-up and
+start-up transitions from the nine minutes of simulated history that precede the
+gateway's window. The bottleneck and the station behind it did not change state once in
+19,800 parts.
+
+## `measurements/run_r1_r2.py` — decided, not repaired
+
+It is M1's runner: it names three unqualified streams, and M2a's ledger qualifies a
+stream by station (`S2_Joining.TaktTime`), so its ledger query matches nothing and its
+stored query sums four stations into one count. It also starts its gateway with no
+signal policy mounted, which since Task 9 is a container that exits 139 on its first
+line. It fails in the safe direction — FAIL on a healthy run — and it is left that way
+deliberately.
+
+Repairing it by re-deriving the SQL would put a second copy of
+`Reconciler.StoredAsync` in Python: five tables, a settled-transitions view and a
+`raw_events` DISTINCT, whose way of going wrong is to report a clean R1 while the
+gateway stores something else. Calling `/reconcile` instead would mean moving R1's
+criterion from `read_rows == pg_rows` to `lost == 0`, which is a change to what R1
+passes on and belongs to the spec owner rather than to the task shipping the milestone's
+proof. **The cost of that decision is the row above: M2a ships one authenticity proof of
+its own rather than two.** `measurements/r1-r2-results.json` and `make m1-report` still
+describe M1 — three streams, an M1 gateway, the risk table M1 closed.
 
 ## What `make verify-no-gaps` claims, and what it does not
 
@@ -102,7 +130,5 @@ and what the endpoint reports is:
 
 That is a real claim — it is what catches a write path that drops rows and a gap the
 gateway knows about — and it is **not** the claim that nothing was missed. Nothing inside
-the diagnostics stack can make that one: the count of what the plant actually holds is on
-the other side of a boundary that carries OPC UA and nothing else (§4.5). The three-way
-comparison — plant ledger, what the backfill read, what Postgres stores — belongs to
-`measurements/run_r1_r2.py`, which sits outside both stacks and is the row above.
+the diagnostics stack can make that one — see the two sections above, which is the same
+boundary reached from the other direction.
