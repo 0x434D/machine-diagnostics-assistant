@@ -1,0 +1,123 @@
+/* Minimal on purpose (§15): the frontend design language is deferred until after M4, and
+   this screen is undesigned for exactly the reason the diagnostics chat box is. What is
+   NOT arbitrary is the category palette below — that is the one thing on this screen
+   carrying meaning, and M6 may restyle everything around it. */
+:root {
+  color-scheme: light dark;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+  line-height: 1.5;
+
+  /* §15's five categories. Green/amber/red is the convention every plant floor already
+     reads, and the two greys are the two ways of not running that are not faults. Every
+     one of them is paired with the state name as text on the tile, so the colour is a
+     second channel and never the only one. */
+  --producing: #1a7f37;
+  --waiting-on-others: #9a6700;
+  --held-by-own-fault: #b42318;
+  --stopped: #57606a;
+  --transitioning: #0b62d1;
+}
+
+body {
+  margin: 0 auto;
+  max-width: 60rem;
+  padding: 2rem 1rem;
+}
+
+header p {
+  color: GrayText;
+}
+
+.link--down {
+  color: var(--held-by-own-fault);
+}
+
+ol {
+  display: grid;
+  gap: 0.5rem;
+  list-style: none;
+  margin: 1.5rem 0;
+  padding: 0;
+}
+
+.stations {
+  grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr));
+}
+
+.station {
+  border-inline-start: 6px solid var(--stopped);
+  display: grid;
+  gap: 0.1rem;
+  padding: 0.5rem 0.75rem;
+}
+
+.station--producing {
+  border-color: var(--producing);
+}
+
+.station--waiting-on-others {
+  border-color: var(--waiting-on-others);
+}
+
+.station--held-by-own-fault {
+  border-color: var(--held-by-own-fault);
+}
+
+.station--stopped {
+  border-color: var(--stopped);
+}
+
+.station--transitioning {
+  border-color: var(--transitioning);
+}
+
+.station__code {
+  font-weight: 600;
+}
+
+.station__category,
+.station__reason {
+  color: GrayText;
+  font-size: 0.85em;
+}
+
+.buffer {
+  align-items: center;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: 5rem 1fr 5rem;
+}
+
+.buffer__track {
+  background: Canvas;
+  border: 1px solid GrayText;
+  block-size: 1rem;
+  display: block;
+}
+
+.buffer__fill {
+  background: GrayText;
+  block-size: 100%;
+  display: block;
+}
+
+.buffer__level {
+  font-variant-numeric: tabular-nums;
+}
+
+.clock {
+  border-top: 1px solid GrayText;
+  display: grid;
+  gap: 0.1rem 1rem;
+  grid-template-columns: max-content 1fr;
+  padding-top: 1rem;
+}
+
+.clock dt {
+  color: GrayText;
+}
+
+.clock dd {
+  font-variant-numeric: tabular-nums;
+  margin: 0;
+}

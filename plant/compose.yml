@@ -110,11 +110,41 @@ services:
       - "127.0.0.1:4840:4840"
     networks: [plant-net, field-net]
 
+  # §15's plant HMI: the screen the line is built with. It serves a static bundle and
+  # proxies /api/plant/* to the simulator's in-process HMI server -- it holds no state
+  # of its own, and there is no second copy of what the line is doing anywhere.
+  plant-hmi:
+    <<: *runtime
+    build:
+      context: .
+      dockerfile: hmi/Dockerfile
+    # nginx-unprivileged writes its temp paths and its pid under /tmp, which the shared
+    # block already provides, so read_only holds with no exceptions. 101 rather than the
+    # block's HOST_UID: this container never touches the bind-mounted pki/.
+    user: "101:101"
+    depends_on: [line-simulator]
+    ports:
+      # Every number is configuration (§10.3), and the published port above all: the M1
+      # demo could not run on the machine it was written on because 8080 was taken, so
+      # this is read from the environment with a default rather than fixed here.
+      - "127.0.0.1:${PLANT_HMI_PORT:-5174}:8080"
+    # plant-net to resolve `line-simulator` and reach its HMI port; plant-edge to be
+    # reachable from the host at all. Never field-net -- exactly two containers join
+    # that, ever, and this one speaks HTTP to a screen rather than OPC UA to a gateway.
+    networks: [plant-net, plant-edge]
+
 volumes:
   plant-history:
 
 networks:
   plant-net:
     internal: true
+  # The plant's own edge network, and the reason it has to exist: an `internal` network
+  # gets no port mapping at all, so a container attached only to plant-net cannot be
+  # reached from the host however it is published. Measured, not assumed -- the same
+  # container published the same way came back connection-refused on plant-net alone and
+  # 200 with this second network attached. `edge-net` in diagnostics/compose.yml is the
+  # same arrangement for the same reason. Nothing here crosses to the other stack.
+  plant-edge:
   field-net:
     external: true # exactly two containers join this, ever

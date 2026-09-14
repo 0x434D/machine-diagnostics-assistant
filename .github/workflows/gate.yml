@@ -144,7 +144,12 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: pnpm
-          cache-dependency-path: diagnostics/ui/pnpm-lock.yaml
+          # Both lock files, for the same reason the python job lists both uv.lock files:
+          # two frontends in two stacks resolve separately, and a key derived from one of
+          # them alone stops invalidating when the other moves.
+          cache-dependency-path: |
+            diagnostics/ui/pnpm-lock.yaml
+            plant/hmi/pnpm-lock.yaml
       - run: make check-frontend
 
   actions:

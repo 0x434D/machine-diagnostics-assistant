@@ -19,7 +19,7 @@ from asyncua import Server, ua
 from asyncua.crypto.truststore import TrustStore
 from asyncua.crypto.validator import CertificateValidator, CertificateValidatorOptions
 
-from simulator import status
+from simulator import hmi, status
 from simulator.address_space import (
     BUFFERS,
     AddressSpace,
@@ -259,6 +259,16 @@ async def main() -> None:
             tasks.create_task(
                 publish_clock(space, clock, settings.status_interval_seconds)
             )
+            # §15's plant HMI, in this process rather than in a container of its own
+            # (D5). Started here, alongside the two above and before generation, for
+            # the same reason the status writer is: catch-up is the longest phase of a
+            # boot and the one worth watching, and a screen that only came up
+            # afterwards would show a blank page for the whole of it.
+            #
+            # Its own cadence is hmi_interval_seconds, not this one: the status file is
+            # read by a human at a shell prompt and the screen is drawn continuously,
+            # and one number cannot be right for both.
+            tasks.create_task(hmi.serve(line, clock, settings))
             history_end = await run_catchup(line, writer, clock, settings, storage)
             catchup_wall = time.monotonic() - started
             _log(

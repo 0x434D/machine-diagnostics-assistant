@@ -12,6 +12,7 @@ SHELL := /bin/bash
 # existing; delete the guard when the directory does.
 GATEWAY := diagnostics/gateway
 UI := diagnostics/ui
+HMI := plant/hmi
 
 # Spec §10.7 says "restore with --locked-mode", and that reads like a contradiction here.
 # --locked-mode is a `dotnet restore` switch; `dotnet build` and `dotnet test` forward it to
@@ -79,9 +80,13 @@ define in-gateway
 	else echo "skip [$(GATEWAY) arrives in M1 Task 7]: $(1)"; fi
 endef
 
-define in-ui
-	@if [ -d "$(UI)" ]; then cd "$(UI)" && $(1); \
-	else echo "skip [no $(UI) in this checkout]: $(1)"; fi
+# Two frontends now, in two different stacks: the diagnostics chat box and the plant HMI.
+# Parameterised on the directory rather than duplicated per frontend, so a step added to
+# one is added to both by construction -- which is the half of §10.8 a second hardcoded
+# copy would quietly stop holding.
+define in-frontend
+	@if [ -d "$(1)" ]; then cd "$(1)" && $(2); \
+	else echo "skip [no $(1) in this checkout]: $(2)"; fi
 endef
 
 # BuildKit attaches attestations only on an exporter that can carry them; the default docker
@@ -257,7 +262,7 @@ m2a-r5:
 
 contract:
 	cd diagnostics && uv run --frozen --package analysis python $(CURDIR)/scripts/generate-contract.py
-	$(call in-ui,pnpm install --frozen-lockfile && pnpm generate)
+	$(call in-frontend,$(UI),pnpm install --frozen-lockfile && pnpm generate)
 
 test-python: lock-check
 	$(call pytest-package,plant,simulator)
@@ -284,15 +289,22 @@ check-dotnet: lint-dotnet test-dotnet
 # worse than none. --build walks the references and --force stops a stale .tsbuildinfo from
 # reporting a pass it did not earn.
 lint-frontend:
-	$(call in-ui,pnpm install --frozen-lockfile && pnpm oxlint && pnpm prettier --check . && pnpm tsc --build --force)
+	$(call in-frontend,$(UI),pnpm install --frozen-lockfile && pnpm oxlint && pnpm prettier --check . && pnpm tsc --build --force)
+	$(call in-frontend,$(HMI),pnpm install --frozen-lockfile && pnpm oxlint && pnpm prettier --check . && pnpm tsc --build --force)
 # The generated types compile whether or not they still match contracts/ -- a stale one is
 # valid TypeScript asserting the shape of an endpoint that has moved on. Regenerating and
 # failing on a diff is the same guard lock-check is, in the one place the handbook left to
 # "it compiles".
-	$(call in-ui,pnpm generate && git diff --exit-code src/generated)
+#
+# $(UI) only, and $(HMI) gets no no-op stand-in for it: the HMI has no generated types --
+# it reads the simulator's own snapshot, which is inside one stack and has no entry in
+# contracts/ -- and a gate step that checks nothing is worse than no step. What holds that
+# payload still is simulator/tests/test_hmi.py.
+	$(call in-frontend,$(UI),pnpm generate && git diff --exit-code src/generated)
 
 test-frontend:
-	$(call in-ui,pnpm vitest run)
+	$(call in-frontend,$(UI),pnpm vitest run)
+	$(call in-frontend,$(HMI),pnpm vitest run)
 
 check-frontend: lint-frontend test-frontend
 
@@ -300,7 +312,8 @@ fmt:
 	cd plant && uv run --frozen ruff format . && uv run --frozen ruff check --fix .
 	cd diagnostics && uv run --frozen ruff format . && uv run --frozen ruff check --fix .
 	$(call in-gateway,dotnet format)
-	$(call in-ui,pnpm oxlint --fix && pnpm prettier --write .)
+	$(call in-frontend,$(UI),pnpm oxlint --fix && pnpm prettier --write .)
+	$(call in-frontend,$(HMI),pnpm oxlint --fix && pnpm prettier --write .)
 
 lint: lint-python lint-dotnet lint-frontend
 

@@ -193,6 +193,28 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # reports.
     status_interval_seconds: float = 5.0
 
+    # The plant HMI (§15), served in-process by the simulator (D5). Not a second
+    # container polling the status file above: that would make status_interval_seconds
+    # the screen's frame rate, and would put a second copy of the line's state between
+    # the line and the screen.
+    #
+    # 0.5 s is below one takt at any configured station, so the screen is never a part
+    # behind the line it draws. It is not below `state_transition_seconds`, so a
+    # bring-up's acting states are not all individually visible -- the screen shows
+    # what the line is doing now, and the historian is what holds the sequence.
+    hmi_interval_seconds: float = 0.5
+    # Where that server binds inside the container. 0.0.0.0 because `plant-hmi` reaches
+    # it by service name over plant-net, and the container's own address on that network
+    # is not knowable here. It is deliberately NOT published to the host: the simulator
+    # publishes exactly one port, 4840, and test_compose_invariants pins that count.
+    #
+    # Named *_server_* rather than hmi_port because PLANT_HMI_PORT is the host port
+    # plant/compose.yml publishes the screen on, and line-simulator reads the same .env
+    # -- one spelling for two different ports is how a screen ends up proxying to
+    # nothing.
+    hmi_server_host: str = "0.0.0.0"
+    hmi_server_port: int = 8200
+
     # boundary
     endpoint_url: str = "opc.tcp://line-simulator:4840/plant"
     application_uri: str = "urn:machine-agent:plant:line-simulator"

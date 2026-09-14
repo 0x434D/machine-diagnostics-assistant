@@ -12,6 +12,7 @@ import sys
 from datetime import UTC, datetime
 
 import pytest
+from conftest import RecordingNodes
 from simulator.address_space import PACKML_SIGNALS, STATION_SIGNALS
 from simulator.carriers import Carrier
 from simulator.config import Settings
@@ -36,25 +37,6 @@ _CODES: dict[type[Station], str] = {
     InspectionStation: "S3_Inspection",
     OutfeedStation: "S4_Outfeed",
 }
-
-
-class RecordingNodes:
-    """Stands in for StationNodes. Records (signal, timestamp, value) per write and
-    (timestamp, fields) per event triggered."""
-
-    def __init__(self, code: str) -> None:
-        self.code = code
-        self.writes: list[tuple[str, datetime, float | str]] = []
-        self.events: list[tuple[datetime, dict[str, object]]] = []
-
-    async def write(self, signal: str, at: datetime, value: float | str) -> None:
-        self.writes.append((signal, at, value))
-
-    async def trigger_event(self, at: datetime, fields: dict[str, object]) -> None:
-        self.events.append((at, fields))
-
-    def signals(self) -> set[str]:
-        return {signal for signal, _, _ in self.writes}
 
 
 def build_one(

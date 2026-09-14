@@ -4,13 +4,28 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
 from asyncua import Server
+from simulator.address_space import BUFFERS, STATION_SIGNALS
 from simulator.buffers import Buffer
 from simulator.carriers import Carrier, CarrierPool
-from simulator.config import Settings
+from simulator.clock import SimulatedClock
+from simulator.config import ClockConfig, Settings
 from simulator.line import BRING_UP_TRANSITIONS, Line, PartState
 from simulator.packml import State
+from simulator.stations import (
+    FeedingStation,
+    InspectionStation,
+    JoiningStation,
+    OutfeedStation,
+    PartOutcome,
+    Station,
+)
 
 T0 = datetime(2026, 9, 13, 6, 0, tzinfo=UTC)
+
+STATION_CODES: tuple[str, ...] = tuple(STATION_SIGNALS)
+"""§4.1's browse names, in line order, read from the tree rather than restated. That
+equality is what `Settings.station_takt_seconds` is keyed by and what `Line` checks
+each buffer's own upstream/downstream against."""
 TRANSITION = timedelta(seconds=Settings().state_transition_seconds)
 """The configured spacing between two published PackML states, read from Settings
 rather than restated: a test line whose transitions land on top of each other would
@@ -87,3 +102,94 @@ async def build_fake_line(
     await line.bring_up(T0 - BRING_UP_TRANSITIONS * TRANSITION)
     line.seed(T0)
     return line, stations
+
+
+class RecordingNodes:
+    """Stands in for StationNodes. Records (signal, timestamp, value) per write and
+    (timestamp, fields) per event triggered.
+
+    Here rather than in one test module because three of them need it: the stations'
+    own tests, the HMI snapshot and Task 12's propagation proof, which both drive the
+    *real* four stations and so need somewhere for their writes to go.
+    """
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        self.writes: list[tuple[str, datetime, float | str]] = []
+        self.events: list[tuple[datetime, dict[str, object]]] = []
+
+    async def write(self, signal: str, at: datetime, value: float | str) -> None:
+        self.writes.append((signal, at, value))
+
+    async def trigger_event(self, at: datetime, fields: dict[str, object]) -> None:
+        self.events.append((at, fields))
+
+    def signals(self) -> set[str]:
+        return {signal for signal, _, _ in self.writes}
+
+
+async def _stub_produce(serial: str, _at: datetime) -> PartOutcome:
+    """S3's inspection call, with no inspection service in reach.
+
+    Deterministic rather than drawn: a proof that failed one run in twenty would be
+    worse than no proof. Roughly a fifth of parts reject, which is far above §3.5's
+    real rate and is the point -- it puts both dispositions in every short run.
+    """
+    reject = serial.endswith(("3", "7"))
+    return PartOutcome(
+        disposition="reject" if reject else "good",
+        defect_class="gap" if reject else None,
+        confidence=0.93,
+        image=b"PNG" if reject else None,
+        model_version="test-1",
+    )
+
+
+async def build_running_line(
+    settings: Settings | None = None,
+) -> tuple[Line, SimulatedClock]:
+    """A four-station line with recording node sets, built the way `server.build_line`
+    builds the real one -- same station classes, same buffer capacities, same carrier
+    count -- then brought up and seeded so that it actually runs.
+
+    Async, and brought up, for the same reason `build_fake_line` is: a Line that is
+    only constructed is `Aborted` in every station and cycles nothing, so a caller that
+    stepped it would be proving things about a line that had never started. `bring_up`
+    is placed before `history_start` exactly as `line.run_catchup` places it.
+
+    Returns the clock too, because the HMI snapshot reports it and Task 12's
+    propagation proof stamps its assertions with it.
+
+    A one-hour history depth rather than the shipped 33 h: nothing here generates
+    history, and the depth only decides where `history_start` sits.
+    """
+    settings = settings or Settings()
+    clock = SimulatedClock(
+        ClockConfig(
+            history_depth=timedelta(hours=1),
+            catchup_speed=settings.catchup_speed,
+        )
+    )
+    nodes = {code: RecordingNodes(code) for code in STATION_CODES}
+    stations: list[Station] = [
+        FeedingStation(nodes["S1_Feeding"], settings, settings.seed),
+        JoiningStation(nodes["S2_Joining"], settings, settings.seed),
+        InspectionStation(
+            nodes["S3_Inspection"], settings, settings.seed, _stub_produce
+        ),
+        OutfeedStation(nodes["S4_Outfeed"], settings, settings.seed),
+    ]
+    buffers = [
+        Buffer(buffer_id, settings.buffer_capacity, upstream, downstream)
+        for buffer_id, upstream, downstream in BUFFERS
+    ]
+    transition = timedelta(seconds=settings.state_transition_seconds)
+    line = Line(
+        stations,
+        buffers,
+        CarrierPool(settings.carrier_count),
+        transition,
+    )
+    await line.bring_up(clock.history_start - BRING_UP_TRANSITIONS * transition)
+    line.seed(clock.history_start)
+    return line, clock
