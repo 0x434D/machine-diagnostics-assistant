@@ -14,18 +14,22 @@ from asyncua.server.history_sql import HistorySQLite
 
 from simulator.address_space import (
     BUFFER_LEVEL_SIGNAL,
-    INSPECTION_STATION,
     AddressSpace,
     StationNodeSet,
     historised_streams,
     initial_value,
     write_at,
 )
+from simulator.events import EventType
 
-EVENT_SIGNAL = "InspectionResult"
-"""How S3's event stream is keyed, alongside §4.1's 25 data streams. Not a variable
-name in the tree -- event history hangs off the emitting station node itself -- so
-this names the event type rather than a signal."""
+EVENT_SIGNAL = "Events"
+"""How a station's event stream is keyed, alongside §4.1's 25 data streams.
+
+Not a variable name in the tree: event history hangs off the emitting station node
+itself, and asyncua stores one table per emitting node rather than per event type -- so
+S1's `ComponentReadEvent` and `AssemblyCreatedEvent` land in one table and reconcile as
+one count. Named for the node's whole event stream rather than for any one type, which
+is what the historian can actually count back."""
 
 
 def _timestamp_from_sqlite(stored: bytes) -> datetime:
@@ -128,7 +132,10 @@ class Ledger:
     """
 
     rows: dict[tuple[str, str], int] = field(default_factory=dict)
-    events: int = 0
+    # Per emitting station, because that is the granularity the historian stores and
+    # counts back: one table per emitting node, holding every event type it emits. A
+    # single total would reconcile perfectly while one station lost every event.
+    events: dict[str, int] = field(default_factory=dict)
     images: int = 0
     # Not a row count: R1 also reconciles storage volume against Postgres, and a
     # reject-image byte total is the one number here a row count cannot stand in for.
@@ -186,16 +193,26 @@ class _LedgerStation:
         await self.nodes.write(signal, at, value)
         self.ledger.record(self.nodes.code, signal, value)
 
-    async def trigger_event(self, at: datetime, fields: dict[str, object]) -> None:
+    async def write_live(self, signal: str, at: datetime, value: float | str) -> None:
+        # Deliberately uncounted. D12's live-only variables are never historised, so a
+        # ledger row for one would be a row the historian can never hold and
+        # reconciliation would fail on every boot.
+        await self.nodes.write_live(signal, at, value)
+
+    async def trigger_event(
+        self, event: EventType, at: datetime, fields: dict[str, object]
+    ) -> None:
         # Triggered first, so a refused event (StationNodeSet.trigger_event raises on a
-        # field set that is not EVENT_FIELDS) is not counted as one that happened.
-        await self.nodes.trigger_event(at, fields)
-        self.ledger.events += 1
+        # field set that is not this event type's) is not counted as one that happened.
+        await self.nodes.trigger_event(event, at, fields)
+        code = self.nodes.code
         # Events are not data changes: there is no previous value to compare, so every
-        # trigger is a row. The image is counted from what actually went on the wire
-        # rather than from the PartOutcome behind it, because §3.4's claim is about
-        # the event.
-        image = fields["Image"]
+        # trigger is a row.
+        self.ledger.events[code] = self.ledger.events.get(code, 0) + 1
+        # Counted from what actually went on the wire rather than from the PartOutcome
+        # behind it, because §3.4's claim is about the event. `.get`, not `[...]`: four
+        # of the five event types have no Image field at all.
+        image = fields.get("Image")
         if isinstance(image, bytes) and image:
             self.ledger.images += 1
             self.ledger.image_bytes += len(image)
@@ -235,9 +252,10 @@ class LedgerWriter:
             )
             for stream in historised_streams(self._space)
         }
-        counts[(INSPECTION_STATION, EVENT_SIGNAL)] = await _count_rows(
-            storage, self._space.inspection.node.nodeid
-        )
+        for nodes in self._space.emitting_stations():
+            counts[(nodes.code, EVENT_SIGNAL)] = await _count_rows(
+                storage, nodes.node.nodeid
+            )
         return counts
 
     async def reconcile(self, storage: HistorySQLite) -> None:
@@ -269,7 +287,13 @@ class LedgerWriter:
         hour of bisecting to find out which one lost rows.
         """
         expected = dict(self._ledger.rows)
-        expected[(INSPECTION_STATION, EVENT_SIGNAL)] = self._ledger.events
+        # Every emitting station, not only those that have fired: a station whose whole
+        # event stream was lost has a ledger entry of zero and a historian count of
+        # zero, and the pair that disagrees is the one worth reporting.
+        for nodes in self._space.emitting_stations():
+            expected[(nodes.code, EVENT_SIGNAL)] = self._ledger.events.get(
+                nodes.code, 0
+            )
         loop = asyncio.get_running_loop()
         ceiling = loop.time() + _RECONCILE_CEILING_SECONDS
         previous: dict[tuple[str, str], int] = {}
@@ -382,7 +406,11 @@ async def attach_historian(
     priming_source_timestamp: datetime,
     ledger: Ledger,
 ) -> HistorySQLite:
-    """Historise §4.1's 25 streams and S3's events, priming every one of them first.
+    """Historise §4.1's 25 streams and every emitting station's events, priming the
+    25 first.
+
+    D12's three live-only variables are deliberately absent from both halves: they are
+    in the tree, they are written every cycle, and nothing here records them.
 
     `priming_source_timestamp` must be a simulated instant outside the window
     catch-up will fill -- one takt before `clock.history_start` is what `server.main`
@@ -436,8 +464,13 @@ async def attach_historian(
         period=None,  # type: ignore[arg-type]
         count=0,
     )
-    inspection = space.inspection.node
-    await server.historize_node_event(inspection, period=None, count=0)  # type: ignore[arg-type]
+    # Every station that emits, not just S3. ORDER MATTERS is already satisfied by
+    # build_address_space, which creates every generator a station will ever have while
+    # it builds the tree -- historize_node_event reads the GeneratesEvent references
+    # that exist *now* to decide which event types get columns, and asyncua does not
+    # support adding one afterwards.
+    for nodes in space.emitting_stations():
+        await server.historize_node_event(nodes.node, period=None, count=0)  # type: ignore[arg-type]
 
     # Confirmed against asyncua 2.0.1's own source, not guessed: every event this
     # station triggers reaches HistorySQLite.save_event(), inserts its row correctly

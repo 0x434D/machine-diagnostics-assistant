@@ -16,6 +16,8 @@ from conftest import RecordingNodes
 from simulator.address_space import PACKML_SIGNALS, STATION_SIGNALS
 from simulator.carriers import Carrier
 from simulator.config import Settings
+from simulator.events import INSPECTION_RESULT
+from simulator.inspection_client import DEFECT_CLASSES
 from simulator.line import PartState
 from simulator.packml import State
 from simulator.stations import (
@@ -53,6 +55,16 @@ def build_one(
             return PartOutcome(
                 disposition="reject" if reject else "good",
                 defect_class="gap" if reject else None,
+                defect_classes=tuple(DEFECT_CLASSES),
+                # §3.4's six independent scores. `gap` alone is high on a reject and
+                # all six are low on a good part, and the six never sum to 1 -- which
+                # is the shape a softmax could not produce and scenario 6 needs.
+                confidences=tuple(
+                    0.81 if reject and name == "gap" else 0.06
+                    for name in DEFECT_CLASSES
+                ),
+                # Confidence in the OK/NOK verdict, not in a class (§3.4): high either
+                # way, because the classifier is sure of the verdict either way.
                 confidence=0.9,
                 image=b"PNG" if reject else None,
                 model_version="test-1",
@@ -181,11 +193,64 @@ async def test_only_rejects_carry_an_image() -> None:
     """§3.4, and it is what keeps images inside the single permitted channel."""
     station, nodes = build_one(InspectionStation, always_reject=True)
     await station.run_cycle(T0, Carrier(0), PartState())
-    assert nodes.events[0][1]["Image"]
+    assert nodes.payloads(INSPECTION_RESULT)[0]["Image"]
 
     good, good_nodes = build_one(InspectionStation, always_reject=False)
     await good.run_cycle(T0, Carrier(0), PartState())
-    assert not good_nodes.events[0][1]["Image"]
+    assert not good_nodes.payloads(INSPECTION_RESULT)[0]["Image"]
+
+
+@pytest.mark.asyncio
+async def test_the_inspection_event_carries_a_vector_not_a_scalar() -> None:
+    """§3.4: six independent scores in [0, 1] that do NOT sum to 1.
+
+    Scenario 6 needs every class's score able to fall together, which is impossible
+    under a softmax over six values, and scenarios 4 and 5 each need two classes high
+    on one part -- pattern DP-02 is keyed on a pair. M1's single `DefectClass` and
+    single `Confidence` can express neither.
+
+    The names ride beside the scores and are asserted as a set against this workspace's
+    own copy of the vocabulary: a vector on the wire with its key agreed privately
+    somewhere else is a vector that gets decoded against the wrong names.
+    """
+    station, nodes = build_one(InspectionStation, always_reject=True)
+    await station.run_cycle(T0, Carrier(0), PartState())
+    fields = nodes.payloads(INSPECTION_RESULT)[0]
+
+    classes = fields["DefectClasses"]
+    scores = fields["Confidences"]
+    assert isinstance(classes, list) and isinstance(scores, list)
+    assert set(classes) == set(DEFECT_CLASSES)
+    assert len(scores) == len(classes) == 6
+    assert all(0.0 <= score <= 1.0 for score in scores)
+    assert sum(scores) != pytest.approx(1.0), (
+        "six independent scores, not a distribution -- a vector that sums to 1 is one "
+        "scenario 6 cannot make fall across all six classes at once"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_good_part_scores_low_on_all_six_and_is_confident() -> None:
+    """The exact defect §3.4 records. Reading the vector as a distribution reported a
+    good part as 27 % confident and ~30 % misaligned; §3.4 is explicit that the scalar
+    `Confidence` is confidence in the OK/NOK *verdict*, not in any class. A good part
+    scores low on all six and is confidently good."""
+    station, nodes = build_one(InspectionStation, always_reject=False)
+    await station.run_cycle(T0, Carrier(0), PartState())
+    fields = nodes.payloads(INSPECTION_RESULT)[0]
+
+    scores = fields["Confidences"]
+    assert isinstance(scores, list)
+    assert fields["Disposition"] == "good"
+    assert all(score < 0.5 for score in scores)
+    # The scalar and the vector are different claims, and this is the pair that says
+    # so: every class low *and* the verdict confident, at the same time. The isinstance
+    # is not decoration: `fields` is `dict[str, object]` because that is what goes on
+    # the wire, and a comparison against `object` would be a type error rather than the
+    # claim this test makes.
+    verdict = fields["Confidence"]
+    assert isinstance(verdict, float)
+    assert verdict > 0.5
 
 
 @pytest.mark.asyncio

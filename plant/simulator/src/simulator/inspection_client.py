@@ -104,6 +104,14 @@ class InspectionClient:
         return PartOutcome(
             disposition=result["disposition"],
             defect_class=result["defect_class"],
+            # The classifier returns its six scores keyed by class name; the event
+            # carries them as parallel arrays. Ordered here, against this workspace's
+            # copy of the vocabulary, rather than at S3 -- this is the module that owns
+            # the copy, and `_ordered_confidences` refuses a response whose key set is
+            # not the one we know, which is the only place the two copies drifting
+            # apart at runtime could be caught before a vector went out mis-keyed.
+            defect_classes=tuple(DEFECT_CLASSES),
+            confidences=_ordered_confidences(result["confidences"]),
             confidence=result["confidence"],
             # §3.4: only rejected parts carry their image into the OPC UA event.
             image=image if rejected else None,
@@ -112,3 +120,22 @@ class InspectionClient:
             # place that still knows which model actually produced the verdict.
             model_version=result["model_version"],
         )
+
+
+def _ordered_confidences(scored: dict[str, float]) -> tuple[float, ...]:
+    """The classifier's per-class scores in `DEFECT_CLASSES` order.
+
+    Raises ValueError if the classifier scored a different set of classes from the one
+    this workspace knows. Refused rather than filled in with zeros or silently
+    truncated: a vector that is one class short is still a vector, and every entry
+    after the gap would then describe the wrong class for the rest of the milestone
+    with nothing raised anywhere.
+    """
+    if set(scored) != set(DEFECT_CLASSES):
+        raise ValueError(
+            f"the inspection service scored {sorted(scored)}, and this plant's copy of "
+            f"the vocabulary is {sorted(DEFECT_CLASSES)}: the two have drifted, and a "
+            "vector ordered against the wrong names is a defect attributed to the "
+            "wrong class"
+        )
+    return tuple(scored[name] for name in DEFECT_CLASSES)

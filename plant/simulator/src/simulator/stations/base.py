@@ -21,6 +21,7 @@ from typing import ClassVar, Protocol
 
 from simulator.carriers import Carrier
 from simulator.config import Settings
+from simulator.events import EventType
 from simulator.line import PartState
 from simulator.packml import State
 
@@ -30,7 +31,22 @@ class PartOutcome:
     """One part's inspection verdict, as the vision system itself reported it."""
 
     disposition: str  # "good" | "reject"
+    # The classifier's named reason for a reject, None for a good part. Not on the
+    # inspection event -- §5.2's widened `inspection_results` has no scalar class --
+    # but it is what `PartCompletedEvent.Reason` carries into `part_dispositions`.
     defect_class: str | None
+    # §3.4's six independent per-class scores and the names they belong to, as parallel
+    # tuples. Both, rather than the scores alone: the defect vocabulary already exists
+    # twice in this repository because the two uv workspaces may not import each other,
+    # and a vector whose key is agreed privately somewhere else is a vector that gets
+    # decoded against the wrong names with nothing raised. Paired here so the two cannot
+    # be re-derived apart downstream.
+    defect_classes: tuple[str, ...]
+    confidences: tuple[float, ...]
+    # §3.4: confidence in the OK/NOK *verdict*, never in a class. A good part is
+    # confidently good while every entry in `confidences` scores low; reading the
+    # vector as a distribution is the measured defect that reported a good part as
+    # 27 % confident and ~30 % misaligned.
     confidence: float
     image: bytes | None  # §3.4: only rejects carry their image
     # The classifier's own advertised version -- not settings.model_version, which
@@ -54,7 +70,15 @@ class StationNodes(Protocol):
     # variant type, which is where an integer counter becomes a UInt32.
     async def write(self, signal: str, at: datetime, value: float | str) -> None: ...
 
-    async def trigger_event(self, at: datetime, fields: dict[str, object]) -> None: ...
+    # D12's live-only variables. A separate method rather than a flag on `write`,
+    # because the ledger counts one of them and must not count the other.
+    async def write_live(
+        self, signal: str, at: datetime, value: float | str
+    ) -> None: ...
+
+    async def trigger_event(
+        self, event: EventType, at: datetime, fields: dict[str, object]
+    ) -> None: ...
 
 
 def clamp_level(value: float) -> float:

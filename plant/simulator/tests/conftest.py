@@ -9,6 +9,8 @@ from simulator.buffers import Buffer
 from simulator.carriers import Carrier, CarrierPool
 from simulator.clock import SimulatedClock
 from simulator.config import ClockConfig, Settings
+from simulator.events import EventType
+from simulator.inspection_client import DEFECT_CLASSES
 from simulator.line import BRING_UP_TRANSITIONS, Line, PartState
 from simulator.packml import State
 from simulator.stations import (
@@ -106,26 +108,54 @@ async def build_fake_line(
 
 class RecordingNodes:
     """Stands in for StationNodes. Records (signal, timestamp, value) per write and
-    (timestamp, fields) per event triggered.
+    (event type, timestamp, fields) per event triggered.
 
     Here rather than in one test module because three of them need it: the stations'
     own tests, the HMI snapshot and Task 12's propagation proof, which both drive the
     *real* four stations and so need somewhere for their writes to go.
+
+    Historised and live-only writes land in separate lists, the way the real address
+    space keeps them in separate dicts -- a double that merged them would let a station
+    publish a live-only value as a historised stream, which is the one thing D12 exists
+    to prevent and exactly the shape of mistake a permissive double cannot see. The
+    field-set check on `trigger_event` is here for the same reason: `StationNodeSet`
+    raises on a payload that is not the event type's, and a double that accepted
+    anything would let a station ship a field set the real tree refuses.
     """
 
     def __init__(self, code: str) -> None:
         self.code = code
         self.writes: list[tuple[str, datetime, float | str]] = []
-        self.events: list[tuple[datetime, dict[str, object]]] = []
+        self.live_writes: list[tuple[str, datetime, float | str]] = []
+        self.events: list[tuple[str, datetime, dict[str, object]]] = []
 
     async def write(self, signal: str, at: datetime, value: float | str) -> None:
         self.writes.append((signal, at, value))
 
-    async def trigger_event(self, at: datetime, fields: dict[str, object]) -> None:
-        self.events.append((at, fields))
+    async def write_live(self, signal: str, at: datetime, value: float | str) -> None:
+        self.live_writes.append((signal, at, value))
+
+    async def trigger_event(
+        self, event: EventType, at: datetime, fields: dict[str, object]
+    ) -> None:
+        if event.station != self.code:
+            raise ValueError(f"{self.code} does not emit {event.name}")
+        if set(fields) != set(event.field_names):
+            raise ValueError(
+                f"{event.name} fields {sorted(fields)} are not "
+                f"{sorted(event.field_names)}"
+            )
+        self.events.append((event.name, at, fields))
 
     def signals(self) -> set[str]:
         return {signal for signal, _, _ in self.writes}
+
+    def live_signals(self) -> set[str]:
+        return {signal for signal, _, _ in self.live_writes}
+
+    def payloads(self, event: EventType) -> list[dict[str, object]]:
+        """Every payload triggered for one event type, in the order it was fired."""
+        return [fields for name, _, fields in self.events if name == event.name]
 
 
 async def _stub_produce(serial: str, _at: datetime) -> PartOutcome:
@@ -139,6 +169,12 @@ async def _stub_produce(serial: str, _at: datetime) -> PartOutcome:
     return PartOutcome(
         disposition="reject" if reject else "good",
         defect_class="gap" if reject else None,
+        defect_classes=tuple(DEFECT_CLASSES),
+        # §3.4's six independent scores: one class high on a reject, all six low on a
+        # good part, and never summing to 1.
+        confidences=tuple(
+            0.87 if reject and name == "gap" else 0.04 for name in DEFECT_CLASSES
+        ),
         confidence=0.93,
         image=b"PNG" if reject else None,
         model_version="test-1",

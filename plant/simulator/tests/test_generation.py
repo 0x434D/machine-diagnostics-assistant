@@ -22,7 +22,7 @@ from typing import NamedTuple
 import pytest
 from asyncua import Server, ua
 from asyncua.server.history_sql import HistorySQLite
-from conftest import new_server
+from conftest import STATION_CODES, new_server
 from simulator.address_space import (
     AddressSpace,
     build_address_space,
@@ -36,6 +36,7 @@ from simulator.historian import (
     attach_historian,
     register_timestamp_converter,
 )
+from simulator.inspection_client import DEFECT_CLASSES
 from simulator.line import Line, run_catchup, run_live
 from simulator.server import build_line
 from simulator.stations.base import PartOutcome, ProduceFn
@@ -58,6 +59,10 @@ async def _stub_produce(part_id: str, _ts: datetime) -> PartOutcome:
     return PartOutcome(
         disposition="reject" if reject else "good",
         defect_class="gap" if reject else None,
+        defect_classes=tuple(DEFECT_CLASSES),
+        confidences=tuple(
+            0.88 if reject and name == "gap" else 0.03 for name in DEFECT_CLASSES
+        ),
         confidence=0.91,
         image=b"\x89PNG" + b"\x00" * 4096 if reject else None,
         model_version="stub-1",
@@ -147,14 +152,19 @@ async def test_every_stream_reconciles_exactly(tmp_path: Path) -> None:
     assert set(ledger.rows) == streams
 
     expected = dict(ledger.rows)
-    expected[("S3_Inspection", "InspectionResult")] = ledger.events
+    # One event key per emitting station, because the historian stores one table per
+    # emitting node. In Task 3 only S3 fires; S1, S2 and S4 have generators, tables and
+    # a ledger entry of zero, and a zero on both sides is what says the stream exists
+    # and lost nothing rather than that nobody looked.
+    for code in STATION_CODES:
+        expected[(code, "Events")] = ledger.events.get(code, 0)
     assert counts == expected
 
     # The two counts this test knows independently of the ledger. S3 inspects every
     # part that reaches it exactly once, so its PartCount stream is one row per part
     # plus the priming row, and its event stream is one row per part with none.
     parts = ledger.rows[("S3_Inspection", "PartCount")] - 1
-    assert ledger.events == parts
+    assert ledger.events["S3_Inspection"] == parts
     assert parts > 10_000, (
         "the queue cap this test exists for is 10,000 rows per stream; a depth that "
         f"produces only {parts} parts cannot reach it"
@@ -380,7 +390,7 @@ async def test_the_reconciliation_names_the_stream_that_disagrees(
             await run_catchup(plant.line, plant.writer, clock, settings, plant.storage)
 
     message = str(raised.value)
-    assert "on 1 of 26 streams" in message
+    assert "on 1 of 29 streams" in message
     assert "S1_Feeding" not in message, "only the offender is named"
 
 

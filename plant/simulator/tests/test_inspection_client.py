@@ -4,19 +4,23 @@ from datetime import UTC, datetime
 import httpx
 import pytest
 from simulator.config import Settings
-from simulator.inspection_client import InspectionClient
+from simulator.inspection_client import DEFECT_CLASSES, InspectionClient
 
 SIM_TS = datetime(2026, 9, 12, 6, 0, 0, tzinfo=UTC)
 
 
 def _ok_inspect_response(disposition: str, defect_class: str | None) -> httpx.Response:
+    """What the inspection service answers: six independent per-class scores keyed by
+    name, and the verdict's own confidence beside them (§3.4)."""
     return httpx.Response(
         200,
         json={
             "disposition": disposition,
             "defect_class": defect_class,
             "confidence": 0.88,
-            "confidences": {},
+            "confidences": {
+                name: 0.71 if name == defect_class else 0.05 for name in DEFECT_CLASSES
+            },
             "model_version": "simulated-1",
         },
     )
@@ -134,3 +138,34 @@ async def test_constructor_seed_overrides_settings_seed_for_the_defect_draw() ->
             )
 
     assert truth_bodies[settings.seed] != truth_bodies[settings.seed ^ 1]
+
+
+@pytest.mark.asyncio
+async def test_the_client_refuses_a_vector_keyed_by_classes_it_does_not_know() -> None:
+    """The defect vocabulary exists twice in this repository -- once per uv workspace,
+    because §10.7 forbids the two packages importing each other -- and the event
+    carries the scores as an array, so their order is decided by one of the two copies.
+    A response scored against the other copy must fail here rather than be silently
+    ordered against the wrong names: every entry after the first disagreement would
+    then describe the wrong defect class, with nothing raised anywhere downstream.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/truth/"):
+            return httpx.Response(200, json={"status": "ok"})
+        return httpx.Response(
+            200,
+            json={
+                "disposition": "good",
+                "defect_class": None,
+                "confidence": 0.9,
+                # A seventh class, which is exactly how the two copies drift.
+                "confidences": {name: 0.05 for name in [*DEFECT_CLASSES, "burr"]},
+                "model_version": "simulated-1",
+            },
+        )
+
+    settings = Settings(reject_rate=0.0, image_width=64, image_height=64)
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        with pytest.raises(ValueError, match="drifted"):
+            await InspectionClient(settings, http).produce("A-00000001", SIM_TS)
