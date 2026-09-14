@@ -442,9 +442,15 @@ invites exactly the time-join §3.4a forbids. That leaves **25 historised stream
 event types**, against M1's two and one. The count is worth stating because all three of
 §12's truncation defects scale with it.
 
-Buffer nodes reference the stations they sit between. The gateway reads those references
-on connect and fills the `stations` and `buffers` tables — **the line's topology is
-discovered, not configured**. Nothing downstream hardcodes that S2 follows S1. Add a
+Buffer nodes **carry** the stations they sit between, as `String` variables holding the
+station's browse name. The gateway reads them on connect and fills the `stations` and
+`buffers` tables — **the line's topology is discovered, not configured**.
+
+Variables rather than a custom OPC UA reference type, decided in M2a: the topology is
+equally discovered either way, and a custom hierarchical reference type adds
+asyncua/UA-.NETStandard interop risk for no diagnostic gain. What matters is that nothing
+downstream is *told* the order — S1 is identifiable as the only station that is no buffer's
+downstream, and the line walks forward from there. Nothing downstream hardcodes that S2 follows S1. Add a
 fifth station and the analysis adapts with no code change; this is also the concrete form
 of "point it at a real plant", whose topology likewise comes from its address space.
 
