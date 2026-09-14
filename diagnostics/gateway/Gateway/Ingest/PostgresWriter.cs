@@ -31,14 +31,21 @@ public sealed class PostgresWriter
 
     private readonly string _connectionString;
 
+    // The three caches below hold only what a committed transaction put there. QueueDrain
+    // retries a failed batch with nothing acked, so anything an attempt remembered is read
+    // again by the retry — a cache that advanced on the attempt makes the retry write
+    // something the plant never sent. Each batch therefore fills its own dictionary and
+    // promotes it after CommitAsync.
+
     // One station in M1 and four in M2, resolved once each. Without this the lookup runs per
     // record, which is both a round trip per row and — with the ON CONFLICT DO UPDATE this
     // replaced — a sequence value burned per row.
     private readonly ConcurrentDictionary<string, short> _stationIds = new(StringComparer.Ordinal);
 
-    // Hits only. A code that resolved to nothing is re-queried, because a suspend reason can
-    // name a buffer that topology discovery has not written yet, and a cached miss would keep
-    // that buffer unresolvable for the life of the process.
+    // Hits only, and safe to fill mid-batch: a buffer row is written by topology discovery in
+    // its own transaction, so anything this reads is already committed. A code that resolved
+    // to nothing is re-queried, because a suspend reason can name a buffer discovery has not
+    // written yet and a cached miss would keep it unresolvable for the life of the process.
     private readonly ConcurrentDictionary<string, short> _bufferIds = new(StringComparer.Ordinal);
 
     // A data change carries only the new value, so from_state can only come from memory.
@@ -113,6 +120,11 @@ public sealed class PostgresWriter
         await connection.OpenAsync(ct).ConfigureAwait(false);
         await using var transaction = await connection.BeginTransactionAsync(ct).ConfigureAwait(false);
 
+        // What this batch learns, kept out of the shared caches until the batch has earned it.
+        // Read through, so two records for one station inside a batch still see each other.
+        var batchStationIds = new Dictionary<string, short>(StringComparer.Ordinal);
+        var batchStates = new Dictionary<string, string>(StringComparer.Ordinal);
+
         var rows = 0;
         foreach (var record in batch)
         {
@@ -145,7 +157,8 @@ public sealed class PostgresWriter
             }
 
             var stationId = await EnsureStationAsync(
-                connection, Required(payload, "Station").GetString()!, ct).ConfigureAwait(false);
+                connection, Required(payload, "Station").GetString()!, batchStationIds, ct)
+                .ConfigureAwait(false);
 
             rows += record.Kind switch
             {
@@ -155,7 +168,8 @@ public sealed class PostgresWriter
                     // They are not a special case of a numeric signal, they are a different
                     // stream.
                     StateSignal or StateReasonSignal => await UpsertStateChangeAsync(
-                        connection, record, payload, stationId, ct).ConfigureAwait(false),
+                        connection, record, payload, stationId, batchStates, ct)
+                        .ConfigureAwait(false),
                     _ => await UpsertSignalAsync(connection, record, payload, stationId, ct)
                         .ConfigureAwait(false),
                 },
@@ -166,6 +180,18 @@ public sealed class PostgresWriter
         }
 
         await transaction.CommitAsync(ct).ConfigureAwait(false);
+
+        // Only now. Before the commit these are claims about rows that may never exist.
+        foreach (var (code, id) in batchStationIds)
+        {
+            _stationIds[code] = id;
+        }
+
+        foreach (var (code, state) in batchStates)
+        {
+            _lastStates[code] = state;
+        }
+
         return rows;
     }
 
@@ -227,8 +253,14 @@ public sealed class PostgresWriter
     /// position by browsing; until then a station is known by the code its signals carry.
     /// </summary>
     private async Task<short> EnsureStationAsync(
-        NpgsqlConnection connection, string code, CancellationToken ct)
+        NpgsqlConnection connection, string code, Dictionary<string, short> batchStationIds,
+        CancellationToken ct)
     {
+        if (batchStationIds.TryGetValue(code, out var pending))
+        {
+            return pending;
+        }
+
         if (_stationIds.TryGetValue(code, out var cached))
         {
             return cached;
@@ -251,7 +283,10 @@ public sealed class PostgresWriter
                 ?? throw new InvalidOperationException($"station {code} vanished after insert");
         }
 
-        _stationIds[code] = id.Value;
+        // The batch's dictionary, not the shared one: this id came from an INSERT inside the
+        // open transaction, and a rollback would leave a cached id for a row that does not
+        // exist and FK-fail every later write for the station.
+        batchStationIds[code] = id.Value;
         return id.Value;
     }
 
@@ -295,7 +330,7 @@ public sealed class PostgresWriter
     /// </remarks>
     private async Task<int> UpsertStateChangeAsync(
         NpgsqlConnection connection, IngestRecord record, JsonElement payload,
-        short stationId, CancellationToken ct)
+        short stationId, Dictionary<string, string> batchStates, CancellationToken ct)
     {
         var value = Required(payload, "Value").GetString()!;
         var isState = Required(payload, "Signal").GetString() == StateSignal;
@@ -308,17 +343,27 @@ public sealed class PostgresWriter
         if (isState)
         {
             toState = value;
-            fromState = PreviousStateOf(Required(payload, "Station").GetString()!, value);
+            fromState = PreviousStateOf(
+                Required(payload, "Station").GetString()!, value, batchStates);
         }
         else
         {
             // An empty string is not a reason. It is what the node reads when a station is not
             // suspended, and stored as text it would make every unsuspend look like a
             // condition with a nameless cause.
-            reason = value.Length > 0 ? value : null;
-            reasonBufferId = reason is null
-                ? null
-                : await ResolveReasonBufferAsync(connection, reason, ct).ConfigureAwait(false);
+            if (value.Length == 0)
+            {
+                // Nothing to write, and writing anyway is worse than writing nothing: every
+                // column this arrival could fill is null, so on its own it would key a row
+                // that carries no state, no reason and no transition. The paired State
+                // normally fills it in the same batch, but a batch boundary with a lost State
+                // half would leave that empty row in the table for good.
+                return 0;
+            }
+
+            reason = value;
+            reasonBufferId = await ResolveReasonBufferAsync(connection, value, ct)
+                .ConfigureAwait(false);
         }
 
         await using var command = new NpgsqlCommand(
@@ -349,15 +394,23 @@ public sealed class PostgresWriter
     /// The state this station was last seen in, or null when there is no transition to name —
     /// the first state after a connect, and a repeat of the state already recorded.
     /// </returns>
-    private string? PreviousStateOf(string stationCode, string toState)
+    private string? PreviousStateOf(
+        string stationCode, string toState, Dictionary<string, string> batchStates)
     {
+        if (!batchStates.TryGetValue(stationCode, out var last))
+        {
+            _lastStates.TryGetValue(stationCode, out last);
+        }
+
         // A repeat is a page-boundary duplicate rather than a transition: the server drops a
         // data change whose value equals the previous one, so the plant never sends a station
         // into the state it is already in.
-        var previous = _lastStates.TryGetValue(stationCode, out var last) && last != toState
-            ? last
-            : null;
-        _lastStates[stationCode] = toState;
+        var previous = last != toState ? last : null;
+
+        // The batch's dictionary, promoted only on commit. Advancing the shared one here would
+        // survive a rollback, and the retry would then read a memory that has already moved
+        // past the record it is re-writing.
+        batchStates[stationCode] = toState;
         return previous;
     }
 
@@ -402,10 +455,22 @@ public sealed class PostgresWriter
             """, connection);
         command.Parameters.AddWithValue(bufferId);
         command.Parameters.AddWithValue(record.SourceTs);
-        // A level is a count of carriers, carried through the same numeric payload as every
-        // other data change.
-        command.Parameters.AddWithValue((short)Required(payload, "Value").GetDouble());
+        command.Parameters.AddWithValue(CarrierCount(payload));
         return await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// A level arrives through the same numeric payload as every other data change, and is a
+    /// count of carriers. Checked and whole: a plain narrowing cast turns an out-of-range or
+    /// fractional value into a SMALLINT that is quietly wrong, which is the one kind of answer
+    /// this system exists not to give.
+    /// </summary>
+    private static short CarrierCount(JsonElement payload)
+    {
+        var value = Required(payload, "Value").GetDouble();
+        return double.IsInteger(value)
+            ? checked((short)value)
+            : throw new InvalidOperationException($"buffer level {value} is not whole carriers");
     }
 
     private async Task<short?> SelectBufferIdAsync(

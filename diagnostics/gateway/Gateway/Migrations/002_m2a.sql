@@ -10,10 +10,9 @@ CREATE TABLE IF NOT EXISTS buffers (
   capacity              SMALLINT NOT NULL
 );
 
--- Declared, not discovered: §4.1 exposes no carrier nodes. The pool size is a plant
--- configuration value the gateway learns from the carriers it observes, so this table
--- fills as carrier ids are seen rather than at connect. Empty in M2a beyond that --
--- M2b's genealogy is what gives a carrier anything to be joined to.
+-- Empty in M2a, and nothing writes it: §4.1 exposes no carrier nodes, so there is no
+-- source for a carrier id to come from. Declared here because M2b's genealogy is what
+-- gives a carrier anything to be joined to, and that is the milestone that fills it.
 CREATE TABLE IF NOT EXISTS carriers (
   id SMALLINT PRIMARY KEY
 );
@@ -40,6 +39,16 @@ CREATE TABLE IF NOT EXISTS state_changes (
 );
 CREATE INDEX IF NOT EXISTS state_changes_source_ts_brin
   ON state_changes USING brin (source_ts);
+
+-- to_state is nullable so a reason can land before the state it belongs to, which makes
+-- "has a to_state" the difference between a transition and a row still being filled in.
+-- §5.2 has the analysis service read views, so that filter lives here once rather than in
+-- every propagation query that would otherwise have to remember it -- and a query that
+-- forgets does not fail, it quietly counts half rows as transitions.
+CREATE OR REPLACE VIEW state_changes_settled AS
+SELECT station_id, source_ts, from_state, to_state, reason, reason_buffer_id
+FROM state_changes
+WHERE to_state IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS buffer_levels (
   buffer_id SMALLINT    NOT NULL REFERENCES buffers(id),

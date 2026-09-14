@@ -36,12 +36,8 @@ public sealed class PostgresWriterTests : IAsyncLifetime
         // genuinely malformed record (an event with no assembly serial, which violates the
         // inspection_results primary key) rather than by a test-only failure switch, so the
         // test cannot pass while the real failure path is broken.
-        var malformed = new IngestRecord(
-            Kind: "event", NodeId: "ns=2;i=9", SourceTs: Instant, ServerTs: Instant,
-            StatusCode: 0, PayloadJson: """{"Station":"S3","ModelVersion":"sim-1"}""",
-            ImageBytes: null);
-
-        await Assert.ThrowsAnyAsync<Exception>(() => _writer.WriteBatchAsync([malformed]));
+        await Assert.ThrowsAnyAsync<Exception>(
+            () => _writer.WriteBatchAsync([MalformedEvent("S3")]));
 
         Assert.Equal(0, await CountAsync("raw_events"));
         Assert.Equal(0, await CountAsync("inspection_results"));
@@ -374,6 +370,97 @@ public sealed class PostgresWriterTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AFailedBatchDoesNotMoveTheGatewaysMemoryOfWhereAStationWas()
+    {
+        // QueueDrain retries a failed batch with nothing acked — that is the local queue's
+        // whole purpose — so the retry re-reads records the attempt already consumed. When the
+        // attempt's memory survived the rollback, the retry wrote the FIRST row as arriving
+        // from the state the LAST row moved to: Execute@T1 came out as
+        // "from Suspended to Execute", a transition PackML does not permit and the plant never
+        // published, in the one table that exists to record real ones. Nothing logged, and
+        // raw_events agreed with it.
+        await Assert.ThrowsAnyAsync<Exception>(() => _writer.WriteBatchAsync([
+            SampleDataChange("S1", "State", Instant, "Execute"),
+            SampleDataChange("S1", "State", Instant.AddSeconds(30), "Suspended"),
+            MalformedEvent("S1"),
+        ]));
+
+        await _writer.WriteBatchAsync([
+            SampleDataChange("S1", "State", Instant, "Execute"),
+            SampleDataChange("S1", "State", Instant.AddSeconds(30), "Suspended"),
+        ]);
+
+        var rows = await QueryAsync(
+            "SELECT from_state, to_state FROM state_changes ORDER BY source_ts");
+        Assert.Equal(2, rows.Count);
+        Assert.Equal(DBNull.Value, rows[0]["from_state"]);
+        Assert.Equal("Execute", rows[1]["from_state"]);
+    }
+
+    [Fact]
+    public async Task AStationLearnedByAFailedBatchIsNotTakenOnTrustByTheRetry()
+    {
+        // The same shape one method over: the id is produced by an INSERT inside the
+        // transaction, and SMALLSERIAL does not roll back with it. A cached id therefore
+        // named a row that no longer existed, and every later write for that station failed
+        // its foreign key against a stations table that never had it.
+        await Assert.ThrowsAnyAsync<Exception>(() => _writer.WriteBatchAsync([
+            SampleDataChange("TaktTime", Instant, 6.0),
+            MalformedEvent("S3"),
+        ]));
+
+        await _writer.WriteBatchAsync([SampleDataChange("TaktTime", Instant, 6.0)]);
+
+        Assert.Equal(1, await CountAsync("signals"));
+    }
+
+    [Fact]
+    public async Task AReasonOnItsOwnThatSaysNothingWritesNoRow()
+    {
+        // "" is what StateReason reads when a station is not suspended, and it is published
+        // because it changed. On its own it fills no column, so writing it would key a row
+        // carrying no state, no reason and no transition — and a batch boundary that split it
+        // from its State half would leave that empty row in the table for good.
+        await _writer.WriteBatchAsync([SampleDataChange("S1", "StateReason", Instant, "")]);
+
+        Assert.Empty(await QueryAsync("SELECT 1 FROM state_changes"));
+        Assert.Equal(1, await CountAsync("raw_events"));   // raw is append-only and verbatim
+    }
+
+    [Fact]
+    public async Task OnlySettledTransitionsAreVisibleToTheAnalysisView()
+    {
+        // to_state is nullable so a reason can land before its state, which leaves a row that
+        // is not yet a transition. §5.2 has the analysis service read views, so the filter is
+        // the schema's job — a propagation query that forgot it would not fail, it would count
+        // half rows as transitions.
+        await _writer.WriteBatchAsync([
+            SampleDataChange("S1", "StateReason", Instant, "blocked:B1_2"),
+            SampleDataChange("S2", "State", Instant, "Execute"),
+        ]);
+
+        Assert.Equal(2, (await QueryAsync("SELECT 1 FROM state_changes")).Count);
+        var settled = Assert.Single(await QueryAsync(
+            "SELECT to_state FROM state_changes_settled"));
+        Assert.Equal("Execute", settled["to_state"]);
+    }
+
+    [Fact]
+    public async Task ApplyingTheSchemaTwiceLeavesWhatIsAlreadyThere()
+    {
+        // It runs at every boot, against a database that already holds M1's tables and now
+        // M2a's. The IF NOT EXISTS clauses are the whole of that guarantee, and an unapplied
+        // one only shows up against a live database.
+        await SeedTopologyAsync();
+        await _writer.WriteBatchAsync([SampleBufferLevel("B2_3", Instant, 3)]);
+
+        await PostgresWriter.ApplySchemaAsync(_postgres.GetConnectionString());
+
+        Assert.Single(await QueryAsync("SELECT 1 FROM buffer_levels"));
+        Assert.Equal(4, await CountAsync("stations"));
+    }
+
+    [Fact]
     public async Task BufferLevelsDoNotLandInTheSignalsTable()
     {
         // signals is keyed on a station. A buffer level keyed to a station would have to
@@ -409,6 +496,16 @@ public sealed class PostgresWriterTests : IAsyncLifetime
              "DefectClass":{{(reject ? "\"gap\"" : "null")}},"Confidence":0.87,"ModelVersion":"sim-1"}
             """,
         ImageBytes: image);
+
+    /// <summary>
+    /// An event with no assembly serial, which violates inspection_results' primary key. A
+    /// genuinely malformed record rather than a test-only failure switch, so a test using it
+    /// cannot pass while the real failure path is broken.
+    /// </summary>
+    private static IngestRecord MalformedEvent(string station) => new(
+        Kind: "event", NodeId: "ns=2;i=9", SourceTs: Instant, ServerTs: Instant, StatusCode: 0,
+        PayloadJson: $$"""{"Station":"{{station}}","ModelVersion":"sim-1"}""",
+        ImageBytes: null);
 
     /// <summary>A string-valued data change: State and StateReason, which signals cannot hold.</summary>
     private static IngestRecord SampleDataChange(
