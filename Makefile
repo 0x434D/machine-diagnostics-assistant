@@ -66,13 +66,19 @@ define pytest-package
 	cd $(1) && uv run --frozen --package $(2) pytest $(2)/tests -q
 endef
 
-# The same, for a marker. Here exit 5 IS forgiven and stays forgiven: a package with no
-# authenticity-marked test has nothing to prove, not a broken suite, and `make verify` failing
-# on the plant's empty selection is why it had never once run through to the proofs that do
-# exist — which is a worse failure than the one the strictness was guarding against.
+# The same, for a marker, and exit 5 is no longer forgiven. It was, and correctly: the plant
+# then had no authenticity-marked test, so `make verify` died on an empty selection before it
+# ever reached the diagnostics proofs that did exist. Both packages now carry four each, which
+# makes "collected nothing" the failure rather than the cost of the fix — a rename, a dropped
+# `pytestmark`, a marker that stops matching, and `verify`, `authenticity` and weekly.yml all
+# go green having run zero proofs. That is precisely the breakage Task 12 found, re-enabled by
+# the fix for it, in the one guard that stands over all the other guards.
+#
+# "At least one", not an expected count. The count lives in the test files; a copy of it here
+# would have to be edited by whoever adds the fifth proof, and it catches nothing the empty
+# selection does not already catch.
 define pytest-marked
-	cd $(1) && uv run --frozen --package $(2) pytest $(2)/tests -q -m $(3); \
-	  status=$$?; [ $$status -eq 0 ] || [ $$status -eq 5 ]
+	cd $(1) && uv run --frozen --package $(2) pytest $(2)/tests -q -m $(3)
 endef
 
 define in-gateway
@@ -95,18 +101,31 @@ endef
 # Docker-format tar, but not an OCI *tar*, which fails with a misleading "manifest.json not
 # found". BUILDKIT_SBOM_SCAN_* widen the scan past the final stage — without them a multi-stage
 # build's SBOM omits everything the builder installed (handbook §9).
-define build-image
+#
+# $(1) build context, $(2) Dockerfile, $(3) image name, $(4) extra build args. Every image in
+# the repository goes through here: four of the seven did, and the three that did not were the
+# gateway, the diagnostics UI and the plant HMI — so `scan-images` passed over the one
+# container that sits on field-net. A second hardcoded copy per Dockerfile is how that
+# happened, and one macro with a context and a file is what stops it happening again.
+define build-image-at
 	SOURCE_DATE_EPOCH=$(SOURCE_EPOCH) docker buildx build $(1) \
+	  --file $(2) \
 	  --builder $(BUILDER) \
-	  --build-arg PACKAGE=$(2) \
+	  $(4) \
 	  --build-arg BUILDKIT_SBOM_SCAN_CONTEXT=true \
 	  --build-arg BUILDKIT_SBOM_SCAN_STAGE=true \
 	  --sbom=generator=$(SYFT) --provenance=true \
 	  --label org.opencontainers.image.source="$(IMAGE_SOURCE)" \
 	  --label org.opencontainers.image.revision="$$(git rev-parse HEAD)" \
 	  --label org.opencontainers.image.created="$$(date -u -d @$(SOURCE_EPOCH) +%Y-%m-%dT%H:%M:%SZ)" \
-	  --tag machine-agent/$(2):$(IMAGE_TAG) \
-	  --output type=oci,tar=false,dest=$(BUILD_DIR)/images/$(2)
+	  --tag machine-agent/$(3):$(IMAGE_TAG) \
+	  --output type=oci,tar=false,dest=$(BUILD_DIR)/images/$(3)
+endef
+
+# The four Python services: one Dockerfile per stack, parameterised on the package, built
+# from the stack's own directory. $(1) stack, $(2) package.
+define build-image
+$(call build-image-at,$(1),$(1)/Dockerfile,$(2),--build-arg PACKAGE=$(2))
 endef
 
 # The /etc/hosts check this used to carry is gone. It existed because the host was
@@ -492,6 +511,11 @@ lint-actions:
 lint-commits:
 	uvx $(COMMITTED) $(COMMIT_RANGE)
 
+# All seven containers the two stacks run, so that `scan-images` below covers the whole of
+# what is deployed rather than the subset that happened to share a Dockerfile. Each context
+# and file is the pair its Compose service already declares — the gateway and the UI build
+# from the repository root because they need Directory.Build.props and contracts/
+# respectively, which is why neither fitted the per-stack macro above.
 images:
 	@mkdir -p $(BUILD_DIR)/images
 	@docker buildx inspect $(BUILDER) >/dev/null 2>&1 \
@@ -501,6 +525,9 @@ images:
 	$(call build-image,plant,inspection)
 	$(call build-image,diagnostics,analysis)
 	$(call build-image,diagnostics,agent)
+	$(call build-image-at,.,diagnostics/gateway/Dockerfile,edge-gateway,)
+	$(call build-image-at,.,diagnostics/ui/Dockerfile,diagnostics-ui,)
+	$(call build-image-at,plant,plant/hmi/Dockerfile,plant-hmi,)
 
 # Handbook §9: fail on HIGH and CRITICAL "with fixes available". --ignore-unfixed is that
 # second half, and it is not a softening — without it the gate fails on vulnerabilities nobody
@@ -517,12 +544,20 @@ scan-images: images
 # "at least top-level dependencies" the CRA asks for (handbook §9).
 # The format value is `cyclonedx1.5`; handbook §9 names it `cyclonedx`, which uv rejects.
 #
-# Covers the two Python workspaces and nothing else. The gateway's NuGet graph and the UI's
-# npm graph are NOT in here, and both have lock files that could produce one — dotnet through
-# CycloneDX.NET, pnpm through @cyclonedx/cyclonedx-npm, each a third-party tool this repository
-# would have to adopt and pin. Stated rather than left to be inferred from a file listing two
-# of the four stacks: an SBOM that silently covers half the dependencies is worse than one that
-# says which half, because the first gets believed.
+# Covers the two Python workspaces and nothing else. Named in full, because there are four
+# dependency graphs in this repository and two of them are not in here:
+#
+#   in    plant/uv.lock        -> build/sbom/plant.cdx.json        (simulator, inspection)
+#   in    diagnostics/uv.lock  -> build/sbom/diagnostics.cdx.json  (analysis, agent)
+#   NOT   diagnostics/gateway/Gateway/packages.lock.json           (NuGet, the edge gateway)
+#   NOT   diagnostics/ui/pnpm-lock.yaml AND plant/hmi/pnpm-lock.yaml  (npm, two frontends)
+#
+# All four have lock files that could produce one — dotnet through CycloneDX.NET, pnpm through
+# @cyclonedx/cyclonedx-npm, each a third-party tool this repository would have to adopt and
+# pin. Stated rather than left to be inferred from a build directory holding two files: an
+# SBOM that silently covers half the dependencies is worse than one that says which half,
+# because the first gets believed. `scan-images` is the other half of the answer and it does
+# cover all seven images, the gateway and both frontends included.
 sbom:
 	@mkdir -p $(BUILD_DIR)/sbom
 	cd plant && uv export --frozen --all-packages --no-dev --format cyclonedx1.5 \
