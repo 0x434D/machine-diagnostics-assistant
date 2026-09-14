@@ -37,7 +37,7 @@ CYCLES = 40
 
 @pytest.mark.asyncio
 async def test_the_snapshot_carries_every_station_and_every_buffer() -> None:
-    line, clock = await build_running_line()
+    line, clock, _nodes = await build_running_line()
     snapshot = line_snapshot(line, clock)
     assert [s["browse_name"] for s in snapshot["stations"]] == list(STATION_CODES)
     assert [b["code"] for b in snapshot["buffers"]] == [code for code, _, _ in BUFFERS]
@@ -51,7 +51,7 @@ async def test_a_station_is_named_by_its_browse_name_and_the_field_says_so() -> 
     a field called `code` carrying `S1_Feeding` is a join that returns nothing and says
     nothing. The name is what keeps the two apart.
     """
-    line, clock = await build_running_line()
+    line, clock, _nodes = await build_running_line()
     snapshot = line_snapshot(line, clock)
     for station in snapshot["stations"]:
         assert "_" in station["browse_name"]
@@ -67,7 +67,7 @@ async def test_a_station_is_named_by_its_browse_name_and_the_field_says_so() -> 
 async def test_every_station_shows_its_state_name_beside_its_colour() -> None:
     """ISA-101: colour is never the only channel. `category` decides the colour, so the
     PackML name it stands for has to travel with it or the screen cannot show both."""
-    line, clock = await build_running_line()
+    line, clock, _nodes = await build_running_line()
     for station in line_snapshot(line, clock)["stations"]:
         assert station["state"] in {state.value for state in State}
         assert station["category"] == category_for(State(station["state"]))
@@ -76,7 +76,7 @@ async def test_every_station_shows_its_state_name_beside_its_colour() -> None:
 @pytest.mark.asyncio
 async def test_a_suspended_station_carries_its_reason_to_the_screen() -> None:
     """The HMI's whole diagnostic value is showing *why* a station is waiting."""
-    line, clock = await build_running_line()
+    line, clock, _nodes = await build_running_line()
     await line.hold("S2_Joining", clock.history_start, "test")
     for _ in range(CYCLES):
         await line.step()
@@ -93,7 +93,7 @@ async def test_a_suspended_station_carries_its_reason_to_the_screen() -> None:
 async def test_a_held_station_is_a_cause_candidate_and_a_starved_one_is_not() -> None:
     """§3.3's distinction, carried to the screen as a category rather than left for
     the viewer to infer from a state name."""
-    line, clock = await build_running_line()
+    line, clock, _nodes = await build_running_line()
     await line.hold("S2_Joining", clock.history_start, "jam")
     for _ in range(CYCLES):
         await line.step()
@@ -118,7 +118,7 @@ def test_every_packml_state_maps_to_exactly_one_category() -> None:
 async def test_the_buffer_bars_get_the_capacity_they_are_a_fraction_of() -> None:
     """A level with no capacity beside it is a number, not a fill bar -- and the
     capacity is `Settings.buffer_capacity`, never a constant in the frontend."""
-    line, clock = await build_running_line()
+    line, clock, _nodes = await build_running_line()
     for buffer in line_snapshot(line, clock)["buffers"]:
         assert buffer["capacity"] == Settings().buffer_capacity
         assert 0 <= buffer["level"] <= Settings().buffer_capacity
@@ -130,7 +130,7 @@ def test_one_payload_reaches_the_screen_over_http_and_over_the_websocket() -> No
     loop; the line is built on a loop of its own beforehand and holds nothing bound
     to it.
     """
-    line, clock = asyncio.run(build_running_line())
+    line, clock, _nodes = asyncio.run(build_running_line())
     with TestClient(build_app(line, clock, Settings())) as client:
         assert client.get("/health").json() == {"status": "ok"}
         over_http = client.get("/snapshot").json()

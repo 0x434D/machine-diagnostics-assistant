@@ -10,6 +10,7 @@ from simulator.carriers import Carrier, CarrierPool
 from simulator.clock import SimulatedClock
 from simulator.config import ClockConfig, Settings
 from simulator.events import EventType
+from simulator.identity import LotSchedule
 from simulator.inspection_client import DEFECT_CLASSES
 from simulator.line import BRING_UP_TRANSITIONS, Line, PartState
 from simulator.packml import State
@@ -183,7 +184,7 @@ async def _stub_produce(serial: str, _at: datetime) -> PartOutcome:
 
 async def build_running_line(
     settings: Settings | None = None,
-) -> tuple[Line, SimulatedClock]:
+) -> tuple[Line, SimulatedClock, dict[str, RecordingNodes]]:
     """A four-station line with recording node sets, built the way `server.build_line`
     builds the real one -- same station classes, same buffer capacities, same carrier
     count -- then brought up and seeded so that it actually runs.
@@ -194,7 +195,9 @@ async def build_running_line(
     is placed before `history_start` exactly as `line.run_catchup` places it.
 
     Returns the clock too, because the HMI snapshot reports it and Task 12's
-    propagation proof stamps its assertions with it.
+    propagation proof stamps its assertions with it, and the node sets, because the
+    events every station now triggers land there and a caller tracing one serial from
+    S1 to S4 has nowhere else to read them.
 
     A one-hour history depth rather than the shipped 33 h: nothing here generates
     history, and the depth only decides where `history_start` sits.
@@ -208,7 +211,12 @@ async def build_running_line(
     )
     nodes = {code: RecordingNodes(code) for code in STATION_CODES}
     stations: list[Station] = [
-        FeedingStation(nodes["S1_Feeding"], settings, settings.seed),
+        FeedingStation(
+            nodes["S1_Feeding"],
+            settings,
+            settings.seed,
+            LotSchedule(settings, clock.history_start),
+        ),
         JoiningStation(nodes["S2_Joining"], settings, settings.seed),
         InspectionStation(
             nodes["S3_Inspection"], settings, settings.seed, _stub_produce
@@ -228,4 +236,4 @@ async def build_running_line(
     )
     await line.bring_up(clock.history_start - BRING_UP_TRANSITIONS * transition)
     line.seed(clock.history_start)
-    return line, clock
+    return line, clock, nodes

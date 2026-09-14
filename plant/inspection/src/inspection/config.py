@@ -33,3 +33,19 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # seed" would silently mean two different numbers depending which service you
     # asked (§3.6).
     seed: int = 20260912
+
+    # D7's two rates, configured here because the classifier owns them: §3.5 lists
+    # false accepts and false rejects under the line's noise floor, §3.4 assigns them
+    # to the vision system, and a real ModelClassifier has them emergently -- so
+    # modelling them on the simulator side as well would double-count them the day one
+    # drops in.
+    #
+    # **Starting values chosen by arithmetic against §3.5's 1.5 % defect rate, not
+    # measured.** A 33 h history is ~19,800 parts: ~297 genuinely defective, of which
+    # ~18 escape at 6 %, and ~78 of the ~19,500 good ones falsely rejected at 0.4 %.
+    # That puts roughly one reported reject in five in the false-alarm column -- enough
+    # of both errors in one history for M2c's ground truth to score them against,
+    # without either swamping the real defect rate. M2c is where they become
+    # scoreable; nothing before it reads them.
+    false_accept_rate: float = 0.06
+    false_reject_rate: float = 0.004

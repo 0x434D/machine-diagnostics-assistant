@@ -36,6 +36,7 @@ from simulator.historian import (
     attach_historian,
     register_timestamp_converter,
 )
+from simulator.identity import LotSchedule
 from simulator.inspection_client import DEFECT_CLASSES
 from simulator.line import Line, run_catchup, run_live
 from simulator.server import build_line
@@ -107,7 +108,9 @@ async def _build_plant(
         ledger,
     )
     writer = LedgerWriter(space, ledger)
-    line = build_line(writer, settings, produce)
+    line = build_line(
+        writer, settings, produce, LotSchedule(settings, clock.history_start)
+    )
     return Plant(server, space, line, writer, ledger, storage)
 
 

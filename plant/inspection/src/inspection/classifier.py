@@ -65,22 +65,53 @@ class TruthChannel:
 class SimulatedClassifier:
     """Stands in for a real model behind the `Classifier` protocol (§3.4).
 
-    Configurable false-accept/false-reject rates are M2 (see `docs/ENGINEERING.md`
-    and the M1 brief's scope note); this reports the declared truth faithfully and
-    only fabricates the confidence distribution around it.
+    **D7: the error rates live here, not in the simulator's noise model.** §3.5 lists
+    false accepts and false rejects under the permanent noise floor because they are
+    visible as line behaviour, and §3.4 assigns them to the classifier because that is
+    what produces them. §3.4 wins: a real `ModelClassifier` has error rates emergently,
+    so a plant that also modelled them would double-count them the day the interface is
+    swapped. Nothing on the simulator side draws a verdict.
+
+    The error is in the *evidence*, not bolted onto the verdict afterwards. A missed
+    defect scores low on every class, exactly as a model that did not see it would, and
+    a false alarm scores high on a class that is not there -- so the vector and the
+    verdict always agree, and only the truth channel knows which of them was wrong.
     """
 
-    def __init__(self, truth: TruthChannel, seed: int) -> None:
+    def __init__(
+        self,
+        truth: TruthChannel,
+        seed: int,
+        false_accept_rate: float = 0.0,
+        false_reject_rate: float = 0.0,
+    ) -> None:
+        """`false_accept_rate` is the share of genuinely defective parts reported good;
+        `false_reject_rate` the share of genuinely good parts reported defective. Both
+        default to zero, so a caller that wants a faithful classifier gets one by
+        saying nothing; `inspection.app` passes the configured values.
+        """
         self._truth = truth
         self._seed = seed
+        self._false_accept_rate = false_accept_rate
+        self._false_reject_rate = false_reject_rate
 
     def classify(self, image: bytes, ctx: PartContext) -> InspectionResult:
-        defects = self._truth.lookup(ctx.part_id)
+        truth = self._truth.lookup(ctx.part_id)
         rng = random.Random(f"{self._seed}:{ctx.part_id}:{len(image)}")
 
+        # What the model believes it saw, which is the truth except at the configured
+        # rates. Drawn before the scores below, so that the scores describe the belief
+        # rather than being patched up after it.
+        if truth:
+            defects = [] if rng.random() < self._false_accept_rate else truth
+        elif rng.random() < self._false_reject_rate:
+            defects = [rng.choice(DEFECT_CLASSES)]
+        else:
+            defects = []
+
         # Independent per-class scores (§3.4, amended): a low baseline for every
-        # class, boosted for whichever ones are actually declared truth -- no
-        # normalisation, so a part with two declared defects can score high on both
+        # class, boosted for whichever ones the model believes it saw -- no
+        # normalisation, so a part with two defects can score high on both
         # at once (§3.5 scenarios 4 and 5), and the six never have to sum to 1.
         scores = {c: rng.uniform(0.01, 0.08) for c in DEFECT_CLASSES}
         for defect in defects:
@@ -94,5 +125,5 @@ class SimulatedClassifier:
         top = defects[0]
         # Confidently NOK: the verdict's confidence is the strongest signal seen,
         # whichever class it came from -- not `scores[top]` specifically, since a
-        # second declared defect could plausibly score higher than the first.
+        # second defect could plausibly score higher than the first.
         return InspectionResult("reject", top, max(scores.values()), scores)

@@ -22,6 +22,7 @@ from typing import ClassVar, Protocol
 from simulator.carriers import Carrier
 from simulator.config import Settings
 from simulator.events import EventType
+from simulator.identity import Assembly
 from simulator.line import PartState
 from simulator.packml import State
 
@@ -79,6 +80,25 @@ class StationNodes(Protocol):
     async def trigger_event(
         self, event: EventType, at: datetime, fields: dict[str, object]
     ) -> None: ...
+
+
+def require_assembly(part: PartState, carrier: Carrier, station: str) -> Assembly:
+    """The assembly S1 created on this carrier. Raises ValueError if there is none.
+
+    Shared by the three stations downstream of S1 rather than written three times,
+    and raising rather than substituting a placeholder for the same reason S4 already
+    refuses a part with no disposition: a part nobody can name cannot be pressed
+    against its serial, inspected against it or sorted by it, and publishing an event
+    under a made-up or empty serial is the quiet wrong answer §14's traceability line
+    exists to rule out.
+    """
+    if part.assembly is None:
+        raise ValueError(
+            f"the part on carrier {carrier.carrier_id} reached {station} with no "
+            "assembly: S1 did not create one, and an event published against a serial "
+            "nobody issued is a traceability record that points at nothing"
+        )
+    return part.assembly
 
 
 def clamp_level(value: float) -> float:

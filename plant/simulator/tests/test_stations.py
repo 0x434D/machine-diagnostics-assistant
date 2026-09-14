@@ -9,14 +9,22 @@ import itertools
 import os
 import subprocess
 import sys
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
-from conftest import RecordingNodes
+from conftest import RecordingNodes, build_running_line
 from simulator.address_space import PACKML_SIGNALS, STATION_SIGNALS
 from simulator.carriers import Carrier
 from simulator.config import Settings
-from simulator.events import INSPECTION_RESULT
+from simulator.curve import peak_of, work_of
+from simulator.events import (
+    ASSEMBLY_CREATED,
+    COMPONENT_READ,
+    INSPECTION_RESULT,
+    PART_COMPLETED,
+    PART_PROCESSED,
+)
+from simulator.identity import LANES, LotSchedule, load_carrier
 from simulator.inspection_client import DEFECT_CLASSES
 from simulator.line import PartState
 from simulator.packml import State
@@ -30,6 +38,9 @@ from simulator.stations import (
 from simulator.stations.base import PartOutcome
 
 T0 = datetime(2026, 9, 13, 6, 0, tzinfo=UTC)
+TAKT = timedelta(seconds=Settings().takt_seconds)
+"""One cycle apart on the simulated timeline, for the tests that run a station more
+than once: `LotSchedule.draw` refuses two draws off one lane at one instant."""
 
 # §4.1's browse names, which is what the real address space gives
 # `StationNodes.code` and what `Settings.station_takt_seconds` is keyed by.
@@ -41,13 +52,30 @@ _CODES: dict[type[Station], str] = {
 }
 
 
+def loaded(carrier_id: int = 0, at: datetime = T0) -> PartState:
+    """A part as it leaves S1: the assembly created, nothing decided about it yet.
+
+    Every station below S1 now refuses a part with no assembly, so this is what a real
+    cycle actually hands them -- and building it through `identity.load_carrier` rather
+    than by hand is what keeps it the same object S1 produces.
+    """
+    return PartState(
+        assembly=load_carrier(LotSchedule(Settings(), at), 0, carrier_id, at)
+    )
+
+
 def build_one(
     factory: type[Station], always_reject: bool | None = None
 ) -> tuple[Station, RecordingNodes]:
-    """Each station is constructed exactly as Task 7 constructs it, minus the real
-    address space."""
+    """Each station is constructed exactly as `server.build_line` constructs it, minus
+    the real address space."""
     settings = Settings()
     nodes = RecordingNodes(_CODES[factory])
+    if factory is FeedingStation:
+        return (
+            FeedingStation(nodes, settings, seed=1, schedule=LotSchedule(settings, T0)),
+            nodes,
+        )
     if factory is InspectionStation:
 
         async def produce(_serial: str, _at: datetime) -> PartOutcome:
@@ -98,10 +126,11 @@ async def test_every_station_writes_only_signals_the_tree_gives_it() -> None:
     passed while the shipped wiring could not run one cycle.
     """
     for station, nodes in build_all():
-        # S4 refuses a part nobody inspected, so every station is handed the part it
-        # would really receive: only S4's predecessor has already stamped one.
-        outfeed = station.code == _CODES[OutfeedStation]
-        part = PartState(disposition="good") if outfeed else PartState()
+        # Every station below S1 refuses a part with no assembly, and S4 also refuses
+        # one with no disposition, so each is handed the part it would really receive.
+        part = loaded()
+        if station.code == _CODES[OutfeedStation]:
+            part.disposition = "good"
         await station.run_cycle(T0, Carrier(0), part)
         declared = {name for name, _ in PACKML_SIGNALS + STATION_SIGNALS[station.code]}
         assert nodes.signals() <= declared, station.code
@@ -118,7 +147,9 @@ async def test_every_station_publishes_the_parts_it_has_handled() -> None:
     counters never moved is one nothing can tell apart from a stopped one."""
     for station, nodes in build_all():
         outfeed = station.code == _CODES[OutfeedStation]
-        part = PartState(disposition="good") if outfeed else PartState()
+        part = loaded()
+        if outfeed:
+            part.disposition = "good"
         await station.run_cycle(T0, Carrier(0), part)
         counters = (
             {"GoodCount", "RejectCount"} if outfeed else {station.part_count_signal}
@@ -129,29 +160,34 @@ async def test_every_station_publishes_the_parts_it_has_handled() -> None:
 @pytest.mark.asyncio
 async def test_part_count_is_monotonic_across_cycles() -> None:
     station, nodes = build_one(FeedingStation)
-    for _ in range(3):
-        await station.run_cycle(T0, Carrier(0), PartState())
+    for cycle in range(3):
+        # A distinct instant per cycle: `LotSchedule.draw` refuses two draws off one
+        # lane at one instant, because a component's lot would then be ambiguous at
+        # exactly the instant a containment query needs it.
+        await station.run_cycle(T0 + cycle * TAKT, Carrier(cycle), PartState())
     counts = [value for signal, _, value in nodes.writes if signal == "PartCount"]
     assert counts == [1, 2, 3]
 
 
 @pytest.mark.asyncio
-async def test_feeding_records_both_lane_fills() -> None:
-    """Two lanes, not one level published under two names. S1 alternates feeders, so
-    after the first part lane 1 has supplied it and lane 2 has supplied nothing, and
-    lane 1 stands `lane_draw_per_part` lower.
+async def test_feeding_draws_both_lanes_down_together() -> None:
+    """Both lanes supply every assembly, one component each, so both fall by
+    `lane_draw_per_part` per part and neither is ahead of the other.
 
-    Asserting only that both names were written is what let an implementation that
-    drained both lanes by the whole part count pass -- and M2c's scenario 5
-    contaminates exactly one lane, which that implementation cannot express. The names
-    do not distinguish the two; the levels do.
+    This replaces an M2a test that asserted lane 2 stood exactly `lane_draw_per_part`
+    above lane 1 -- the alternating-feeder model S1 used before it had components to
+    draw. `identity.load_carrier` settles it: one component per lane per assembly, so
+    the old assertion pinned a fiction. What separates the two lanes is which lot each
+    is drawing from (M2c's scenarios 5 and 7), not the shape of its level.
     """
-    # Measurement noise off, because the claim is about the lanes rather than about a
-    # draw: at the shipped `lane_fill_sigma` the 0.5 the lanes differ by is inside one
-    # sigma of the noise on each, so a run of this test would sometimes be reading the
-    # Gaussian instead of the sawtooth.
+    # Measurement noise off, because the claim is about the draw rather than about the
+    # sensor: at the shipped `lane_fill_sigma` the per-part 0.5 is inside one sigma of
+    # the noise on each lane, and this would be reading the Gaussian.
+    settings = Settings(lane_fill_sigma=0.0)
     nodes = RecordingNodes(_CODES[FeedingStation])
-    station = FeedingStation(nodes, Settings(lane_fill_sigma=0.0), seed=1)
+    station = FeedingStation(
+        nodes, settings, seed=1, schedule=LotSchedule(settings, T0)
+    )
 
     await station.run_cycle(T0, Carrier(0), PartState())
 
@@ -164,16 +200,29 @@ async def test_feeding_records_both_lane_fills() -> None:
         if signal.startswith("LaneFill_") and isinstance(value, float)
     }
     assert set(levels) == {"LaneFill_1", "LaneFill_2"}
-    assert levels["LaneFill_2"] - levels["LaneFill_1"] == pytest.approx(
-        Settings().lane_draw_per_part
+    assert levels["LaneFill_1"] == pytest.approx(levels["LaneFill_2"])
+    assert levels["LaneFill_1"] == pytest.approx(
+        settings.lane_capacity - settings.lane_draw_per_part
     )
+
+    # ...and the level is genuinely a level, not a constant: a second part takes
+    # another `lane_draw_per_part` off both. The isinstance filter is here for the same
+    # reason it is above -- `RecordingNodes` takes `float | str`.
+    await station.run_cycle(T0 + TAKT, Carrier(1), PartState())
+    after = [
+        value
+        for signal, _, value in nodes.writes
+        if signal == "LaneFill_1" and isinstance(value, float)
+    ]
+    assert len(after) == 2
+    assert after[1] == pytest.approx(after[0] - settings.lane_draw_per_part)
 
 
 @pytest.mark.asyncio
 async def test_joining_records_a_peak_force_and_a_distance() -> None:
     """§4.1's two S2 process signals. The force-distance curve behind them is M2b."""
     station, nodes = build_one(JoiningStation)
-    await station.run_cycle(T0, Carrier(0), PartState())
+    await station.run_cycle(T0, Carrier(0), loaded())
     assert {"JoiningForcePeak", "JoiningDistance"} <= nodes.signals()
 
 
@@ -182,7 +231,7 @@ async def test_inspection_puts_its_verdict_on_the_part() -> None:
     """S4 sorts on this. Without it GoodCount and RejectCount would have to be
     reconstructed by time-joining, which is the inference §3.4a forbids."""
     station, nodes = build_one(InspectionStation)
-    part = PartState()
+    part = loaded()
     await station.run_cycle(T0, Carrier(0), part)
     assert part.disposition in ("good", "reject")
     assert len(nodes.events) == 1
@@ -192,11 +241,11 @@ async def test_inspection_puts_its_verdict_on_the_part() -> None:
 async def test_only_rejects_carry_an_image() -> None:
     """§3.4, and it is what keeps images inside the single permitted channel."""
     station, nodes = build_one(InspectionStation, always_reject=True)
-    await station.run_cycle(T0, Carrier(0), PartState())
+    await station.run_cycle(T0, Carrier(0), loaded())
     assert nodes.payloads(INSPECTION_RESULT)[0]["Image"]
 
     good, good_nodes = build_one(InspectionStation, always_reject=False)
-    await good.run_cycle(T0, Carrier(0), PartState())
+    await good.run_cycle(T0, Carrier(0), loaded())
     assert not good_nodes.payloads(INSPECTION_RESULT)[0]["Image"]
 
 
@@ -214,7 +263,7 @@ async def test_the_inspection_event_carries_a_vector_not_a_scalar() -> None:
     somewhere else is a vector that gets decoded against the wrong names.
     """
     station, nodes = build_one(InspectionStation, always_reject=True)
-    await station.run_cycle(T0, Carrier(0), PartState())
+    await station.run_cycle(T0, Carrier(0), loaded())
     fields = nodes.payloads(INSPECTION_RESULT)[0]
 
     classes = fields["DefectClasses"]
@@ -236,7 +285,7 @@ async def test_a_good_part_scores_low_on_all_six_and_is_confident() -> None:
     `Confidence` is confidence in the OK/NOK *verdict*, not in any class. A good part
     scores low on all six and is confidently good."""
     station, nodes = build_one(InspectionStation, always_reject=False)
-    await station.run_cycle(T0, Carrier(0), PartState())
+    await station.run_cycle(T0, Carrier(0), loaded())
     fields = nodes.payloads(INSPECTION_RESULT)[0]
 
     scores = fields["Confidences"]
@@ -256,9 +305,10 @@ async def test_a_good_part_scores_low_on_all_six_and_is_confident() -> None:
 @pytest.mark.asyncio
 async def test_outfeed_counts_good_and_reject_separately() -> None:
     station, nodes = build_one(OutfeedStation)
-    await station.run_cycle(T0, Carrier(0), PartState(disposition="good"))
-    await station.run_cycle(T0, Carrier(1), PartState(disposition="reject"))
-    await station.run_cycle(T0, Carrier(2), PartState(disposition="reject"))
+    for carrier_id, disposition in enumerate(("good", "reject", "reject")):
+        part = loaded(carrier_id)
+        part.disposition = disposition
+        await station.run_cycle(T0, Carrier(carrier_id), part)
 
     good = [v for s, _, v in nodes.writes if s == "GoodCount"]
     reject = [v for s, _, v in nodes.writes if s == "RejectCount"]
@@ -273,7 +323,7 @@ async def test_outfeed_refuses_a_part_nobody_inspected() -> None:
     give."""
     station, _ = build_one(OutfeedStation)
     with pytest.raises(ValueError, match="disposition"):
-        await station.run_cycle(T0, Carrier(0), PartState())
+        await station.run_cycle(T0, Carrier(0), loaded())
 
 
 @pytest.mark.asyncio
@@ -311,11 +361,19 @@ def test_a_station_the_settings_do_not_name_is_refused() -> None:
     """
     settings = Settings(station_takt_seconds={"S1": 5.7})
     with pytest.raises(ValueError, match="no takt configured for station"):
-        FeedingStation(RecordingNodes("S1_Feeding"), settings, seed=1)
+        FeedingStation(
+            RecordingNodes("S1_Feeding"),
+            settings,
+            seed=1,
+            schedule=LotSchedule(settings, T0),
+        )
 
 
 _DRAW_PROBE = """
+from datetime import UTC, datetime
+
 from simulator.config import Settings
+from simulator.identity import LotSchedule
 from simulator.stations import FeedingStation
 
 
@@ -325,12 +383,18 @@ class Nodes:
     async def write(self, signal, at, value):
         raise AssertionError("the probe never cycles")
 
-    async def trigger_event(self, at, fields):
+    async def write_live(self, signal, at, value):
+        raise AssertionError("the probe never cycles")
+
+    async def trigger_event(self, event, at, fields):
         raise AssertionError("the probe never cycles")
 
 
 settings = Settings()
-station = FeedingStation(Nodes(), settings, seed=settings.seed)
+started = datetime(2026, 9, 13, 6, 0, tzinfo=UTC)
+station = FeedingStation(
+    Nodes(), settings, seed=settings.seed, schedule=LotSchedule(settings, started)
+)
 print(repr([station.next_takt() for _ in range(5)]))
 """
 
@@ -378,3 +442,174 @@ def test_successive_takts_never_repeat() -> None:
     station, _ = build_one(FeedingStation)
     values = [station.next_takt() for _ in range(200)]
     assert all(a != b for a, b in itertools.pairwise(values))
+
+
+# --- identity, from the station that creates it to the station that retires it -------
+
+
+@pytest.mark.asyncio
+async def test_the_assembly_records_the_two_components_it_was_built_from() -> None:
+    """§3.1's asymmetric identity, as S1 publishes it: one component off each lane,
+    each carrying its own lot and supplier, and the assembly naming both in `LANES`
+    order -- which is what makes a component's position in that array §5.2's
+    `genealogy.position`."""
+    station, nodes = build_one(FeedingStation)
+    await station.run_cycle(T0, Carrier(4), PartState())
+
+    reads = nodes.payloads(COMPONENT_READ)
+    created = nodes.payloads(ASSEMBLY_CREATED)
+    assert len(reads) == len(LANES)
+    assert len(created) == 1
+
+    assert [read["Lane"] for read in reads] == list(LANES)
+    # One lot code per lane and never the same on both, which is what keeps M2c's
+    # scenario 5 (one lane) and scenario 7 (one lot) two different scenarios.
+    assert len({read["LotCode"] for read in reads}) == len(LANES)
+    assert all(read["Supplier"] for read in reads)
+
+    assert created[0]["ComponentSerials"] == [read["ComponentSerial"] for read in reads]
+    assert created[0]["CarrierId"] == 4
+
+
+@pytest.mark.asyncio
+async def test_s1_publishes_the_live_only_lot_and_serial_nodes() -> None:
+    """D12: in the tree, written every cycle, never historised. The events above are
+    the authoritative copy; these are what an HMI reads without asking for history.
+
+    Asserted through `live_writes` rather than `writes`, which is the half that
+    matters: the same three values written through the historised path would reconcile
+    against a ledger that has no rows for them and fail every boot.
+    """
+    station, nodes = build_one(FeedingStation)
+    await station.run_cycle(T0, Carrier(0), PartState())
+
+    assert nodes.live_signals() == {"Lane1_Lot", "Lane2_Lot", "CurrentAssemblySerial"}
+    assert nodes.live_signals() & nodes.signals() == set()
+    serial = nodes.payloads(ASSEMBLY_CREATED)[0]["AssemblySerial"]
+    assert ("CurrentAssemblySerial", T0, serial) in nodes.live_writes
+
+
+@pytest.mark.asyncio
+async def test_s2_presses_against_the_serial_not_against_the_clock() -> None:
+    """§3.4a: the association is known exactly at the instant of production and only
+    approximately afterwards.
+
+    So the press goes out carrying the serial it was performed on -- not a timestamp
+    for something downstream to join "which part was at S2 at 02:14:07" against, which
+    is the inference the spec forbids and what makes a containment list unusable at the
+    moment it matters. The two summary scalars on the event are the same numbers, to
+    the digit, as the two historised streams, so the per-part record and the time
+    series can never read as two measurements of one press.
+    """
+    station, nodes = build_one(JoiningStation)
+    part = loaded()
+    await station.run_cycle(T0, Carrier(0), part)
+
+    assert part.assembly is not None
+    fields = nodes.payloads(PART_PROCESSED)[0]
+    assert fields["AssemblySerial"] == part.assembly.serial
+
+    streamed = {signal: value for signal, _, value in nodes.writes}
+    assert fields["PeakForce"] == streamed["JoiningForcePeak"]
+    assert fields["JoiningDistance"] == streamed["JoiningDistance"]
+
+
+@pytest.mark.asyncio
+async def test_s2_records_the_curve_and_draws_the_distance_from_the_stop() -> None:
+    """§3.4a's whole reason for storing a curve, and Task 2's reason for deleting
+    `distance_of`.
+
+    `JoiningDistance` is the hard stop the ram runs to on every part, drawn against the
+    position sensor's own noise -- not read off the trace, because nothing happening at
+    constant ram position can appear in a force-against-position trace. So it stays
+    within a few sigma of nominal while the contact point moves, which is exactly what
+    makes M2c's scenario 7 point at the wrong cause. The peak, by contrast, IS read off
+    the trace.
+    """
+    settings = Settings()
+    station, nodes = build_one(JoiningStation)
+    await station.run_cycle(T0, Carrier(0), loaded())
+    fields = nodes.payloads(PART_PROCESSED)[0]
+
+    curve = fields["Curve"]
+    assert isinstance(curve, list)
+    assert len(curve) == settings.curve_samples
+    assert fields["PeakForce"] == pytest.approx(round(peak_of(tuple(curve)), 2))
+
+    distance = fields["JoiningDistance"]
+    assert isinstance(distance, float)
+    # The stop, not the trace: five sigma of the position sensor either side of it.
+    assert abs(distance - settings.joining_distance_nominal) < (
+        5 * settings.joining_distance_sigma
+    )
+    # And the statistic the two scalars cannot produce is computable from what was
+    # stored -- which is the whole of why D6 gives the curve a table of its own.
+    assert work_of(tuple(curve), settings) > 0.0
+
+
+@pytest.mark.asyncio
+async def test_s4_refuses_a_part_whose_serial_it_never_saw() -> None:
+    """M2a's S4 refuses a part with no disposition. Identity is held to the same
+    standard: sorting a part nobody can name is a quiet wrong answer, and §14's
+    traceability line ends at this event."""
+    station, _ = build_one(OutfeedStation)
+    unnamed = PartState(disposition="good")
+    with pytest.raises(ValueError, match="no assembly"):
+        await station.run_cycle(T0, Carrier(0), unnamed)
+
+
+@pytest.mark.asyncio
+async def test_s4_reports_the_disposition_and_the_reason_s3_decided() -> None:
+    """§5.2's `part_dispositions` row. The reason is S3's verdict carried on the part:
+    re-deriving it here would mean asking which inspection result belongs to this
+    serial, which is the join §3.4a forbids one station earlier."""
+    station, nodes = build_one(OutfeedStation)
+    part = loaded()
+    part.disposition = "reject"
+    part.reason = "gap"
+    await station.run_cycle(T0, Carrier(0), part)
+
+    assert part.assembly is not None
+    assert nodes.payloads(PART_COMPLETED) == [
+        {
+            "AssemblySerial": part.assembly.serial,
+            "Disposition": "reject",
+            "Reason": "gap",
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_part_carries_its_serial_from_s1_to_s4() -> None:
+    """The whole milestone in one test, on the real line rather than on four stations
+    driven by hand: S1 names the part, and the same name comes back out of S2's press,
+    S3's verdict and S4's disposition.
+
+    Asserted as prefixes of S1's own sequence rather than as set membership. The
+    buffers are FIFO, so each station downstream has seen a prefix of what S1 created,
+    in that order -- and a station that emitted the right *set* of serials in the wrong
+    order would be one whose events were attributed to the wrong parts, which
+    set membership cannot see.
+    """
+    line, _clock, nodes = await build_running_line()
+    for _ in range(200):
+        await line.step()
+
+    serials = {
+        event.station: [
+            fields["AssemblySerial"] for fields in nodes[event.station].payloads(event)
+        ]
+        for event in (
+            ASSEMBLY_CREATED,
+            PART_PROCESSED,
+            INSPECTION_RESULT,
+            PART_COMPLETED,
+        )
+    }
+    created = serials["S1_Feeding"]
+    assert len(serials["S4_Outfeed"]) >= 3, (
+        "no part reached S4, so this proved nothing about carrying a serial"
+    )
+    for station in ("S2_Joining", "S3_Inspection", "S4_Outfeed"):
+        seen = serials[station]
+        assert seen == created[: len(seen)], station

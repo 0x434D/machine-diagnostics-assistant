@@ -1,10 +1,16 @@
-"""S2 Joining: presses the parts together (§3.1).
+"""S2 Joining: presses the parts together (§3.1), against the serial (§3.4a).
 
-M2a writes §4.1's two summary signals. §3.4a's force-distance curve -- the thing that
-actually separates a press problem from a material problem, and the only thing
-separating M2c's scenario 7 from scenario 3 -- is M2b. The two scalars are written
-here so the stream exists and the gateway has something to deadband; they are
-explicitly not claimed to be sufficient for diagnosis.
+The press is force-clamped at the top and position-stopped at the bottom, so the two
+numbers §4.1 publishes as streams come from two different places: the peak is read off
+the trace the load cell produced, and the joining distance is the stop the ram ran to.
+Neither of them knows where the components met the ram, which is the whole reason
+§3.4a keeps the curve.
+
+**The press is recorded against the serial, at the instant it happens.** The two
+streams stay -- they are the trend data -- but the per-part record is authoritative for
+the part, and reconstructing it later by asking which part was at S2 at 02:14:07 is the
+inference §3.4a forbids and what makes a containment list unusable at the moment it
+matters.
 """
 
 from __future__ import annotations
@@ -13,22 +19,71 @@ from datetime import datetime
 from typing import override
 
 from simulator.carriers import Carrier
+from simulator.curve import force_distance, peak_of
+from simulator.events import PART_PROCESSED
 from simulator.line import PartState
-from simulator.stations.base import Station
+from simulator.stations.base import Station, require_assembly
 
 
 class JoiningStation(Station):
     @override
     async def on_part(self, at: datetime, carrier: Carrier, part: PartState) -> None:
-        peak = round(
-            self._settings.joining_force_nominal
-            + self._rng.gauss(0.0, self._settings.joining_force_sigma),
-            2,
+        assembly = require_assembly(part, carrier, self.code)
+        settings = self._settings
+
+        # The three knobs §3.4a separates, drawn per part. The clamp is the press's own
+        # (M2c's scenario 3 drifts it), the contact point is the components' (scenario 7
+        # moves it) and the stiffness is the material's. Only the first reaches a
+        # published scalar.
+        clamp = self._rng.gauss(
+            settings.joining_force_nominal, settings.joining_force_sigma
         )
+        contact_mm = self._rng.gauss(
+            settings.press_contact_nominal_mm, settings.press_contact_sigma_mm
+        )
+        stiffness = self._rng.gauss(
+            settings.press_stiffness_nominal, settings.press_stiffness_sigma
+        )
+        curve = force_distance(
+            self._rng,
+            settings,
+            contact_mm=contact_mm,
+            clamp_force=clamp,
+            stiffness=stiffness,
+        )
+
+        # Read off the trace, not handed back from the draw that set the clamp: what a
+        # load cell reports is the clamp plus whatever it made of it, and a part that
+        # met the ram later spends fewer samples clamped.
+        peak = round(peak_of(curve), 2)
+        # The stop draw, and deliberately not a feature of the curve. `curve.distance_of`
+        # was deleted for the reason that nothing happening at constant ram position can
+        # appear in a force-against-position trace: the stop is where the trace ends,
+        # not something inside it. The sigma here is the position sensor's measurement
+        # noise, because a hard stop is a hard stop.
         distance = round(
-            self._settings.joining_distance_nominal
-            + self._rng.gauss(0.0, self._settings.joining_distance_sigma),
+            self._rng.gauss(
+                settings.joining_distance_nominal, settings.joining_distance_sigma
+            ),
             4,
         )
+
         await self._nodes.write("JoiningForcePeak", at, peak)
         await self._nodes.write("JoiningDistance", at, distance)
+        await self._nodes.trigger_event(
+            PART_PROCESSED,
+            at,
+            {
+                "AssemblySerial": assembly.serial,
+                # Unrounded, unlike the two scalars: the curve is integrated (see
+                # `curve.work_of`, the statistic the two scalars cannot produce) rather
+                # than displayed, and it is an event field, so none of the repeat-value
+                # coalescing that makes rounding matter on a historised stream applies.
+                "Curve": list(curve),
+                # The same two numbers the streams above carry, to the digit, so the
+                # per-part record and the time series can never be read as two
+                # different measurements of one press.
+                "PeakForce": peak,
+                "JoiningDistance": distance,
+            },
+        )

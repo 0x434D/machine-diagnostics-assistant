@@ -169,3 +169,29 @@ async def test_the_client_refuses_a_vector_keyed_by_classes_it_does_not_know() -
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         with pytest.raises(ValueError, match="drifted"):
             await InspectionClient(settings, http).produce("A-00000001", SIM_TS)
+
+
+def test_the_plant_configures_no_verdict_error_rate_of_its_own() -> None:
+    """D7: false accepts and false rejects belong to the classifier, not to the
+    simulator's noise model.
+
+    §3.5 lists both under the line's permanent noise floor, which is where a knob for
+    them would naturally be added here; §3.4 assigns them to the vision system, and D7
+    settles it that way because a real `ModelClassifier` has error rates emergently --
+    so a plant that also drew them would double-count them the day one drops in, and
+    every evaluation number taken before that day would be wrong by the second draw.
+
+    This is the mechanical half of a decision that is otherwise only prose. The
+    simulator declares which parts are *actually* defective (`reject_rate`) and nothing
+    about which ones the classifier gets right; the two rates live in
+    `inspection.config.Settings`.
+    """
+    knobs = {
+        name
+        for name in Settings.model_fields
+        if "false_accept" in name or "false_reject" in name
+    }
+    assert knobs == set(), (
+        f"{sorted(knobs)} is the classifier's to configure (D7); the plant declares "
+        "the truth and never the verdict"
+    )

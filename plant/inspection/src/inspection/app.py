@@ -23,10 +23,18 @@ from inspection.schemas import InspectIn, InspectOut, TruthIn
 
 app = FastAPI(title="inspection-service")
 _truth = TruthChannel()
+_settings = Settings()
 # Annotated against the Protocol, not left to infer the concrete class: §3.4's seam
 # (a real ModelClassifier drops in unchanged) is only load-bearing if something
 # actually checks a substitute still satisfies `Classifier`.
-_classifier: Classifier = SimulatedClassifier(_truth, seed=Settings().seed)
+_classifier: Classifier = SimulatedClassifier(
+    _truth,
+    seed=_settings.seed,
+    # D7: the rates belong to the classifier, so they are configured on the service
+    # that runs it and never reach the simulator.
+    false_accept_rate=_settings.false_accept_rate,
+    false_reject_rate=_settings.false_reject_rate,
+)
 
 
 @app.post("/truth/{part_id}")
