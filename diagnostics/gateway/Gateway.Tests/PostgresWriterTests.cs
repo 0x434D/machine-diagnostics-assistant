@@ -8,6 +8,10 @@ public sealed class PostgresWriterTests : IAsyncLifetime
 {
     private static readonly DateTime Instant = new(2026, 9, 12, 2, 14, 0, DateTimeKind.Utc);
 
+    // Fixture topology only. The plant's capacity is configuration (§3.1); nothing here
+    // asserts on the number, it just has to satisfy the NOT NULL column.
+    private const short BufferCapacity = 5;
+
     // Pinned by digest, not by tag (§10.7). scripts/pin-images.sh re-resolves it.
     private const string PostgresImage =
         "postgres:17-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0";
@@ -260,6 +264,139 @@ public sealed class PostgresWriterTests : IAsyncLifetime
         Assert.Equal("ns=2;i=7", (string?)await command.ExecuteScalarAsync());
     }
 
+    [Fact]
+    public async Task StateAndItsReasonBecomeOneRow()
+    {
+        // They arrive as two data changes sharing a SourceTimestamp, because that is how
+        // the station writes them. One transition must not become two rows.
+        await _writer.WriteBatchAsync([
+            SampleDataChange("S2", "State", Instant, "Suspended"),
+            SampleDataChange("S2", "StateReason", Instant, "starved:B1_2"),
+        ]);
+
+        var rows = await QueryAsync("SELECT to_state, reason FROM state_changes");
+        var row = Assert.Single(rows);
+        Assert.Equal("Suspended", row["to_state"]);
+        Assert.Equal("starved:B1_2", row["reason"]);
+    }
+
+    [Fact]
+    public async Task TheReasonFillsTheRowWhicheverOrderTheTwoArriveIn()
+    {
+        // A backfill reads history one node at a time, so the whole StateReason series for a
+        // station can land before its State series. Depending on the order would turn that
+        // into either a lost reason or a failed batch.
+        await _writer.WriteBatchAsync([
+            SampleDataChange("S2", "StateReason", Instant, "blocked:B2_3"),
+        ]);
+        await _writer.WriteBatchAsync([
+            SampleDataChange("S2", "State", Instant, "Suspended"),
+        ]);
+
+        var rows = await QueryAsync("SELECT to_state, reason FROM state_changes");
+        var row = Assert.Single(rows);
+        Assert.Equal("Suspended", row["to_state"]);
+        Assert.Equal("blocked:B2_3", row["reason"]);
+    }
+
+    [Fact]
+    public async Task TheSuspendReasonResolvesToTheBufferItNames()
+    {
+        // §3.3 makes this field non-optional because it is what turns propagation from
+        // inferred into verifiable. A reason stored only as text would leave every
+        // propagation query doing string surgery.
+        await SeedTopologyAsync();
+        await _writer.WriteBatchAsync([
+            SampleDataChange("S3", "State", Instant, "Suspended"),
+            SampleDataChange("S3", "StateReason", Instant, "starved:B2_3"),
+        ]);
+
+        var rows = await QueryAsync(
+            "SELECT b.code FROM state_changes s JOIN buffers b ON b.id = s.reason_buffer_id");
+        Assert.Equal("B2_3", Assert.Single(rows)["code"]);
+    }
+
+    [Fact]
+    public async Task AReasonNamingSomethingThatIsNotABufferStillStores()
+    {
+        // "starved:carrier-return" is a real condition with no buffer behind it — the carrier
+        // pool, not a buffer, is what binds when the line backs up. The row must survive with
+        // a null reason_buffer_id rather than being dropped.
+        await SeedTopologyAsync();
+        await _writer.WriteBatchAsync([
+            SampleDataChange("S1", "State", Instant, "Suspended"),
+            SampleDataChange("S1", "StateReason", Instant, "starved:carrier-return"),
+        ]);
+
+        var row = Assert.Single(await QueryAsync(
+            "SELECT reason, reason_buffer_id FROM state_changes"));
+        Assert.Equal("starved:carrier-return", row["reason"]);
+        Assert.Equal(DBNull.Value, row["reason_buffer_id"]);
+    }
+
+    [Fact]
+    public async Task AStateWhoseReasonNeverArrivesIsStillATransition()
+    {
+        // The bring-up case, and it is the common one: each station publishes six State
+        // transitions while StateReason stays "", and an unchanged value is never sent. Six
+        // rows per station therefore arrive with no reason data change at all.
+        await _writer.WriteBatchAsync([SampleDataChange("S1", "State", Instant, "Execute")]);
+
+        var row = Assert.Single(await QueryAsync("SELECT to_state, reason FROM state_changes"));
+        Assert.Equal("Execute", row["to_state"]);
+        Assert.Equal(DBNull.Value, row["reason"]);
+    }
+
+    [Fact]
+    public async Task TheFirstStateSeenAfterAConnectHasNoPredecessor()
+    {
+        await _writer.WriteBatchAsync([SampleDataChange("S1", "State", Instant, "Execute")]);
+
+        var row = Assert.Single(await QueryAsync("SELECT from_state FROM state_changes"));
+        Assert.Equal(DBNull.Value, row["from_state"]);
+    }
+
+    [Fact]
+    public async Task ATransitionNamesTheStateItCameFrom()
+    {
+        // A data change carries only the new value, so the only source for from_state is what
+        // the gateway last saw. Without it every row says a station arrived from nowhere.
+        await _writer.WriteBatchAsync([SampleDataChange("S1", "State", Instant, "Execute")]);
+        await _writer.WriteBatchAsync([
+            SampleDataChange("S1", "State", Instant.AddSeconds(30), "Suspended"),
+        ]);
+
+        var rows = await QueryAsync(
+            "SELECT from_state, to_state FROM state_changes ORDER BY source_ts");
+        Assert.Equal(2, rows.Count);
+        Assert.Equal("Execute", rows[1]["from_state"]);
+        Assert.Equal("Suspended", rows[1]["to_state"]);
+    }
+
+    [Fact]
+    public async Task BufferLevelsDoNotLandInTheSignalsTable()
+    {
+        // signals is keyed on a station. A buffer level keyed to a station would have to
+        // pick one of the two it sits between, and either choice is wrong.
+        await SeedTopologyAsync();
+        await _writer.WriteBatchAsync([SampleBufferLevel("B2_3", Instant, 3)]);
+
+        Assert.Empty(await QueryAsync("SELECT 1 FROM signals"));
+        Assert.Single(await QueryAsync("SELECT 1 FROM buffer_levels"));
+    }
+
+    [Fact]
+    public async Task ABufferLevelForAnUndiscoveredBufferFailsRatherThanDisappears()
+    {
+        // A station is created from the code its signals carry; a buffer cannot be, because
+        // its two stations and its capacity are read by browsing. Levels arriving before
+        // discovery are discovery not having run, and §5.1 has no quiet half-write.
+        await Assert.ThrowsAnyAsync<Exception>(
+            () => _writer.WriteBatchAsync([SampleBufferLevel("B2_3", Instant, 3)]));
+
+        Assert.Equal(0, await CountAsync("raw_events"));
+    }
+
     private static IngestRecord SampleDataChange(string signal, DateTime ts, double value) => new(
         Kind: "datachange", NodeId: "ns=2;i=7", SourceTs: ts, ServerTs: ts, StatusCode: 0,
         PayloadJson: $$"""{"Station":"S3","Signal":"{{signal}}","Value":{{value}}}""",
@@ -272,6 +409,73 @@ public sealed class PostgresWriterTests : IAsyncLifetime
              "DefectClass":{{(reject ? "\"gap\"" : "null")}},"Confidence":0.87,"ModelVersion":"sim-1"}
             """,
         ImageBytes: image);
+
+    /// <summary>A string-valued data change: State and StateReason, which signals cannot hold.</summary>
+    private static IngestRecord SampleDataChange(
+        string station, string signal, DateTime ts, string value) => new(
+        Kind: "datachange", NodeId: $"ns=2;s={station}.{signal}", SourceTs: ts, ServerTs: ts,
+        StatusCode: 0,
+        PayloadJson: $$"""{"Station":"{{station}}","Signal":"{{signal}}","Value":"{{value}}"}""",
+        ImageBytes: null);
+
+    /// <summary>Named by its buffer, because the address space gives a level no station.</summary>
+    private static IngestRecord SampleBufferLevel(string buffer, DateTime ts, int level) => new(
+        Kind: "datachange", NodeId: $"ns=2;s={buffer}.Level", SourceTs: ts, ServerTs: ts,
+        StatusCode: 0,
+        PayloadJson: $$"""{"Buffer":"{{buffer}}","Signal":"Level","Value":{{level}}}""",
+        ImageBytes: null);
+
+    /// <summary>
+    /// What Task 9's browse will write: §3.1's four stations and the three buffers between
+    /// them, under the codes <c>TopologyDiscovery.SplitBrowseName</c> produces.
+    /// </summary>
+    private async Task SeedTopologyAsync()
+    {
+        await using var connection = new NpgsqlConnection(_postgres.GetConnectionString());
+        await connection.OpenAsync();
+        // Two commands, not one batch: Npgsql prepares a parameterised statement, and a
+        // prepared statement holds exactly one command.
+        await using var stations = new NpgsqlCommand(
+            """
+            INSERT INTO stations (code, name) VALUES
+              ('S1', 'Feeding'), ('S2', 'Joining'), ('S3', 'Inspection'), ('S4', 'Outfeed')
+            """, connection);
+        await stations.ExecuteNonQueryAsync();
+
+        await using var buffers = new NpgsqlCommand(
+            """
+            INSERT INTO buffers (code, upstream_station_id, downstream_station_id, capacity)
+            SELECT b.code, u.id, d.id, $1
+            FROM (VALUES ('B1_2', 'S1', 'S2'), ('B2_3', 'S2', 'S3'), ('B3_4', 'S3', 'S4'))
+                 AS b (code, upstream, downstream)
+            JOIN stations u ON u.code = b.upstream
+            JOIN stations d ON d.code = b.downstream
+            """, connection);
+        buffers.Parameters.AddWithValue(BufferCapacity);
+        await buffers.ExecuteNonQueryAsync();
+    }
+
+    private async Task<IReadOnlyList<IReadOnlyDictionary<string, object>>> QueryAsync(string sql)
+    {
+        await using var connection = new NpgsqlConnection(_postgres.GetConnectionString());
+        await connection.OpenAsync();
+        await using var command = new NpgsqlCommand(sql, connection);
+        await using var reader = await command.ExecuteReaderAsync();
+
+        var rows = new List<IReadOnlyDictionary<string, object>>();
+        while (await reader.ReadAsync())
+        {
+            var row = new Dictionary<string, object>(StringComparer.Ordinal);
+            for (var i = 0; i < reader.FieldCount; i++)
+            {
+                row[reader.GetName(i)] = reader.GetValue(i);
+            }
+
+            rows.Add(row);
+        }
+
+        return rows;
+    }
 
     private async Task<int> CountAsync(string table)
     {
