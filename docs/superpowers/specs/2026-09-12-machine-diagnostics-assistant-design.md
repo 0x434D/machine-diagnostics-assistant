@@ -182,8 +182,12 @@ roughly 32,000 rows for an 18-hour history, which is nothing.
 Defaults, all configurable: **18 carriers · 6 s takt · buffer capacity 5**.
 
 **The stations do not share one takt — S3 paces the line.** Inspection is the slowest
-operation, so S1 and S2 run slightly faster than it and their buffers fill; S4 matches S3
-and its buffer runs near empty. The line's throughput is therefore S3's 6 s, which is the
+operation, so S1 and S2 run slightly faster than it and their buffers fill; S4 runs a shade
+faster again (5.90 s against 6.00) so its buffer runs near empty. S4 *matching* S3 was the
+original figure, and M2c measured it wrong: with equal takts B3_4 has no restoring force, so
+once micro-stops arrived it sat full 19.5 % of the time with the bottleneck blocked behind it
+— S3 blocking twenty-nine times in 400,000 cycles. At 5.90 the buffer holds zero or one
+83.5 % of the time and S3 blocks twice. The line's throughput is therefore S3's 6 s, which is the
 takt every other number here is quoted against.
 
 This is not decoration. On a perfectly balanced line every buffer oscillates between empty

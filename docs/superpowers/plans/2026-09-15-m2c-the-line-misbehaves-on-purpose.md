@@ -145,7 +145,11 @@ def test_the_baseline_scrap_rate_is_unrelated_to_any_injected_fault() -> None:
 
 **§3.5 says scenario 6 is the weakest, and D8 is why it is not.** The simulator renders genuinely degraded images when fouling is active and the classifier derives its confidence from an image statistic — so the decay is caused rather than declared. **That is a real change to `render.py` and `classifier.py`**, and the honest limit goes in a comment: a statistic-to-confidence formula is still a formula, so this moves the stipulation one layer down rather than removing it.
 
-**Files:** Create `plant/simulator/src/simulator/scenarios.py`, `tests/test_scenarios.py`. Modify `render.py`, `classifier.py` (D8), `config.py`.
+**Files:** Create `plant/simulator/src/simulator/scenarios.py`, `tests/test_scenarios.py`. Modify `render.py`, `classifier.py` (D8), `config.py`, **`line.py` and the stations**.
+
+**Scenarios 1 and 2 need a gate this milestone has not built yet.** Tasks 1–2 bought the modifier and the number it moves: starvation drives `LaneFill` to 0 and blockage drives `OutfeedFill` past capacity — **and nothing stops S1 or S4.** Measured with both at full magnitude, the only suspends on the line are the ordinary buffer ones; S1 keeps feeding with a lane at 0 and S4 keeps discharging with the outfeed at 107 against a capacity of 50.
+
+The gate belongs beside `Line._suspend_reason`, which is where every other "this station cannot run" decision already lives. Without it, scenario 1 cannot produce "S2–S4 starve in sequence" and scenario 2 cannot produce "blockage propagates back to S1" — the two consequences their table rows exist to demand.
 
 - [ ] Steps. Commit — `feat(plant): the eight scenarios, and the one whose symptom points at the wrong cause`
 
