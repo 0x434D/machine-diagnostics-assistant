@@ -11,6 +11,7 @@ from datetime import datetime
 from typing import override
 
 from simulator.carriers import Carrier
+from simulator.identity import LANES
 from simulator.line import PartState
 from simulator.stations.base import Station, clamp_level
 
@@ -21,7 +22,7 @@ class FeedingStation(Station):
         # Lane fill is a level that falls as parts are drawn and is topped up by an
         # operator. M2c's scenario 5 contaminates one lane and scenario 1 starves the
         # feed entirely, so both lanes are separate signals from the start.
-        for lane in (1, 2):
+        for lane in LANES:
             await self._nodes.write(f"LaneFill_{lane}", at, self._lane_level(lane))
 
     def _lane_level(self, lane: int) -> float:

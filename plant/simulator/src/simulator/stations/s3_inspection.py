@@ -12,8 +12,9 @@ from typing import override
 
 from simulator.carriers import Carrier
 from simulator.config import Settings
+from simulator.identity import assembly_serial
 from simulator.line import PartState
-from simulator.stations.base import ProduceFn, Station, StationNodes, serial_for
+from simulator.stations.base import ProduceFn, Station, StationNodes
 
 
 class InspectionStation(Station):
@@ -25,7 +26,7 @@ class InspectionStation(Station):
 
     @override
     async def on_part(self, at: datetime, carrier: Carrier, part: PartState) -> None:
-        serial = serial_for(self._part_count - 1)
+        serial = assembly_serial(self._part_count - 1)
         outcome = await self._produce(serial, at)
         # S4 sorts on this. Putting it on the part rather than leaving S4 to
         # time-join the event stream is §3.4a's rule applied one station early.

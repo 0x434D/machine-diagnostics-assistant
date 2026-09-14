@@ -43,11 +43,6 @@ class PartOutcome:
 ProduceFn = Callable[[str, datetime], Awaitable[PartOutcome]]
 
 
-def serial_for(index: int) -> str:
-    """M2b replaces this with serials created at S1."""
-    return f"A-{index:08d}"
-
-
 class StationNodes(Protocol):
     """The address-space handles one station writes through."""
 

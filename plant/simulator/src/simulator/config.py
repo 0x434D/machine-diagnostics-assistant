@@ -157,6 +157,20 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     joining_force_sigma: float = 40.0  # newtons
     joining_distance_sigma: float = 0.02  # millimetres
 
+    # §3.1's identity model. Lot size sets how many parts a contaminated lot touches,
+    # which is what M2c's scenario 7 containment list is scored against: too large and
+    # every part is in the lot, too small and the correlation has no power. At the 6 s
+    # takt above, 500 components is 500 parts on one lane -- 50 minutes of production,
+    # so an 18 h history crosses roughly twenty lots per lane and a lot is a period a
+    # defect rate can actually be compared across.
+    #
+    # supplier_count is what makes "which supplier" a question with more than one
+    # answer; the lot is what containment is scored on, and the supplier is what a
+    # §6.4 audit trail reports upwards.
+    lot_size: int = 500
+    lot_code_prefix: str = "L-"
+    supplier_count: int = 3
+
     # §4.1's three fill levels -- S1's two feeder lanes and S4's outfeed. Each is a
     # sawtooth: drawn down (or filled up) by production, reset when an operator
     # intervenes. The shape carries no diagnosis in M2a; it exists so these are real
