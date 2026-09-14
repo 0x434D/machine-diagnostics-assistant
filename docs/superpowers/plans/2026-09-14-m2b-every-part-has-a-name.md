@@ -383,6 +383,14 @@ M1's `BuildInspectionFilter()` builds one `EventFilter` whose `SelectClauses` ma
 
 **The truncation guard already covers both paths.** Verify by test that it covers the new types too — M2a found the buffer `Level` streams truncating at exactly the page size with no continuation point, which nothing predicted.
 
+### The gateway will discover 28 streams where the plant historises 25
+
+`TopologyDiscovery.DiscoverStationsAsync` takes **every** variable child of a station as a signal to subscribe to, and **never reads the `Historizing` attribute**. D12's three live-only nodes — `Lane1_Lot`, `Lane2_Lot`, `CurrentAssemblySerial` — are children of S1.
+
+So the gateway subscribes to 28, backfills 28, and reconciles three of them against a ledger that has no rows for them. **This will not show up in the plant's browse-count test** — that asserts the plant's own tree and stays green whatever the gateway does. It shows up as a reconciliation failure under `make verify`, which is not part of `make check`.
+
+Read `Historizing` during discovery and skip what the plant does not historise. A node the plant declares live-only is a node the plant is telling you not to store; ingesting it anyway is the gateway deciding it knows better.
+
 - [ ] Steps as above. Commit — `feat(gateway): four event types, each paged for what it carries`
 
 ---
@@ -392,6 +400,8 @@ M1's `BuildInspectionFilter()` builds one `EventFilter` whose `SelectClauses` ma
 §14's line: *"Any serial can be traced end to end: genealogy, station history, the process values recorded for that part, inspection result, disposition."*
 
 **Files:** Modify `diagnostics/analysis/src/analysis/routes_parts.py`, `models.py`, `contracts/analysis.openapi.yaml`, tests.
+
+**One endpoint is already silently wrong and must be fixed here.** `/inspection/stats` groups by `defect_class`, a column the widened inspection event no longer feeds. The chain: the plant sends `DefectClasses` (a vector); the gateway's select clause still names the old scalar `DefectClass`; asyncua maps an unresolvable select clause to `Variant(None)` rather than erroring; the writer resolves that to `DBNull`; and the endpoint's `defect_class IS NOT NULL` filter then empties the group-by. **No exception, no 500 — `by_defect_class: []` while `total`, `rejects` and `sample_serials` stay correct.** A silently empty answer to "which defects are we seeing" is the exact failure mode §1 exists to prevent, and `make check` cannot see it because the analysis tests seed their own rows. Move the endpoint to the array columns, and give it a test whose fixture comes from the widened shape.
 
 **The anti-shortcut is the authenticity proof.** M1 already asserts `GET /parts/{serial}` reads `inspection_results` directly and performs no time-range join. Extend that to genealogy and process values: a test that fails if the read path ever reconstructs "which part was at S2 at 02:14:07" instead of reading the row written at the instant of production. §3.4a is explicit that inferred traceability is what makes a containment list unusable at the moment it matters.
 

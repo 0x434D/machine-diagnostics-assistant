@@ -420,7 +420,7 @@ Objects/
     Stations/
       S1_Feeding    State · StateReason · TaktTime · LaneFill_1 · LaneFill_2 · PartCount
                     · Lane1_Lot · Lane2_Lot · CurrentAssemblySerial
-                    → ComponentReadEvent   (component serial, lane, lot)
+                    → ComponentReadEvent   (component serial, lane, lot, supplier)
                     → AssemblyCreatedEvent (assembly serial, 2 component serials, carrier)
       S2_Joining    State · StateReason · TaktTime · JoiningForcePeak · JoiningDistance · PartCount
                     → PartProcessedEvent   (assembly serial, force–distance curve,
