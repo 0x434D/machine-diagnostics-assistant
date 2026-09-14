@@ -556,9 +556,11 @@ public sealed class HistoryBackfillTests
         // every boot against that database and the guard fires for ever. It is right to fire
         // -- it cannot tell a rename from a plant that went quiet -- but an operator reading
         // "no longer published" goes to look at a plant that is publishing fine. The message
-        // has to carry the name that appeared where the old one went, which is the whole
-        // difference between the two. S3.TaktTime, published before and published still,
-        // distinguishes nothing and is left out — the test above holds it out.
+        // has to carry the name that appeared where the old one went — the evidence that
+        // separates them, which the operator still has to read against what the two streams
+        // carry, because a station can gain one and lose a different one. S3.TaktTime,
+        // published before and published still, distinguishes nothing: the test above
+        // already holds it out of the message and this one keeps it out.
         var plant = new FakeHistorian();
         var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => RunAsync(
             plant,

@@ -236,8 +236,15 @@ async def _compose(
     # does not, so `stats.get(k, 0)` here would put a threshold this service never counted
     # at into a sentence marked `basis: "measured"`. Absent, the two findings below have no
     # statable semantics at all, so they are withheld and the withholding is said out loud.
+    # `bool` is a subclass of `int`, so an unguarded isinstance would let `True` through and
+    # render it as the threshold the counts were taken at.
     raw_threshold = stats.get("defect_class_threshold")
-    threshold = raw_threshold if isinstance(raw_threshold, int | float) else None
+    threshold = (
+        raw_threshold
+        if isinstance(raw_threshold, int | float)
+        and not isinstance(raw_threshold, bool)
+        else None
+    )
     unaccounted = int(str(stats.get("rejects_without_class", 0)))
     if threshold is None:
         if classes or unaccounted:

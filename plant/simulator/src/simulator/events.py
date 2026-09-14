@@ -3,11 +3,23 @@
 Kept apart from address_space.py: these field tables are the wire format the gateway
 decodes, independent of how the address space wires an event type into the server.
 
-**The field order is the format.** An event notification arrives as a positional
-`EventFieldList` matching the SelectClauses the subscriber asked for, so reordering a
-table here silently re-assigns every column downstream. The gateway states its own
-order independently and deliberately -- a check that moves when the thing it checks
-moves proves nothing -- so a change here is a change in two repositories.
+**The field NAMES are the format; the order is each side's own.** A notification does
+arrive as a positional `EventFieldList` matching the subscriber's SelectClauses, but
+both ends address by name on the way in and out: `to_event_fields` resolves each clause
+with `getattr(self, name)`, `trigger_event` assigns by name, and the gateway builds its
+SelectClauses from the same list it then decodes positionally against. So reordering a
+table here re-orders the request and the decode together and mis-assigns nothing.
+
+What the two sides must agree on is the **set of names**, and the failure is quiet in
+exactly one direction: `to_event_fields` answers a clause it cannot resolve with
+`ua.Variant(None)` and no error at all (asyncua `common/events.py`), so a field renamed
+or dropped on one side alone becomes a column that is null for ever with nothing raised.
+The same silence covers a value published under the wrong key -- `lot.supplier` passed
+as `"LotCode"` is a String in a String field and reaches Postgres unremarked.
+
+The gateway states this list independently and deliberately -- a check that moves when
+the thing it checks moves proves nothing -- so a change here is a change in two
+repositories. `test_authenticity.py` is what holds the two against each other.
 
 **One station, one event table.** asyncua historises events per *emitting node*, not
 per event type: S1's two types share one table holding the union of their fields, and

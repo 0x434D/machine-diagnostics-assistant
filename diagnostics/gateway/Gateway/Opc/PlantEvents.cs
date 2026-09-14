@@ -14,12 +14,20 @@ public sealed record EventTypeSpec(string TypeName, IReadOnlyList<string> Fields
 /// <summary>
 /// §4.1's five event types, written out here and deliberately not derived from the plant.
 ///
-/// <para><b>The order is the wire format.</b> An event notification arrives as a positional
-/// <c>EventFieldList</c> matching the SelectClauses that were asked for, so a field order
-/// that disagrees with the plant's mis-assigns every column with nothing raised. It is
-/// restated here rather than imported because a check that moves when the thing it checks
-/// moves proves nothing — the plant's <c>events.py</c> says the same in the other
-/// direction, and a change to either is a change in both.</para>
+/// <para><b>The names are the wire format; the order is this file's own.</b> A notification
+/// does arrive as a positional <c>EventFieldList</c> matching the SelectClauses that were
+/// asked for — but <see cref="EventStreamSpec.BuildFilter"/> builds those from the same
+/// <see cref="EventStreamSpec.Fields"/> list that <see cref="EventStreamSpec.Decode"/> then
+/// reads positionally, and the plant assigns by name too. So reordering this list alone
+/// re-orders the request and the decode together and mis-assigns nothing.</para>
+///
+/// <para>What the two sides must agree on is the <b>set of names</b>. A field renamed or
+/// dropped on one side is then asked for under a browse path the other does not have, and
+/// asyncua answers such a clause with a null Variant and no error, so the column arrives
+/// empty for ever with nothing raised. The same silence covers a value published under the
+/// wrong key. The list is restated here rather than imported because a check that moves when
+/// the thing it checks moves proves nothing — the plant's <c>events.py</c> says the same in
+/// the other direction, and a change to either is a change in both.</para>
 ///
 /// <para><b>Two fields lead every stream and belong to no type.</b> <see cref="TimeField"/>
 /// is BaseEventType's own, set by the plant to the simulated instant of the cycle, and is

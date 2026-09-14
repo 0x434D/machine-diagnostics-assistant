@@ -19,8 +19,6 @@ from pathlib import Path
 import psycopg
 import pytest
 
-from tests.conftest import CURVE_SAMPLES
-
 REPO = Path(__file__).resolve().parents[3]
 PLANT_CONTAINER = "machine-agent-plant-line-simulator-1"
 GATEWAY_IMAGE = "machine-agent/edge-gateway:dev"
@@ -35,18 +33,6 @@ file: a proof run against a different signal policy is a proof about a different
 
 STATUS = "http://localhost:18082/status"
 DSN = "postgresql://postgres:auth@localhost:15434/postgres"
-
-LOT_CODE_SHAPE = "^L-[0-9]{4}$"
-SUPPLIER_SHAPE = "^SUP-[0-9]{2}$"
-"""`simulator.identity.LotSchedule._load`'s two spellings, as Postgres regexes.
-
-Shapes rather than presence, because presence is what a swap survives. §4.1 declares
-`LotCode` and `Supplier` next to each other and both `String`, the field order is the wire
-format, and the plant and the gateway state that order in separate files in separate
-languages -- so exchanging the two decodes without an error, writes without an error, and
-reconciles against `raw_events` without an error, because `raw_events` is written verbatim
-before any of this is derived. Two regexes that cannot both match are the only thing in
-this repository that notices."""
 
 pytestmark = pytest.mark.authenticity
 
@@ -99,6 +85,37 @@ def _wait_for(predicate_key: str, value: object, timeout_s: int) -> bool:
             return True
         time.sleep(2)
     return False
+
+
+def _plant_setting(name: str) -> str:
+    """One value of the plant's own `Settings`, read from the plant that is running.
+
+    Every number in this project is configuration, so a literal restated here would make
+    the weekly job red on a plant that had merely been retuned — red for something nobody
+    did, which is how a scheduled job becomes one nobody reads. That is the failure M2a
+    spent a task removing from these same four proofs, and it is not worth reintroducing
+    for the sake of two short strings.
+
+    `exec` into the running container rather than `run` on the image: the image carries
+    the defaults and the container carries what this plant was actually started with.
+
+    :raises AssertionError: the plant answered with nothing, so there is no setting to
+        state the assertions in.
+    """
+    value = _sh(
+        "docker",
+        "exec",
+        PLANT_CONTAINER,
+        "python",
+        "-c",
+        f"from simulator.config import Settings; print(Settings().{name})",
+    )
+    if not value:
+        raise AssertionError(
+            f"the plant did not answer for Settings().{name}; it said:\n"
+            + _container_logs(PLANT_CONTAINER)
+        )
+    return value
 
 
 def _count(table: str) -> int:
@@ -282,7 +299,23 @@ def test_the_diagnostics_stack_answers_with_the_plant_shut_down() -> None:
     the only thing in the repository that runs a real gateway against a real plant, and it
     is therefore the only place the two stacks' independent statements of §4.1 are held
     against each other at all. `make check` cannot: it has no plant.
+
+    **What the lot assertion catches is a value under the wrong key, not a field order.**
+    Both ends address by name -- the gateway builds its SelectClauses from the same list it
+    decodes positionally against, and asyncua resolves each clause with `getattr` -- so
+    reordering either file alone re-orders request and decode together and mis-assigns
+    nothing. What is silent is `s1_feeding.py` publishing `lot.supplier` under `"LotCode"`,
+    or the writer reading the wrong payload key: both are Strings, so nothing decodes
+    wrong, nothing raises, and `/reconcile` agrees, because it compares the event stream
+    against `raw_events` -- written verbatim before any of this is derived. Every component
+    would then record its supplier as its lot code with all three gates green.
     """
+    # Read while the plant is up, because it is the plant's *configuration* that the
+    # assertions below have to be stated in. The history they then check is answered with
+    # the plant stopped, which is the proof itself.
+    lot_prefix = _plant_setting("lot_code_prefix")
+    curve_samples = int(_plant_setting("curve_samples"))
+
     _sh("docker", "stop", PLANT_CONTAINER)
     try:
         assert _count("inspection_results") > 0
@@ -296,7 +329,8 @@ def test_the_diagnostics_stack_answers_with_the_plant_shut_down() -> None:
                        (SELECT count(*) FROM components WHERE lot_id IS NOT NULL),
                        (SELECT count(*) FROM components
                          JOIN component_lots ON component_lots.id = components.lot_id
-                         WHERE lot_code !~ %s OR supplier !~ %s),
+                         WHERE NOT starts_with(lot_code, %s)
+                            OR starts_with(supplier, %s)),
                        (SELECT count(*) FROM part_process_curves),
                        (SELECT count(*) FROM part_process_curves
                          WHERE cardinality(samples) <> %s),
@@ -305,7 +339,7 @@ def test_the_diagnostics_stack_answers_with_the_plant_shut_down() -> None:
                        (SELECT count(*) FROM part_dispositions
                          WHERE disposition = 'reject' AND reason IS NULL)
                 """,
-                (LOT_CODE_SHAPE, SUPPLIER_SHAPE, CURVE_SAMPLES),
+                (lot_prefix, lot_prefix, curve_samples),
             ).fetchone()
         assert row is not None and row[0] > 0
         assert row[1] is not None and row[2] is not None, (
@@ -317,12 +351,12 @@ def test_the_diagnostics_stack_answers_with_the_plant_shut_down() -> None:
         assert built > 0, "no as-built genealogy survived the plant going away"
         assert lotted > 0, "no component resolves to a supplier lot"
         assert misfiled == 0, (
-            f"{misfiled} of {lotted} lotted components carry a lot code or a supplier that "
-            "is not that field's shape — §4.1 declares both String and side by side, so a "
-            "swapped field order is silent everywhere else"
+            f"{misfiled} of {lotted} lotted components have a lot code not starting "
+            f"{lot_prefix!r}, or a supplier that does — §4.1 gives LotCode and Supplier the "
+            "same type, so the two carrying each other's value is silent everywhere else"
         )
         assert curves > 0 and wrong_length == 0, (
-            f"{wrong_length} of {curves} press curves are not {CURVE_SAMPLES} samples long"
+            f"{wrong_length} of {curves} press curves are not {curve_samples} samples long"
         )
         assert rejects > 0, "no reject was sorted, so no disposition reason was tested"
         assert nameless == 0, (

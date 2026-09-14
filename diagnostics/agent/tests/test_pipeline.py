@@ -154,6 +154,26 @@ async def test_a_breakdown_with_no_threshold_is_withheld_rather_than_stated() ->
     assert any("600 parts were inspected" in f.statement for f in answer.findings)
 
 
+async def test_a_boolean_is_not_mistaken_for_a_threshold() -> None:
+    """`bool` is a subclass of `int`, so the isinstance guard above admits `True` unless it
+    says otherwise — and "counting every class scoring True or above" is the same sentence
+    with no meaning that the guard was added to stop."""
+    lying = stats(total=600, rejects=30, gaps=[])
+    lying["defect_class_threshold"] = True
+
+    answer = await run(
+        "how many rejects in the last hour?",
+        "s1",
+        settings=Settings(),
+        analysis=_client(FakeAnalysis(lying)),
+        provider=ScriptedProvider(),
+        now=NOW,
+    )
+
+    assert not any("True or above" in f.statement for f in answer.findings)
+    assert any("did not say which score threshold" in c for c in answer.caveats)
+
+
 async def test_rejects_no_class_explains_are_reported_rather_than_left_out() -> None:
     """§3.5 scenario 6 is a window of exactly these: every class present and every one of
     them decayed below the threshold. Silently, that window reads as "no defects seen"
