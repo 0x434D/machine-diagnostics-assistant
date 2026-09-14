@@ -210,8 +210,10 @@ class RecentParts:
     def watching(self, produce: ProduceFn) -> ProduceFn:
         """`produce`, with every verdict it returns remembered as the strip's newest part."""
 
-        async def remembering(part_id: str, at: datetime) -> PartOutcome:
-            outcome = await produce(part_id, at)
+        async def remembering(
+            part_id: str, carrier_id: int, at: datetime
+        ) -> PartOutcome:
+            outcome = await produce(part_id, carrier_id, at)
             self._parts.append(
                 InspectedPart(
                     serial=part_id,

@@ -198,13 +198,13 @@ async def _strip_with(*outcomes: PartOutcome) -> RecentParts:
 
     # The two parameters are `ProduceFn`'s and are what `RecentParts.watching` reads off
     # the call rather than off the result; this stand-in only has to return the verdicts.
-    async def produce(_part_id: str, _at: datetime) -> PartOutcome:
+    async def produce(_part_id: str, _carrier_id: int, _at: datetime) -> PartOutcome:
         return queue.pop(0)
 
     watched = recent.watching(produce)
     at = datetime(2026, 9, 13, 6, 9, 48, tzinfo=UTC)
     for index in range(len(outcomes)):
-        await watched(f"A-{index:08d}", at + timedelta(seconds=6 * index))
+        await watched(f"A-{index:08d}", index % 18, at + timedelta(seconds=6 * index))
     return recent
 
 

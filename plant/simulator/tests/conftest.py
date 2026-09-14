@@ -159,7 +159,7 @@ class RecordingNodes:
         return [fields for name, _, fields in self.events if name == event.name]
 
 
-async def _stub_produce(serial: str, _at: datetime) -> PartOutcome:
+async def _stub_produce(serial: str, _carrier_id: int, _at: datetime) -> PartOutcome:
     """S3's inspection call, with no inspection service in reach.
 
     Deterministic rather than drawn: a proof that failed one run in twenty would be

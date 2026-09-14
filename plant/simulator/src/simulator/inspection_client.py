@@ -3,19 +3,22 @@
 from __future__ import annotations
 
 import base64
-import random
 from datetime import datetime
+from typing import Final
 
 import httpx
 
 from simulator.config import Settings
+from simulator.faults import DEFECT_PROPENSITY, NO_FAULTS, FaultSet
+from simulator.identity import LANES
+from simulator.noise import NoiseFloor
 from simulator.render import render_part
 from simulator.stations.base import PartOutcome
 
 # Mirrors inspection.classifier.DEFECT_CLASSES. Same §10.7 reason as simulator.render's
 # duplication of inspection.render: the workspace split forbids importing it from there,
-# so this is the plant's own copy of the shared defect vocabulary, kept only for picking
-# which defect to simulate.
+# so this is the plant's own copy of the shared defect vocabulary. It decides which
+# classes the plant draws truth over and the order the event's score array is keyed in.
 DEFECT_CLASSES = [
     "gap",
     "crack",
@@ -26,6 +29,21 @@ DEFECT_CLASSES = [
 ]
 
 
+TRUTH_DRAWS_PER_PART: Final = len(LANES) * len(DEFECT_CLASSES)
+"""How many independent Bernoulli draws decide one part's true defect state.
+
+One per (lane, defect class). **Per class**, because §3.4 makes the six scores
+independent and D11 records that §3.5's scenarios 4 and 5 each need two classes on one
+part -- which M2b's "pick one class if the part scraps" draw could never produce at any
+rate. **Per lane**, because a defect on a component is attributable to the lane that
+component came from, which is what separates scenario 5 (one lane) from a line-wide rise
+and what §5.2's `genealogy.position` exists to record.
+
+`noise.NoiseFloor.class_propensity` takes this count and sets the per-draw rate so a
+nominal carrier still scraps at `settings.reject_rate`.
+"""
+
+
 class InspectionClient:
     """Wraps the HTTP calls to the inspection service behind `ProduceFn`.
 
@@ -33,15 +51,21 @@ class InspectionClient:
     """
 
     def __init__(
-        self, settings: Settings, client: httpx.AsyncClient, *, seed: int | None = None
+        self,
+        settings: Settings,
+        client: httpx.AsyncClient,
+        *,
+        seed: int | None = None,
+        faults: FaultSet = NO_FAULTS,
     ) -> None:
         """`seed` defaults to `settings.seed`.
 
-        Which parts this client marks defective is a function of (`seed`, `part_id`)
-        and `settings.reject_rate` -- never of how many parts came before, which is
-        what lets one client serve catch-up and live alike, as M2a's single continuous
-        line requires (see `produce`). The verdict that comes back is the inspection
-        service's own, over the rendered image, and is not decided here at all.
+        Which parts this client marks defective is a function of (`seed`, `part_id`),
+        the carrier the part rode and whatever `faults` is doing at the instant -- never
+        of how many parts came before, which is what lets one client serve catch-up and
+        live alike, as M2a's single continuous line requires (see `produce`). The
+        verdict that comes back is the inspection service's own, over the rendered
+        image, and is not decided here at all.
 
         `seed` stays a parameter because that order-independence is the property being
         relied on and this is what makes it testable: two clients differing only in
@@ -50,23 +74,18 @@ class InspectionClient:
         self._s = settings
         self._http = client
         self._seed = settings.seed if seed is None else seed
+        self._noise = NoiseFloor(settings, self._seed)
+        self._faults = faults
 
-    async def produce(self, part_id: str, _sim_ts: datetime) -> PartOutcome:
+    async def produce(
+        self, part_id: str, carrier_id: int, sim_ts: datetime
+    ) -> PartOutcome:
         """Render the part, declare its truth on the side channel, then classify it.
 
-        The timestamp parameter is unused -- it exists to satisfy `ProduceFn`'s
-        signature; only the OPC UA event that wraps this result carries a timestamp
-        (§4.2, applied in `stations.s3_inspection`). Raises `httpx.HTTPStatusError` if
-        the inspection service responds with an error status.
+        Raises `httpx.HTTPStatusError` if the inspection service responds with an error
+        status.
         """
-        # A fresh Random keyed by part_id, not a continuing draw from one shared
-        # stream: whether this part is defective then depends on (seed, part_id) and
-        # the configured rate, never on how many other parts this process produced
-        # before it -- see the constructor's `seed` docstring.
-        rng = random.Random(f"{self._seed}:{part_id}:defect")
-        defects = (
-            [rng.choice(DEFECT_CLASSES)] if rng.random() < self._s.reject_rate else []
-        )
+        defects = self.truth_for(part_id, carrier_id, sim_ts)
         image = render_part(
             part_id,
             defects,
@@ -83,23 +102,17 @@ class InspectionClient:
         )
         truth_response.raise_for_status()
 
-        # The request itself carries only what a camera would hand over.
-        #
-        # **carrier_id is a placeholder and this signature widens when M2c arrives.**
-        # The real id does reach Postgres -- S3 puts it on `InspectionResultEvent`,
-        # which is §5.2's `inspection_results.carrier_id` -- but it does not reach the
-        # classifier, because `ProduceFn` is `(part_id, sim_ts)` and neither this call
-        # nor `SimulatedClassifier` can see a carrier at all. M2c's scenario 4 wears one
-        # carrier and needs its defect draw keyed on exactly that, so `ProduceFn`, this
-        # method and the constant below all move then. Recorded as a known widening
-        # rather than a settled choice: what is here now is enough for M2b, and it is
-        # not enough for the scenario that needs it.
+        # The request itself carries only what a camera would hand over -- the image and
+        # the two identifiers the frame is stamped with. The carrier is the real one the
+        # part rode, which M2b could not supply: `ProduceFn` was `(part_id, sim_ts)`
+        # then, and the placeholder `1` that stood here is what §3.5's scenario 4 needed
+        # widened before a worn carrier could concentrate anything.
         response = await self._http.post(
             f"{self._s.inspection_url}/inspect",
             json={
                 "part_id": part_id,
                 "image_b64": base64.b64encode(image).decode(),
-                "carrier_id": 1,
+                "carrier_id": carrier_id,
             },
         )
         response.raise_for_status()
@@ -124,6 +137,43 @@ class InspectionClient:
             # place that still knows which model actually produced the verdict.
             model_version=result["model_version"],
         )
+
+    def truth_for(self, part_id: str, carrier_id: int, sim_ts: datetime) -> list[str]:
+        """Which defect classes this part genuinely carries (§3.6's true defect state).
+
+        Public because it is the plant's own declaration about the part and nothing else
+        in the system can recompute it: §3.6 puts the true defect state of every part in
+        the ground-truth log, and the log is written beside the line rather than by
+        asking the classifier what it thought.
+
+        **The draws come from a stream no fault can reach and the thresholds are what a
+        fault moves.** That is §3.5's "baseline scrap drawn from a distribution
+        unrelated to any injected fault", in the only form that can be checked: a run
+        with a scenario makes exactly the same draws as a run without one, so a
+        scenario's signal is never partly its own noise.
+
+        Ordered by lane and then by class, and returned in `DEFECT_CLASSES` order so
+        that two lanes carrying the same class name produce one entry: the classifier
+        scores a class, not a component, and a duplicate would make one defect look like
+        two on §3.4's vector.
+        """
+        draws = self._noise.scrap_draws(part_id, TRUTH_DRAWS_PER_PART)
+        propensity = self._noise.class_propensity(carrier_id, TRUTH_DRAWS_PER_PART)
+        present: set[str] = set()
+        for index, (lane, name) in enumerate(
+            (lane, name) for lane in LANES for name in DEFECT_CLASSES
+        ):
+            threshold = self._faults.modify(
+                DEFECT_PROPENSITY,
+                propensity,
+                sim_ts,
+                carrier_id=carrier_id,
+                lane=lane,
+                defect_class=name,
+            )
+            if draws[index] < threshold:
+                present.add(name)
+        return [name for name in DEFECT_CLASSES if name in present]
 
 
 def _ordered_confidences(scored: dict[str, float]) -> tuple[float, ...]:

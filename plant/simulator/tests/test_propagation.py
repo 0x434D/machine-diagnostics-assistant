@@ -252,12 +252,20 @@ async def test_the_line_settles_where_3_1_says_it_does() -> None:
     2. S1 never suspends for want of a free carrier in free running. `carrier_count`
        was raised 12 -> 18 on a measurement made with `FakeStation`; this is the
        confirmation against the stations that actually hold carriers.
-    3. S3 is never starved once the line is warm, and waits less often than the two
-       stations above it. The bottleneck is not "never suspended" -- over 400,000
-       steady-state steps it takes exactly one `blocked:B3_4`, when jitter lets S4 fall
-       a takt behind -- so the claim asserted here is the one that is actually true and
-       actually structural: nothing upstream can starve the slowest station, and the
-       further up the line a station sits, the more it waits.
+    3. S3 is not starved across this window, and waits less often than the two stations
+       above it. The ordering is the structural claim -- the further up the line a
+       station sits, the more it waits -- and it is what stops being true first if the
+       takts move.
+
+    **§3.5's noise floor makes two of these weaker than they were, and the numbers are
+    measured rather than reasoned.** A micro-stop is a station running slow for up to
+    25 s, so it can briefly empty a buffer or fill one, and both now happen: over
+    400,000 steady-state steps at the shipped takts S3 takes `blocked:B3_4` 28 times and
+    `starved:B2_3` 12 times, against ~98,000 cycles. Neither falls in this test's own
+    window, which is seeded and therefore the same run every time; what the window
+    cannot show is that "never" has become "0.03 % of cycles, and only behind a
+    micro-stop above it". That is the noise §3.5 asks for -- something that sometimes
+    looks like a cause and is not.
     """
     settings = Settings()
     line, _clock, _nodes = await build_running_line(settings)
@@ -279,9 +287,10 @@ async def test_the_line_settles_where_3_1_says_it_does() -> None:
     assert peaks[B1_2] == capacity, f"B1_2 never filled: peaked at {peaks[B1_2]}"
     assert peaks[B2_3] == capacity, f"B2_3 never filled: peaked at {peaks[B2_3]}"
     assert peaks[B3_4] < capacity, (
-        f"B3_4 reached {peaks[B3_4]} of {capacity}. It sits near empty because S4 "
-        "matches S3's takt; a full B3_4 means S4 has fallen behind the bottleneck and "
-        "blockage, not starvation, is what propagates from here"
+        f"B3_4 reached {peaks[B3_4]} of {capacity}. It sits near empty because S4 runs "
+        "slightly faster than S3 and therefore drains it; a B3_4 that stays full means "
+        "that restoring force is gone and blockage, not starvation, is what propagates "
+        "from here"
     )
 
     carrier_starvation = (S1, str(SuspendReason("starved", CARRIER_RETURN)))
@@ -292,16 +301,19 @@ async def test_the_line_settles_where_3_1_says_it_does() -> None:
         "the raised count recorded"
     )
 
-    # Nothing upstream can starve the slowest station: S2 outruns it, so B2_3 cannot
-    # empty. A starved S3 means the takts no longer make it the slowest.
+    # Nothing in the configured takts can starve the slowest station: S2 outruns it, so
+    # B2_3 cannot empty. A starved S3 means either the takts no longer make it the
+    # slowest, or a micro-stop above it lasted longer than B2_3 took to drain.
     starved_s3 = {
         reason: count
         for (code, reason), count in census.items()
         if code == S3 and reason.startswith("starved")
     }
     assert not starved_s3, (
-        f"S3 was starved in free running: {starved_s3}. The slowest station cannot run "
-        "out of parts unless something above it is now slower still"
+        f"S3 was starved in free running: {starved_s3}. The slowest station runs out of "
+        "parts only when something above it was momentarily slower still -- which a "
+        "micro-stop at S2 is, 12 times in 400,000 steps and none of them here. More "
+        "than that in this window means the takts, not the noise floor, put it there"
     )
 
     # And it waits least. A threshold would be a number standing in for the claim; the

@@ -5,7 +5,6 @@ it reaches asyncua."""
 from __future__ import annotations
 
 import ast
-import itertools
 import os
 import subprocess
 import sys
@@ -82,7 +81,7 @@ def build_one(
         )
     if factory is InspectionStation:
 
-        async def produce(_serial: str, _at: datetime) -> PartOutcome:
+        async def produce(_serial: str, _carrier_id: int, _at: datetime) -> PartOutcome:
             reject = bool(always_reject)
             return PartOutcome(
                 disposition="reject" if reject else "good",
@@ -381,17 +380,32 @@ async def test_a_state_change_is_written_with_its_reason() -> None:
 
 
 def test_each_station_takes_its_own_nominal_takt() -> None:
-    """§3.1: S3 paces the line and the stations above it run faster, so their buffers
-    fill. One shared takt would leave every buffer oscillating between empty and one,
-    and buffer capacity would bound nothing."""
+    """§3.1: S3 paces the line and every other station runs faster, so B1_2 and B2_3
+    fill and B3_4 drains. One shared takt would leave every buffer oscillating between
+    empty and one, and buffer capacity would bound nothing.
+
+    **S4 is strictly faster than S3, not equal to it.** Equal takts give B3_4 no
+    restoring force: it becomes a driftless random walk, and §3.5's micro-stops are what
+    walk it -- measured at 19.5 % of the time full, with the bottleneck blocked behind
+    it. S4 sits between S2 and S3, close enough to S3 that it is not starved on every
+    cycle and far enough that B3_4 comes back to empty.
+
+    Twenty thousand draws rather than five hundred: a micro-stop adds up to 25 s to one
+    takt, so a mean over a few hundred draws is decided by whether a jam happened to
+    land in the window rather than by the nominal takt this is about.
+    """
     means = {}
     for factory in (FeedingStation, JoiningStation, InspectionStation, OutfeedStation):
         station, _ = build_one(factory)
-        draws = [station.next_takt() for _ in range(500)]
+        draws = [station.next_takt() for _ in range(20_000)]
         means[station.code] = sum(draws) / len(draws)
 
-    assert means["S1_Feeding"] < means["S2_Joining"] < means["S3_Inspection"]
-    assert means["S3_Inspection"] == pytest.approx(means["S4_Outfeed"], abs=0.05)
+    assert (
+        means["S1_Feeding"]
+        < means["S2_Joining"]
+        < means["S4_Outfeed"]
+        < means["S3_Inspection"]
+    )
 
 
 def test_a_station_the_settings_do_not_name_is_refused() -> None:
@@ -478,16 +492,6 @@ def test_the_same_seed_draws_the_same_takts_in_every_process() -> None:
     # the equality above no matter how the RNG were seeded.
     assert len(takts) == 5
     assert len(set(takts)) == 5
-
-
-def test_successive_takts_never_repeat() -> None:
-    """Not realism: asyncua's monitored-item filter drops a notification whenever the
-    written value is unchanged, so a repeated takt is a row that never reaches the
-    historian. D13 deletes this guard in M2c, once the noise floor makes takt vary
-    for real."""
-    station, _ = build_one(FeedingStation)
-    values = [station.next_takt() for _ in range(200)]
-    assert all(a != b for a, b in itertools.pairwise(values))
 
 
 # --- identity, from the station that creates it to the station that retires it -------

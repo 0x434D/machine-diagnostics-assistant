@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import timedelta
 
@@ -119,8 +120,19 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
 
     # §3.1: the stations do NOT share one takt. S3 is the slowest and paces the line
     # at the 6 s every other number is quoted against; S1 and S2 run faster so their
-    # buffers fill, and S4 matches S3 so B3_4 stays near empty without S4 starving on
-    # every single cycle.
+    # buffers fill, and S4 runs slightly faster still so B3_4 drains back towards empty.
+    #
+    # **S4 was 6.00 -- exactly S3's -- and that is a restoring force of zero.** B3_4 was
+    # then a driftless random walk, kept near empty only by never being disturbed, and
+    # §3.5's micro-stops are a disturbance: a jam at S4 adds carriers to B3_4 and a jam
+    # at S3 removes them, with nothing to pull the level back either way. Measured over
+    # 36,000 steady-state steps with micro-stops on: B3_4 sat full 19.5 % of the time and
+    # S3 -- the bottleneck -- took `blocked:B3_4` 29 times. A bottleneck blocked a fifth
+    # of the time is not the line §3.1 describes, and it is a baseline scenario 2 would
+    # then have to be found against. At 5.90 the same run leaves B3_4 at 0 or 1 for
+    # 83.5 % of the time and S3 blocked twice, while S4 starves on 1.5 % of its cycles --
+    # the cost the old value was avoiding, and far from the "every single cycle" it read
+    # as. Over 400,000 steps: S3 blocked 28 times in ~98,000 cycles.
     #
     # A balanced line would make buffer capacity bound nothing -- every buffer would
     # oscillate between empty and one, because each station consumes exactly as fast
@@ -139,7 +151,7 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
         "S1_Feeding": 5.70,
         "S2_Joining": 5.85,
         "S3_Inspection": 6.00,
-        "S4_Outfeed": 6.00,
+        "S4_Outfeed": 5.90,
     }
 
     # §4.1's two S2 process signals, which are also the press's own two settings
@@ -223,6 +235,18 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # right is what this module exists to prevent. At the values above the margin is
     # ~105 sigma, so this refuses only a configuration that has moved a long way.
     curve_fit_noise_margin_sigmas: float = 20.0
+
+    @property
+    def carrier_wear_factor(self) -> float:
+        """Scenario 4's multiplier on a worn carrier's defect propensity.
+
+        Derived from `carrier_wear_sigmas` and the baseline spread rather than
+        configured beside them: the pair is a ratio, and a third field holding the
+        product would be the same number twice with nothing keeping the two equal --
+        which is exactly what would let a change to the spread leave the injected wear
+        where it was and silently make scenario 4 easier or unwinnable.
+        """
+        return math.exp(self.carrier_wear_sigmas * self.carrier_quality_log_sigma)
 
     @property
     def press_stiffness_nominal(self) -> float:
@@ -309,6 +333,53 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # that change lands.
     optics_fouling_factor: float = 0.55
     optics_fouling_ramp_seconds: float = 7200.0
+
+    # noise floor — §3.5's permanent background (`simulator.noise`), and the one ratio
+    # that decides whether this milestone's scenario 4 is findable at all.
+    #
+    # **Genuine carrier-to-carrier variation**, as the log-sigma of a lognormal
+    # multiplier on a carrier's defect propensity. Lognormal rather than Gaussian
+    # because the quantity is a positive scale; normalised to a mean of exactly 1, so it
+    # redistributes the line's scrap across carriers without moving the line's own rate
+    # off reject_rate.
+    #
+    # 0.35 is a ~36 % relative spread between carriers. It is large enough to be a
+    # *property of the carrier* rather than a rounding of the binomial sampling noise
+    # that any per-carrier count carries anyway -- the two are comparable at the
+    # shipped depth, which is measured in test_noise rather than asserted here.
+    carrier_quality_log_sigma: float = 0.35
+    # **Scenario 4's wear, in multiples of that spread.** Expressed as a ratio and not
+    # as a factor because the ratio is the number that decides the milestone: too tight
+    # and finding carrier 7 is a GROUP BY, too loose and it is impossible, and either
+    # way M3 inherits a scenario that proves nothing. `test_noise` measures where it
+    # actually lands and records the effect size; the target is that carrier 7 separates
+    # from the pack by clearly more than the pack's own worst member does, so that an
+    # agent taking the highest carrier is wrong on a clean run and right on this one.
+    carrier_wear_sigmas: float = 3.0
+
+    # **Micro-stops** — §3.5's brief jams every ~20 min, line-wide. The interval is for
+    # the line; `noise.NoiseFloor.micro_stop_seconds` divides it by the number of
+    # stations, so adding a fifth station does not make the line jam more often.
+    micro_stop_mean_interval_seconds: float = 1200.0
+    micro_stop_min_seconds: float = 4.0
+    # Below buffer_capacity x takt (5 x 6 s = 30 s), which is how long a *full* buffer
+    # takes to drain: a micro-stop can therefore never on its own produce the complete
+    # propagation chain Task 12's proof measures for a real stoppage. Whether it starves
+    # the station below at all depends on that buffer's level at the time, which is the
+    # behaviour §3.5 wants -- noise that sometimes looks like something and is not.
+    micro_stop_max_seconds: float = 25.0
+
+    # **Operator interventions.** Triangular: most alarms are acknowledged by someone
+    # already at the panel and a few wait for a shift change, which a uniform draw would
+    # make equally likely. Chosen as plausible, not measured -- nothing in this project
+    # has measured a real operator, and a number that sounds measured and is not is
+    # worse than one that says so.
+    operator_ack_min_seconds: float = 15.0
+    operator_ack_mode_seconds: float = 60.0
+    operator_ack_max_seconds: float = 600.0
+    # §3.5's "occasional unnecessary reset": roughly one intervention in twelve changed
+    # nothing. Also chosen rather than measured.
+    operator_unnecessary_reset_rate: float = 0.08
 
     # catch-up pacing -- asyncua's own per-monitored-item notification queue caps at
     # 10,000 and silently discards the oldest entry past that, so generate_history

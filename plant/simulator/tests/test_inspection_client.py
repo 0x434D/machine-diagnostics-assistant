@@ -45,8 +45,8 @@ async def test_only_rejects_carry_an_image() -> None:
         client = InspectionClient(
             Settings(reject_rate=1.0, image_width=64, image_height=64), http
         )
-        rejected = await client.produce("A-00000007", SIM_TS)
-        good = await client.produce("A-00000008", SIM_TS)
+        rejected = await client.produce("A-00000007", 3, SIM_TS)
+        good = await client.produce("A-00000008", 3, SIM_TS)
 
     assert rejected.image is not None
     assert rejected.image.startswith(b"\x89PNG")
@@ -73,7 +73,7 @@ async def test_truth_never_appears_in_the_inspect_request() -> None:
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         await InspectionClient(
             Settings(reject_rate=1.0, image_width=64, image_height=64), http
-        ).produce("A-1", SIM_TS)
+        ).produce("A-1", 3, SIM_TS)
 
     assert bodies
     for body in bodies:
@@ -101,13 +101,13 @@ async def test_defect_draw_does_not_depend_on_prior_calls() -> None:
     settings = Settings(reject_rate=0.5, image_width=64, image_height=64)
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         fresh = InspectionClient(settings, http)
-        await fresh.produce("A-00000099", SIM_TS)
+        await fresh.produce("A-00000099", 3, SIM_TS)
         fresh_truth = seen[-1]
 
         warmed = InspectionClient(settings, http)
         for i in range(50):
-            await warmed.produce(f"A-{i:08d}", SIM_TS)
-        await warmed.produce("A-00000099", SIM_TS)
+            await warmed.produce(f"A-{i:08d}", i % 18, SIM_TS)
+        await warmed.produce("A-00000099", 3, SIM_TS)
         warmed_truth = seen[-1]
 
     assert fresh_truth == warmed_truth
@@ -134,7 +134,7 @@ async def test_constructor_seed_overrides_settings_seed_for_the_defect_draw() ->
     for seed in (settings.seed, settings.seed ^ 1):
         async with httpx.AsyncClient(transport=make_handler(seed)) as http:
             await InspectionClient(settings, http, seed=seed).produce(
-                "A-00000005", SIM_TS
+                "A-00000005", 3, SIM_TS
             )
 
     assert truth_bodies[settings.seed] != truth_bodies[settings.seed ^ 1]
@@ -168,7 +168,7 @@ async def test_the_client_refuses_a_vector_keyed_by_classes_it_does_not_know() -
     settings = Settings(reject_rate=0.0, image_width=64, image_height=64)
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
         with pytest.raises(ValueError, match="drifted"):
-            await InspectionClient(settings, http).produce("A-00000001", SIM_TS)
+            await InspectionClient(settings, http).produce("A-00000001", 3, SIM_TS)
 
 
 def test_the_plant_configures_no_verdict_error_rate_of_its_own() -> None:
