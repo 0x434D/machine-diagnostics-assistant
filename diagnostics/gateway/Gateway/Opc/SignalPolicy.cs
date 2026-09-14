@@ -178,9 +178,15 @@ public sealed class SignalPolicy
         public int? PageSize { get; init; }
 
         /// <summary>
-        /// The one way to keep a discovered stream out of storage. Default true, so omitting it
-        /// agrees with what an unnamed signal gets — without it the fail-open default would be
-        /// the only behaviour there is, and "unknown signals are subscribed" would say nothing.
+        /// The one way to keep a discovered variable stream out of storage: the live
+        /// subscription does not monitor it and the history backfill does not read it. Both,
+        /// because while only the first honoured this the key moved a stream from one write
+        /// path to the other rather than switching it off. Default true, so omitting it agrees
+        /// with what an unnamed signal gets — without it the fail-open default would be the
+        /// only behaviour there is, and "unknown signals are subscribed" would say nothing.
+        ///
+        /// <para>Variable streams only. §3.4's event stream is not a signal name, so no key
+        /// here reaches it.</para>
         /// </summary>
         [JsonPropertyName("subscribe")]
         public bool Subscribe { get; init; } = true;

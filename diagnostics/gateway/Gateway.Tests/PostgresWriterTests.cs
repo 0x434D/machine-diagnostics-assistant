@@ -684,6 +684,36 @@ public sealed class PostgresWriterTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task ABufferLevelAndAStateChangeInOneBatchEachTakeTheirOwnRoute()
+    {
+        // The mixed batch. A level record names no station, so the routing `continue`s before
+        // the station lookup that every other record needs -- and one batch really does carry
+        // both, because the subscription delivers all 25 streams into the same queue. Every
+        // other test here feeds the writer one kind at a time, which is exactly the shape that
+        // cannot tell a `continue` from a `return`: a routing bug that dropped the rest of the
+        // batch after a level, or that sent a level down the station path, passes all of them.
+        await SeedTopologyAsync();
+
+        await _writer.WriteBatchAsync([
+            SampleBufferLevel("B2_3", Instant, 3),
+            SampleDataChange("S2", "State", Instant, "Suspending"),
+            SampleDataChange("S2", "StateReason", Instant, "blocked:B2_3"),
+            SampleBufferLevel("B1_2", Instant.AddSeconds(1), 4),
+            SampleDataChange("TaktTime", Instant, 6.02),
+        ]);
+
+        Assert.Equal(2, await CountAsync("buffer_levels"));
+        Assert.Single(await QueryAsync("SELECT 1 FROM state_changes"));
+        Assert.Equal(1, await CountAsync("signals"));
+        Assert.Equal(5, await CountAsync("raw_events"));
+
+        var transition = Assert.Single(await QueryAsync(
+            "SELECT to_state, reason FROM state_changes"));
+        Assert.Equal("Suspending", transition["to_state"]);
+        Assert.Equal("blocked:B2_3", transition["reason"]);
+    }
+
+    [Fact]
     public async Task ABufferLevelForAnUndiscoveredBufferFailsRatherThanDisappears()
     {
         // A station is created from the code its signals carry; a buffer cannot be, because

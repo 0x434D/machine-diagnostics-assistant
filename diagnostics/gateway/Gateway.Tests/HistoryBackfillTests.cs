@@ -260,6 +260,73 @@ public sealed class HistoryBackfillTests
     }
 
     [Fact]
+    public async Task APolicyCanKeepADiscoveredStreamOutOfStorage()
+    {
+        // The one key in §5.1 whose whole purpose is to drop data deliberately, asserted
+        // where the data would land. While only the live subscription honoured it,
+        // `subscribe: false` did not switch a stream off -- it moved it to the other write
+        // path: 33 windows read, every row written, and a ledger row standing behind a stream
+        // the operator had been told was not stored. A test that asserted `rule.Subscribe` is
+        // false passed throughout.
+        var plant = new FakeHistorian();
+        var level = plant.Variable("B2_3.Level", Minutes(0, 10, 20));
+        var takt = plant.Variable("S3.TaktTime", Minutes(0, 10, 20));
+
+        var written = new List<IngestRecord>();
+        var report = await RunAsync(
+            plant, written,
+            new AddressSpace(
+                [
+                    new DiscoveredStation(
+                        "S3", "Inspection", plant.Events("S3", Minutes(1)),
+                        [new DiscoveredSignal("TaktTime", takt, BuiltInType.Double)],
+                        EmitsEvents: true),
+                ],
+                [new DiscoveredBuffer("B2_3", level, BuiltInType.UInt32, "S2", "S3", Capacity: 5)],
+                PhaseNodeId: null),
+            policy: """{ "signals": { "Level": { "subscribe": false } } }""");
+
+        Assert.Empty(DeliveredFor(written, level));
+        Assert.DoesNotContain(report.Windows, window => window.Stream == "B2_3.Level");
+
+        // And nothing else went with it: switching one stream off is not switching the run off.
+        Assert.Equal(3, RowsFor(report, "S3.TaktTime"));
+    }
+
+    [Fact]
+    public async Task AStreamTheOperatorSwitchedOffIsNotMistakenForOneThatVanished()
+    {
+        // The trap the fix above sets. The ledger names every stream this gateway has ever
+        // backfilled, so the first boot after `subscribe: false` is added would meet a stream
+        // in the ledger that this run does not read -- and the vanished guard, held against the
+        // read list, would refuse to start a gateway that is doing exactly what it was told.
+        // The guard is about what the plant publishes; the policy is about what is stored.
+        var plant = new FakeHistorian();
+        var level = plant.Variable("B2_3.Level", Minutes(0, 10, 20));
+
+        var report = await RunAsync(
+            plant, [],
+            new AddressSpace(
+                [
+                    new DiscoveredStation(
+                        "S3", "Inspection", plant.Events("S3", Minutes(1)),
+                        [new DiscoveredSignal(
+                            "TaktTime", plant.Variable("S3.TaktTime", Minutes(1)),
+                            BuiltInType.Double)],
+                        EmitsEvents: true),
+                ],
+                [new DiscoveredBuffer("B2_3", level, BuiltInType.UInt32, "S2", "S3", Capacity: 5)],
+                PhaseNodeId: null),
+            policy: """{ "signals": { "Level": { "subscribe": false } } }""",
+            streamsReadBefore: new HashSet<string>(StringComparer.Ordinal)
+            {
+                "S3.TaktTime", "S3.InspectionResult", "B2_3.Level",
+            });
+
+        Assert.DoesNotContain(report.Windows, window => window.Stream == "B2_3.Level");
+    }
+
+    [Fact]
     public async Task AFirstRunAgainstAnEmptyLedgerAssertsNothingAboutTheStreamCount()
     {
         // The honest limit of the guard above, stated so it is not mistaken for coverage it

@@ -113,11 +113,16 @@ public sealed class SignalPolicyTests
     }
 
     [Fact]
-    public void APolicyCanKeepADiscoveredStreamOutOfStorage()
+    public void OnlyTheSignalNamedWithSubscribeFalseLosesItsSubscription()
     {
         // The escape hatch that makes fail-open safe to adopt: meeting an unwanted stream on a
         // real plant is answered by naming it, not by changing the default for every signal
         // nobody has named yet.
+        //
+        // This is the rule, not the behaviour. That the rule is honoured on *both* write paths
+        // -- which for three revisions it was not, the backfill storing every row of a stream
+        // the subscription had dropped -- is HistoryBackfillTests'
+        // APolicyCanKeepADiscoveredStreamOutOfStorage, which asserts nothing is stored.
         var policy = SignalPolicy.Parse(
             """{ "signals": { "Noise": { "subscribe": false } } }""");
         Assert.False(policy.For("Noise", BuiltInType.Double).Subscribe);

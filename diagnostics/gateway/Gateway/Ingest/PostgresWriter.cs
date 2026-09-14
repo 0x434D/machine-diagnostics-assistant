@@ -281,8 +281,11 @@ public sealed class PostgresWriter
     }
 
     /// <summary>
-    /// Stations are discovered, not configured (§4.1). Task 11 fills name, function and
-    /// position by browsing; until then a station is known by the code its signals carry.
+    /// Stations are discovered, not configured (§4.1). This path knows a station only by the
+    /// code its signals carry, so it inserts the code as the name; the browsed name is
+    /// <see cref="TopologyDiscovery.UpsertAsync"/>'s, written in its own transaction and
+    /// overwriting this placeholder whichever of the two runs first. <c>function</c> and
+    /// <c>position_in_line</c> are still nullable and still unfilled — nothing browses them.
     /// </summary>
     private async Task<short> EnsureStationAsync(
         NpgsqlConnection connection, string code, Dictionary<string, short> batchStationIds,

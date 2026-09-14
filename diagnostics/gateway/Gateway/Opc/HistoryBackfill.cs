@@ -181,9 +181,9 @@ public sealed partial class HistoryBackfill
     }
 
     /// <summary>
-    /// Every stream the discovered topology publishes, each with the page size §5.1's policy
-    /// gives it. Nothing here names a signal: a literal set would silently cover fewer streams
-    /// than the plant has the moment one of them is renamed.
+    /// Every stream the discovered topology publishes and §5.1's policy subscribes, each with
+    /// the page size that policy gives it. Nothing here names a signal: a literal set would
+    /// silently cover fewer streams than the plant has the moment one of them is renamed.
     ///
     /// <para><b>A shorter list than last time is a failure, not a smaller run.</b> Discovery
     /// alone cannot tell "this plant has 25 streams" from "this plant had 26 and one stopped
@@ -195,6 +195,11 @@ public sealed partial class HistoryBackfill
     ///
     /// <para>It says nothing on a first run against an empty ledger, because then there is
     /// genuinely nothing to compare with; that case is the topology's to be right about.</para>
+    ///
+    /// <para>That guard is held against what the plant <i>publishes</i>, not against what this
+    /// run reads, because the two are no longer the same list. A stream the policy switched off
+    /// is still discovered; counting it as vanished would turn the operator's own decision into
+    /// a boot failure the next time the gateway started.</para>
     /// </summary>
     private List<BackfillStream> DiscoveredStreams(IReadOnlySet<string> streamsReadBefore)
     {
@@ -210,39 +215,70 @@ public sealed partial class HistoryBackfill
         }
 
         var streams = new List<BackfillStream>();
+        var discovered = new List<string>();
+        var skipped = new List<string>();
         foreach (var station in _space.Stations)
         {
             foreach (var signal in station.Signals)
             {
+                var name = $"{station.Code}.{signal.Name}";
+                discovered.Add(name);
+
+                // The policy's one deliberate loss, honoured here as well as in the live
+                // subscription. While only the subscription read it, `subscribe: false` moved
+                // a stream from "stored live" to "stored by the backfill instead" -- every
+                // window read, every row written, and a ledger row claiming a stream the
+                // operator had been told was off. Three comments said otherwise.
+                var rule = _policy.For(signal.Name, signal.Type);
+                if (!rule.Subscribe)
+                {
+                    skipped.Add(name);
+                    continue;
+                }
+
                 var key = new StreamKey(StreamOwner.Station, station.Code, signal.Name);
-                var pageSize = _policy.For(signal.Name, signal.Type).PageSize;
                 streams.Add(new BackfillStream(
-                    $"{station.Code}.{signal.Name}",
+                    name,
                     (from, to, ct) =>
-                        ReadVariablePagesAsync(signal.NodeId, key, pageSize, from, to, ct)));
+                        ReadVariablePagesAsync(signal.NodeId, key, rule.PageSize, from, to, ct)));
             }
 
             if (station.EmitsEvents)
             {
+                // Not policy-named. The policy keys on signal names and the event stream is
+                // not a variable, so §3.4's history has no off switch -- the same asymmetry
+                // the live subscription has, stated because the alternative is two files that
+                // look like they disagree.
+                var name = $"{station.Code}.{Subscriptions.EventStream}";
+                discovered.Add(name);
                 streams.Add(new BackfillStream(
-                    $"{station.Code}.{Subscriptions.EventStream}",
-                    (from, to, ct) => ReadEventPagesAsync(station, from, to, ct)));
+                    name, (from, to, ct) => ReadEventPagesAsync(station, from, to, ct)));
             }
         }
 
         foreach (var buffer in _space.Buffers)
         {
             var signal = Subscriptions.BufferLevelSignal;
+            var name = $"{buffer.Code}.{signal}";
+            discovered.Add(name);
+
+            var rule = _policy.For(signal, buffer.LevelType);
+            if (!rule.Subscribe)
+            {
+                skipped.Add(name);
+                continue;
+            }
+
             var key = new StreamKey(StreamOwner.Buffer, buffer.Code, signal);
-            var pageSize = _policy.For(signal, buffer.LevelType).PageSize;
             streams.Add(new BackfillStream(
-                $"{buffer.Code}.{signal}",
+                name,
                 (from, to, ct) =>
-                    ReadVariablePagesAsync(buffer.LevelNodeId, key, pageSize, from, to, ct)));
+                    ReadVariablePagesAsync(
+                        buffer.LevelNodeId, key, rule.PageSize, from, to, ct)));
         }
 
         var vanished = streamsReadBefore
-            .Except(streams.Select(stream => stream.Name), StringComparer.Ordinal)
+            .Except(discovered, StringComparer.Ordinal)
             .Order(StringComparer.Ordinal)
             .ToList();
         if (vanished.Count > 0)
@@ -250,7 +286,15 @@ public sealed partial class HistoryBackfill
             throw new InvalidOperationException(
                 $"{vanished.Count} stream(s) this gateway has backfilled before are no longer "
                 + $"published and would be missing from the ledger silently: "
-                + $"{string.Join(", ", vanished)}. {streams.Count} streams were discovered");
+                + $"{string.Join(", ", vanished)}. {discovered.Count} streams were discovered");
+        }
+
+        // Said out loud for the same reason the subscription says it: a discovered stream that
+        // stops being stored is indistinguishable from the loss every other guard in this file
+        // exists to prevent, unless something names it.
+        if (skipped.Count > 0)
+        {
+            LogSkippedStreams(_logger, skipped.Count, string.Join(", ", skipped));
         }
 
         return streams;
@@ -460,6 +504,12 @@ public sealed partial class HistoryBackfill
         Message = "the history read on {Node} failed and its continuation point could not be "
             + "released; the server holds it until its pool recycles")]
     private static partial void LogReleaseFailed(ILogger logger, string node, Exception failure);
+
+    [LoggerMessage(
+        Level = LogLevel.Warning,
+        Message = "the signal policy skips {Count} discovered stream(s), whose history will "
+            + "not be backfilled and which get no ledger row: {Streams}")]
+    private static partial void LogSkippedStreams(ILogger logger, int count, string streams);
 
     private static void ThrowIfBad(StatusCode status, NodeId node)
     {
