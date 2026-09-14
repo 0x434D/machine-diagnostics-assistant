@@ -208,7 +208,17 @@ export interface components {
             /** Station */
             station: string;
         };
-        /** InspectionStats */
+        /**
+         * InspectionStats
+         * @description Counts over a window, with everything needed to tell a real answer from an empty one.
+         *
+         *     `by_defect_class` and `rejects_without_class` together account for every reject, and
+         *     neither is readable without the other. They do not sum to `rejects` — a part scoring
+         *     high on two classes appears twice in the breakdown — but `rejects_without_class` is
+         *     exactly the part of `rejects` the breakdown cannot explain, so an empty breakdown beside
+         *     a non-zero `rejects` now says *which* it is: 30 rejects and 30 unclassified is a
+         *     measurement, and 30 rejects and 0 unclassified with an empty breakdown is impossible.
+         */
         InspectionStats: {
             /** By Defect Class */
             by_defect_class: components["schemas"]["DefectClassCount"][];
@@ -217,6 +227,8 @@ export interface components {
             defect_class_threshold: number;
             /** Rejects */
             rejects: number;
+            /** Rejects Without Class */
+            rejects_without_class: number;
             /** Sample Serials */
             sample_serials: string[];
             /** Total */

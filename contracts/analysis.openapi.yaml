@@ -188,6 +188,13 @@ components:
       title: Inspection
       type: object
     InspectionStats:
+      description: "Counts over a window, with everything needed to tell a real answer from an empty one.\n\
+        \n`by_defect_class` and `rejects_without_class` together account for every reject, and\nneither\
+        \ is readable without the other. They do not sum to `rejects` \u2014 a part scoring\nhigh on two\
+        \ classes appears twice in the breakdown \u2014 but `rejects_without_class` is\nexactly the part\
+        \ of `rejects` the breakdown cannot explain, so an empty breakdown beside\na non-zero `rejects`\
+        \ now says *which* it is: 30 rejects and 30 unclassified is a\nmeasurement, and 30 rejects and\
+        \ 0 unclassified with an empty breakdown is impossible."
       properties:
         by_defect_class:
           items:
@@ -201,6 +208,9 @@ components:
           type: number
         rejects:
           title: Rejects
+          type: integer
+        rejects_without_class:
+          title: Rejects Without Class
           type: integer
         sample_serials:
           items:
@@ -218,6 +228,7 @@ components:
       - rejects
       - by_defect_class
       - defect_class_threshold
+      - rejects_without_class
       - sample_serials
       - coverage
       title: InspectionStats

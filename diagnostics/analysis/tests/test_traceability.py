@@ -56,11 +56,11 @@ def test_the_press_record_is_the_parts_own_and_not_the_time_series(
 ) -> None:
     """§3.4a's rule, made falsifiable.
 
-    S2's historised streams are seeded across the whole window at values three orders of
-    magnitude away from anything a part carries, so a read path that reached for "what was
-    S2 publishing when this part went through" would answer 900-something instead of
-    100-something. The assertion below is on the part's own number, and the one before it
-    is what stops the proof passing because there was nothing to reconstruct from.
+    S2's historised streams are seeded across the whole window in a range that does not
+    overlap anything a part carries, so a read path that reached for "what was S2 publishing
+    when this part went through" would answer 900-something instead of 100-something. The
+    assertion below is on the part's own number, and the one before it is what stops the
+    proof passing because there was nothing to reconstruct from.
     """
     with psycopg.connect(seeded_db) as conn:
         around = conn.execute(

@@ -58,6 +58,42 @@ def test_the_breakdown_says_which_threshold_it_counted_at(client: TestClient) ->
     assert body["defect_class_threshold"] < BOOSTED_SCORE
 
 
+@pytest.mark.usefixtures("seeded_db_with_unaccounted_rejects")
+def test_a_reject_no_class_can_explain_is_counted_rather_than_dropped(
+    client: TestClient,
+) -> None:
+    """Removing the cause of the empty breakdown did not remove the shape.
+
+    Two rejects here are real and neither reaches the group-by: one predates §3.4's vector
+    and carries no scores at all, and one is §3.5 scenario 6 — every class present, every
+    one of them decayed below the threshold. Before `rejects_without_class`, `rejects` moved
+    and the breakdown did not, with nothing in the response saying so; a run where *every*
+    reject looked like this would have reported "no defects seen" while the line scrapped
+    parts, which is the quietest wrong answer this endpoint can give.
+    """
+    body = client.get("/inspection/stats", params=WINDOW).json()
+
+    assert body["rejects"] == 32
+    assert body["rejects_without_class"] == 2
+    # The breakdown is unmoved by either row, which is exactly why the count beside it has
+    # to exist: the two together account for every reject, and neither reads alone.
+    counts = {row["defect_class"]: row["count"] for row in body["by_defect_class"]}
+    assert sum(counts.values()) == 31
+
+
+@pytest.mark.usefixtures("seeded_db")
+def test_every_reject_in_an_ordinary_window_is_accounted_for(
+    client: TestClient,
+) -> None:
+    """The other direction, and the one that makes the number above falsifiable: on a window
+    of rows the plant can actually produce, nothing is unaccounted for. A `NOT EXISTS` that
+    matched everything would pass the test above and fail this one."""
+    body = client.get("/inspection/stats", params=WINDOW).json()
+
+    assert body["rejects"] == 30
+    assert body["rejects_without_class"] == 0
+
+
 @pytest.mark.usefixtures("seeded_db")
 def test_a_good_parts_low_scores_are_not_defects_it_has(client: TestClient) -> None:
     """A good part carries all six classes scored low, not an absent vector (§3.4). Every

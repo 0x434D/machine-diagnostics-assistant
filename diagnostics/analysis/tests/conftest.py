@@ -100,14 +100,19 @@ the trace has to carry is the curve the press recorded, and a reconstruction fro
 series cannot produce one at all."""
 
 DECOY_FORCE = 900.0
-"""S2's historised `JoiningForcePeak` in this fixture, disjoint from every per-part
-`PeakForce` by three orders of magnitude.
+"""S2's historised `JoiningForcePeak` in this fixture. The decoy spans [900, 909] and every
+per-part `PeakForce` spans [100.0, 100.599], so the two ranges do not overlap and the
+nearest pair of values is a factor of ~9 apart.
 
-The time series is seeded densely across the window *on purpose*. §3.4a's reconstruction is
+Disjointness is the property the proof rests on, not the size of the gap -- a reconstructed
+answer has to be unmistakable, and any separation wider than the per-part spread gives that.
+The time series is seeded densely across the window *on purpose*: §3.4a's reconstruction is
 tempting precisely because the data is there, so a fixture with nothing to reconstruct from
 would let a read path that joined on time pass by finding nothing. Every trace assertion in
 these tests would return this number instead of the part's own if the endpoint ever did."""
 DECOY_DISTANCE = 50.0
+"""The same for `JoiningDistance`: the decoy spans [50, 59] against a per-part
+[10.0, 10.0599], so ~5x apart at the nearest and, again, non-overlapping."""
 
 
 def peak_force(index: int) -> float:
@@ -443,6 +448,50 @@ def _seed_stubs(
 @pytest.fixture
 def seeded_db(database: str) -> str:
     _seed_parts(database)
+    return database
+
+
+DECAYED_SCORE = 0.40
+"""Every class on one reject, all of them below the threshold.
+
+§3.5 scenario 6 -- "confidence decays across all classes while the scrap rate stays flat"
+-- is a run of these, and it is the shape that makes an empty breakdown a measurement
+rather than a bug. Above `BASELINE_SCORE`, because the scores have not vanished; below
+`Settings.defect_class_threshold`, because none of them is a call any more.
+"""
+
+
+@pytest.fixture
+def seeded_db_with_unaccounted_rejects(database: str) -> str:
+    """The two shapes that leave a reject out of `by_defect_class`, both real.
+
+    `A-LEGACY` is a row written before §3.4's vector existed: `defect_classes` and
+    `confidences` are NULL, which `models.Inspection` documents as a row predating the
+    widened event rather than a part that scored nothing. `A-DECAYED` is scenario 6 --
+    every class present, every one of them fallen below the threshold.
+
+    Both sit inside the counted window on purpose: the point of the fixture is that
+    `rejects` moves and the breakdown does not.
+    """
+    _seed_parts(database)
+    with psycopg.connect(database) as conn:
+        stations = _station_ids(conn)
+        for serial, classes, scores in (
+            ("A-LEGACY", None, None),
+            (
+                "A-DECAYED",
+                list(DEFECT_CLASSES),
+                [DECAYED_SCORE] * len(DEFECT_CLASSES),
+            ),
+        ):
+            _insert_assembly(conn, serial, WINDOW_START, 1)
+            conn.execute(
+                "INSERT INTO inspection_results (assembly_serial, source_ts, station_id,"
+                " result, confidence, model_version, defect_classes, confidences)"
+                " VALUES (%s, %s, %s, 'reject', 0.87, 'sim-1', %s, %s)",
+                (serial, WINDOW_START, stations["S3"], classes, scores),
+            )
+        conn.commit()
     return database
 
 

@@ -226,6 +226,14 @@ async def _compose(
         )
     ]
 
+    # §3.4's six scores are independent and do not sum to 1, so the breakdown is not a
+    # partition of the rejects: a part the model believes carries two defects is counted
+    # under both, and a reject no class reached the threshold for is counted under none.
+    # Emitting the counts alone as `basis: "measured"` states a number under a semantics
+    # the reader is never given -- so the threshold and the remainder travel with them, and
+    # the remainder is what makes an empty breakdown readable rather than silent.
+    threshold = stats.get("defect_class_threshold")
+    unaccounted = int(str(stats.get("rejects_without_class", 0)))
     if isinstance(classes, list) and classes:
         breakdown = ", ".join(
             f"{entry['defect_class']} {entry['count']}"
@@ -234,7 +242,22 @@ async def _compose(
         )
         findings.append(
             Finding(
-                statement=f"By defect class: {breakdown}.",
+                statement=(
+                    f"By defect class, counting every class scoring {threshold} or above "
+                    f"— so a part with two defects is counted twice: {breakdown}."
+                ),
+                basis="measured",
+                citations=[],
+            )
+        )
+
+    if unaccounted:
+        findings.append(
+            Finding(
+                statement=(
+                    f"{unaccounted} of those {rejects} rejects had no class scoring "
+                    f"{threshold} or above, so the breakdown does not explain them."
+                ),
                 basis="measured",
                 citations=[],
             )

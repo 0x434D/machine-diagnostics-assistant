@@ -41,6 +41,16 @@ class Coverage(BaseModel):
 
 
 class InspectionStats(BaseModel):
+    """Counts over a window, with everything needed to tell a real answer from an empty one.
+
+    `by_defect_class` and `rejects_without_class` together account for every reject, and
+    neither is readable without the other. They do not sum to `rejects` — a part scoring
+    high on two classes appears twice in the breakdown — but `rejects_without_class` is
+    exactly the part of `rejects` the breakdown cannot explain, so an empty breakdown beside
+    a non-zero `rejects` now says *which* it is: 30 rejects and 30 unclassified is a
+    measurement, and 30 rejects and 0 unclassified with an empty breakdown is impossible.
+    """
+
     window: Window
     total: int
     rejects: int
@@ -49,6 +59,12 @@ class InspectionStats(BaseModel):
     # file: a count whose meaning depends on a number the reader cannot see is a number the
     # agent would cite as if it meant something else.
     defect_class_threshold: float
+    # Rejects in the window that no class reached the threshold for. Two things produce one,
+    # and both are real: a row written before §3.4's vector existed, which has no scores at
+    # all, and §3.5 scenario 6's decay across every class, where the scores are there and
+    # all of them have fallen. Without this number the first is invisible and the second
+    # reads as "no defects seen", which is the quietest wrong answer this endpoint can give.
+    rejects_without_class: int
     sample_serials: list[str]
     coverage: Coverage
 

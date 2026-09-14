@@ -30,7 +30,19 @@ class FakeAnalysis:
         return serial in self._known
 
 
-def stats(total: int, rejects: int, gaps: list[dict[str, str]]) -> dict[str, object]:
+def stats(
+    total: int,
+    rejects: int,
+    gaps: list[dict[str, str]],
+    *,
+    rejects_without_class: int = 0,
+) -> dict[str, object]:
+    """The analysis service's stats response, as the agent reads it.
+
+    `rejects_without_class` defaults to none, which is the ordinary window; pass a number
+    to stand in for a window the breakdown cannot fully explain -- a row predating §3.4's
+    vector, or §3.5 scenario 6's decay across every class.
+    """
     return {
         "window": {"from_ts": "2026-09-12T13:30:00Z", "to_ts": "2026-09-12T14:30:00Z"},
         "total": total,
@@ -38,6 +50,8 @@ def stats(total: int, rejects: int, gaps: list[dict[str, str]]) -> dict[str, obj
         "by_defect_class": [{"defect_class": "gap", "count": rejects}]
         if rejects
         else [],
+        "defect_class_threshold": 0.5,
+        "rejects_without_class": rejects_without_class,
         "sample_serials": ["A-00000007"] if rejects else [],
         "coverage": {"gaps": gaps},
     }

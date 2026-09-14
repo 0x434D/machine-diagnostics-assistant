@@ -68,13 +68,29 @@ window instead of a serial, which is what a time-range join *is*. Content alone 
 against a reconstruction that happened to guess right; the statements alone would pass against
 a read path that asked perfectly and returned nothing.
 
-Three supporting tests in the same file make the reconstruction *wrong* rather than merely
+Supporting tests in the same file make the reconstruction *wrong* rather than merely
 forbidden, so that the value assertions have teeth: the fixture seeds S2's historised streams
-densely across the window at values three orders of magnitude from any part's own, and seeds
+densely across the window in a range that does not overlap anything a part carries, and seeds
 two assemblies created at the same instant with different components and different press
-records. All of them were confirmed to fail against a `part_process_values` rewritten as a
-time-range join over `signals`, and the class-breakdown test against the scalar `defect_class`
-the endpoint used to group by.
+records.
+
+**What was falsified, against what.** Each facade below was applied to the shipped code and
+the suite re-run; the tests named are the ones that failed and no others.
+
+| Facade | Tests that failed |
+|---|---|
+| `_process_values` rewritten as a time-range join over `signals` | `test_the_press_record_is_the_parts_own_and_not_the_time_series`, `test_two_parts_made_at_the_same_instant_keep_their_own_histories`, the proof |
+| `_process_curves` returning nothing — the shape a reconstruction is forced into, since the time series carries nothing a stroke can be rebuilt from | `test_the_curve_is_the_one_the_press_recorded_for_this_serial`, the proof, and three section tests |
+| `/inspection/stats` back to the scalar `defect_class` group-by | `test_the_breakdown_reads_the_score_vector_rather_than_the_dead_scalar`, `test_a_reject_no_class_can_explain_is_counted_rather_than_dropped` |
+| a time predicate on the genealogy query that changes **not one returned value** | the proof, alone |
+
+The last row is the one that shows the two halves are independent: nothing a caller can see
+changed, every content assertion passed, and only the statement half failed. The third row is
+a separate defect from the first two and its failures come from the stats revert, not from any
+time-range join — an earlier revision of this file, and commit `f65afa4`'s message, ran them
+together and described all four failures as one falsification. They are not, and the curve
+test in particular does **not** fail against the `part_process_values` rewrite; it reads a
+different table. The table above is what was actually observed.
 
 **It runs in `make check`, not behind `make verify`**, for the same reason the propagation
 proof does: it is in process against the Postgres container the analysis tests already use

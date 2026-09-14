@@ -71,6 +71,26 @@ def inspection_stats(
             for row in cur.fetchall()
         ]
 
+        # What the breakdown above cannot explain. Removing the cause of the empty
+        # `by_defect_class` did not remove the shape: a row written before the vector
+        # existed carries no scores at all and contributes nothing to the group-by, and
+        # §3.5 scenario 6 is a run where every score falls together and nothing crosses
+        # the threshold. Both leave rejects unaccounted for, and counting them is what
+        # turns "we saw no defects" into "we saw 30 rejects and could name none of them".
+        #
+        # NOT EXISTS over the same unnest, so this number and the breakdown are the two
+        # halves of one rule rather than two rules that can drift. A NULL vector unnests
+        # to no rows at all, which is why it lands here.
+        cur.execute(
+            "SELECT count(*) FROM inspection_results r "
+            "WHERE r.source_ts >= %s AND r.source_ts < %s AND r.result = 'reject' "
+            "  AND NOT EXISTS ("
+            "    SELECT 1 FROM unnest(r.defect_classes, r.confidences) AS scored(c, score)"
+            "    WHERE scored.score >= %s)",
+            (from_, to, settings.defect_class_threshold),
+        )
+        unclassified = (cur.fetchone() or (0,))[0]
+
         cur.execute(
             "SELECT assembly_serial FROM inspection_results "
             "WHERE source_ts >= %s AND source_ts < %s AND result = 'reject' "
@@ -96,6 +116,7 @@ def inspection_stats(
         rejects=rejects,
         by_defect_class=by_class,
         defect_class_threshold=settings.defect_class_threshold,
+        rejects_without_class=unclassified,
         sample_serials=samples,
         coverage=Coverage(gaps=gaps),
     )
