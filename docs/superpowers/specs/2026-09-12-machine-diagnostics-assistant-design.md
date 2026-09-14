@@ -296,9 +296,19 @@ A good part simply scores low on all six.
 
 This is forced by the scenarios rather than chosen. Scenario 6 is *"optics fouling →
 confidence decays across all classes"* — impossible under a softmax, where six values summing
-to 1 cannot all fall. Scenarios 4 and 5 need two classes on one part (`misalignment` +
+to 1 cannot all fall. Scenarios 4 and 5 need two classes raised together (`misalignment` +
 `scratch`, `missing_part` + `contamination`), and pattern DP-02 is keyed on a pair. Mutually
 exclusive classes cannot express any of that.
+
+**The pair is a property of the population, not of a part**, and M2c measured why it has to
+be. At the wear factor that makes carrier 7 findable — Cohen's *d* = +5.8 against a clean
+run's worst at +2.1 — a single part carrying *both* classes occurs about five times in a
+hundred thousand. Forcing ten such parts onto one carrier needs a factor of 38.8 instead of
+2.86, which puts that carrier at a 19 % scrap rate against the line's 1.5 %: the concentration
+would be visible by inspection and the significance test §3.5 exists to require would have
+nothing to do. So both classes rise together *on the carrier* (`misalignment` *d* = +3.75,
+`scratch` *d* = +4.98) and DP-02 keys on that, rather than on a per-part co-occurrence the
+line cannot produce without destroying the thing the scenario measures.
 
 The scalar `Confidence` on the event is confidence in the **OK/NOK verdict**, not in a class.
 A good part's verdict confidence is high while all six class scores are low; the earlier
