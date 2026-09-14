@@ -174,8 +174,8 @@ public sealed class SignalPolicyTests
     {
         // D4: the page size is per event type because what one page weighs is what its events
         // carry. Only §3.4's verdict carries image bytes, and it is the only one that still
-        // has to be read 25 at a time -- the other four at 25 would cost ~2,400 round trips
-        // per stream over a 33 h history where 33 do.
+        // has to be read 25 at a time -- at 25 the other four would cost ~2,500 round trips
+        // over a 33 h history on S1 and ~800 on S2 and S4, where 33 do.
         var policy = SignalPolicy.Parse(RealJson);
 
         Assert.Equal(25, policy.ForEvent("InspectionResultEventType").PageSize);

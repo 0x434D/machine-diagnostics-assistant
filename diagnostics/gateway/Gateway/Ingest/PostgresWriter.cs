@@ -52,10 +52,11 @@ public sealed class PostgresWriter
     private readonly ConcurrentDictionary<string, SeenState> _lastStates =
         new(StringComparer.Ordinal);
 
-    // One id per (lot code, lane) — a few hundred over a whole history against ~59,000
-    // component reads, so without this the lookup is a round trip per record. Same rule as
-    // the station ids above: an id produced by an INSERT inside the open transaction lives
-    // in the batch's own dictionary until the batch commits.
+    // One id per (lot code, lane) — ~80 over a whole history (19,800 parts draw 39,600
+    // components, at 500 to a lot) against 39,600 component reads, so without this the lookup
+    // is a round trip per record. Same rule as the station ids above: an id produced by an
+    // INSERT inside the open transaction lives in the batch's own dictionary until the batch
+    // commits.
     private readonly ConcurrentDictionary<LotKey, short> _lotIds = new();
 
     public PostgresWriter(string connectionString) => _connectionString = connectionString;
@@ -531,9 +532,9 @@ public sealed class PostgresWriter
         {
             // Selected before inserting, and never ON CONFLICT: component_lots.id is a
             // SMALLSERIAL, and both DO UPDATE and DO NOTHING evaluate nextval before the
-            // conflict is detected. A history holds ~59,000 component reads against a few
-            // hundred lots, so an upsert per record would exhaust SMALLSERIAL's 32,767 range
-            // and fail every write after it — the defect M1 measured at 55,956 records.
+            // conflict is detected. A history holds ~39,600 component reads against ~80 lots,
+            // so an upsert per record would exhaust SMALLSERIAL's 32,767 range and fail every
+            // write after it — the defect M1 measured at 55,956 records.
             var existing = await SelectLotIdAsync(connection, lot, ct).ConfigureAwait(false);
             if (existing is null)
             {
@@ -919,6 +920,14 @@ public sealed class PostgresWriter
         var hasImage = record.ImageBytes is { Length: > 0 };
         var carrierId = SmallInt(payload, "CarrierId");
         var rows = await EnsureCarrierAsync(connection, carrierId, ct).ConfigureAwait(false);
+
+        // inspection_results.assembly_serial is the one per-part key with no foreign key to
+        // assemblies, which is exactly why this call is easy to leave out and impossible to
+        // notice: a verdict whose part has no row here fails nothing. It leaves a serial that
+        // inspection_results knows and assemblies does not, and §14's trace starts from
+        // assemblies — so the part is omitted from its own history rather than answered with
+        // what is known about it.
+        rows += await EnsureAssemblyAsync(connection, serial, ct).ConfigureAwait(false);
 
         await using var command = new NpgsqlCommand(
             """

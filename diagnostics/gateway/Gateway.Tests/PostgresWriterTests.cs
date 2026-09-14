@@ -829,6 +829,25 @@ public sealed class PostgresWriterTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task AVerdictOnItsOwnStillPutsThePartOnTheLine()
+    {
+        // inspection_results.assembly_serial is the one per-part key with NO foreign key to
+        // assemblies, so a verdict whose part has no row there fails nothing and nothing says
+        // so. It happens whenever a run ends between S3 and S4 -- the backfill's `to` boundary
+        // is a wall-clock instant and the part is mid-line. §14's trace starts from
+        // assemblies, so the part would be omitted from its own history rather than answered
+        // with the verdict that is sitting right there.
+        await SeedTopologyAsync();
+        await _writer.WriteBatchAsync([
+            SampleEvent("A-00000090", reject: true, new byte[8], Instant, carrierId: 9),
+        ]);
+
+        var assembly = Assert.Single(await QueryAsync(
+            "SELECT created_at FROM assemblies WHERE serial = 'A-00000090'"));
+        Assert.Equal(DBNull.Value, assembly["created_at"]);
+    }
+
+    [Fact]
     public async Task ACreationEventFillsInTheStubAnEarlierStationLeft()
     {
         // The other half: the horizon row is a row still being filled in, not a dead end.
@@ -906,8 +925,8 @@ public sealed class PostgresWriterTests : IAsyncLifetime
     [Fact]
     public async Task RepeatedComponentReadsDoNotAdvanceTheLotSequence()
     {
-        // component_lots.id is a SMALLSERIAL and a history holds ~59,000 component reads
-        // against a few hundred lots. ON CONFLICT evaluates nextval before it detects the
+        // component_lots.id is a SMALLSERIAL and a history holds ~39,600 component reads
+        // against ~80 lots. ON CONFLICT evaluates nextval before it detects the
         // conflict, so an upsert per record would burn the 32,767 range and fail every write
         // after it — the same defect M1 measured on stations at 55,956 records.
         for (var i = 0; i < 200; i++)
