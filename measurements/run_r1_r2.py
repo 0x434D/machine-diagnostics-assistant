@@ -23,7 +23,7 @@ POSTGRES_IMAGE = (
 )
 ENDPOINT = "opc.tcp://line-simulator:4840/plant"
 
-# BROKEN AGAINST AN M2a GATEWAY -- Task 12 owns the fix.
+# THIS IS M1's RUNNER AND IT DOES NOT RUN AGAINST AN M2a GATEWAY. Deliberate; see below.
 #
 # M2a Task 10 qualified backfill_windows.stream by station code ("S2.TaktTime"), because
 # the table is UNIQUE (from_ts, to_ts, stream) and four stations writing a bare "TaktTime"
@@ -33,10 +33,23 @@ ENDPOINT = "opc.tcp://line-simulator:4840/plant"
 #     report.py's `read_rows == pg_rows` check reads FAIL on a run that was fine;
 #   * `WHERE s.signal = 'TaktTime'` sums all four stations into one pg_rows.
 #
-# It fails in the safe direction, which is why it is left rather than guessed at: fixing it
-# means re-running R1/R2 and overwriting measurements/r1-r2-results.json, which is a
-# measurement decision. The shape it wants is `SELECT DISTINCT stream FROM backfill_windows`
-# with a per-station join, exactly as Gateway's Reconciler now does.
+# It fails in the safe direction, and Task 12 looked at repairing it and decided not to.
+# Re-deriving the per-signal routing here would be a second copy of Reconciler.StoredAsync
+# -- five tables, a settled-transitions view and a raw_events DISTINCT -- and the way a
+# second copy goes wrong is to report a clean R1 while the gateway stores something else.
+# The right shape is to call the gateway's own /reconcile over an explicit window, and that
+# moves R1's criterion from `read_rows == pg_rows` to `lost == 0`, because at M2a's page
+# counts F2's page-boundary duplicates are expected rather than loss. Changing what R1
+# passes on is the spec owner's call.
+#
+# A second reason it does not run today, found by running `make verify`: _run_gateway below
+# starts r1-gw without mounting diagnostics/gateway/Gateway/config/signals.json, and Task 9
+# made that policy mandatory -- the container exits 139 on its first line. Whoever repairs the
+# queries has to add the mount too, the same one test_authenticity.py's fixture now carries.
+#
+# The claim itself is not waiting on any of that: measurements/authenticity/README.md records
+# it measured on a full 33 h boot -- 26 streams, 402,044 rows read, 402,044 stored, 0 lost --
+# and gives the two commands. What this file and r1-r2-results.json still describe is M1.
 STREAMS = ("TaktTime", "PartCount", "InspectionResult")
 
 # One hour at a 6 s takt is 600 rows per stream; the full depth is 33 h.
