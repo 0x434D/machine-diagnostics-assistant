@@ -157,6 +157,65 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     joining_force_sigma: float = 40.0  # newtons
     joining_distance_sigma: float = 0.02  # millimetres
 
+    # §3.4a's force-distance curve, and the two knobs that have to move independently
+    # or M2c's scenario 7 is unwinnable by construction. Scenario 7 is a bad component
+    # lot with a *perfectly stable* joining force; scenario 3 is a force drift; both
+    # raise `gap` defects, so the curve's shape is the only thing separating them.
+    #
+    # The press seats the part a fixed depth past wherever it first meets resistance.
+    # That is what makes the peak (stiffness x seat depth) independent of the contact
+    # point, which is what scenario 7 needs. The alternative -- a press that always
+    # stops at the same absolute position -- makes a late contact point *lower* the
+    # peak, which is scenario 3's symptom showing up inside scenario 7, and §3.5 rules
+    # it out by saying scenario 7's joining force is perfectly stable.
+    #
+    # 40 samples is §3.4a's "a few dozen values per part"; against the 20 mm window
+    # below that is a sample every 0.51 mm, so ~9 of them land on the 4.5 mm rise.
+    curve_samples: int = 40
+    # The recorded window. Wide enough for a contact point well past the 8.0 mm nominal
+    # plus the seat depth; a scenario that pushes contact past stroke - seat depth is
+    # refused rather than silently clipped, because a clipped curve reports a peak the
+    # press never reached.
+    curve_stroke_mm: float = 20.0
+    # How far the press travels past contact. Together with joining_force_nominal it
+    # fixes the nominal stiffness, and with joining_distance_nominal the nominal contact
+    # point -- both derived below rather than restated, so §4.1's two published scalars
+    # and the curve that summarises them cannot drift apart.
+    press_seat_depth_mm: float = 4.5
+    # Sensor noise on the idle part of the stroke, ~0.2 % of the nominal peak. Not
+    # joining_force_sigma, which is part-to-part spread of the peak; this is the noise
+    # floor within one part's trace. It applies below contact only: the samples after
+    # contact carry the part-to-part variation through the two knobs themselves, and
+    # noise on them would blur exactly what scenario 7 has to separate. It must also
+    # stay far below curve_fit_band_low x peak (840 N at the nominals) or the rise fit
+    # would take in samples that are not on the rise.
+    curve_noise_sigma: float = 8.0
+    # Which part of the rise `contact_of` and `distance_of` fit their line through, as
+    # a fraction of the peak. Below the low edge sit the noise floor and the sample that
+    # straddles contact; above the high edge sits the knee where the press reaches depth
+    # and the force stops climbing. Neither end is on the straight part.
+    curve_fit_band_low: float = 0.2
+    curve_fit_band_high: float = 0.8
+
+    @property
+    def press_stiffness_nominal(self) -> float:
+        """Newtons per millimetre of travel past contact.
+
+        Derived, not configured: it is joining_force_nominal spread over the seat
+        depth, and configuring it separately would be the same number written twice
+        with nothing keeping the two spellings equal.
+        """
+        return self.joining_force_nominal / self.press_seat_depth_mm
+
+    @property
+    def press_contact_nominal_mm(self) -> float:
+        """Where a nominal part first meets resistance.
+
+        Derived for the same reason: §4.1's published joining distance is the whole
+        travel, and the whole travel is the contact point plus the seat depth.
+        """
+        return self.joining_distance_nominal - self.press_seat_depth_mm
+
     # §3.1's identity model. Lot size sets how many parts a contaminated lot touches,
     # which is what M2c's scenario 7 containment list is scored against: too large and
     # every part is in the lot, too small and the correlation has no power. At the 6 s
