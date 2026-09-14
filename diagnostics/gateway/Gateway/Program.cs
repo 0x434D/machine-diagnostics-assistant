@@ -161,7 +161,11 @@ var ingest = Task.Run(
 
         await BackfillFromStorageAsync().ConfigureAwait(false);
 
-        subscriptions = new Subscriptions(options, signalPolicy, EnqueueAsync);
+        subscriptions = new Subscriptions(
+            options,
+            signalPolicy,
+            app.Services.GetRequiredService<ILoggerFactory>().CreateLogger<Subscriptions>(),
+            EnqueueAsync);
         // The returned Subscription is deliberately not held. The session owns it, and the
         // teardown below iterates session.Subscriptions rather than a handle of ours —
         // holding one invited exactly the mistake that comment describes, where a failed

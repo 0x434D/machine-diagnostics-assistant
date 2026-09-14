@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Globalization;
 using System.Text.Json;
 using Gateway.Ingest;
+using Microsoft.Extensions.Logging;
 using Opc.Ua;
 using Opc.Ua.Client;
 
@@ -27,7 +28,7 @@ public sealed record StreamKey(StreamOwner Owner, string Code, string Signal);
 /// browsed variable becomes a monitored item; what varies between them is the deadband, and
 /// that comes from the mounted <see cref="SignalPolicy"/> rather than from this file.
 /// </summary>
-public sealed class Subscriptions
+public sealed partial class Subscriptions
 {
     /// <summary>
     /// The decoding contract. An event notification arrives as a positional EventFieldList,
@@ -46,6 +47,7 @@ public sealed class Subscriptions
 
     private readonly GatewayOptions _options;
     private readonly SignalPolicy _policy;
+    private readonly ILogger<Subscriptions> _logger;
     private readonly Func<IngestRecord, Task> _onRecord;
 
     /// <summary>
@@ -60,10 +62,12 @@ public sealed class Subscriptions
     public int OverflowCount { get; private set; }
 
     public Subscriptions(
-        GatewayOptions options, SignalPolicy policy, Func<IngestRecord, Task> onRecord)
+        GatewayOptions options, SignalPolicy policy, ILogger<Subscriptions> logger,
+        Func<IngestRecord, Task> onRecord)
     {
         _options = options;
         _policy = policy;
+        _logger = logger;
         _onRecord = onRecord;
     }
 
@@ -86,12 +90,13 @@ public sealed class Subscriptions
         await subscription.CreateAsync(ct).ConfigureAwait(false);
 
         var items = new List<MonitoredItem>();
+        var skipped = new List<string>();
         foreach (var station in space.Stations)
         {
             foreach (var signal in station.Signals)
             {
                 AddDataItem(
-                    items, subscription,
+                    items, skipped, subscription,
                     new StreamKey(StreamOwner.Station, station.Code, signal.Name),
                     signal.NodeId, _policy.For(signal.Name, signal.Type));
             }
@@ -117,9 +122,18 @@ public sealed class Subscriptions
         foreach (var buffer in space.Buffers)
         {
             AddDataItem(
-                items, subscription,
+                items, skipped, subscription,
                 new StreamKey(StreamOwner.Buffer, buffer.Code, BufferLevelSignal),
                 buffer.LevelNodeId, _policy.For(BufferLevelSignal, buffer.LevelType));
+        }
+
+        // Said out loud, beside the refusals below. This is the one key in the policy whose
+        // whole purpose is to drop data on purpose, and a discovered stream that silently
+        // stops being stored is indistinguishable from the loss everything else here exists
+        // to prevent -- including to whoever mounted the file and to whoever reads /status.
+        if (skipped.Count > 0)
+        {
+            LogSkippedStreams(_logger, skipped.Count, string.Join(", ", skipped));
         }
 
         subscription.AddItems(items);
@@ -255,12 +269,19 @@ public sealed class Subscriptions
             ImageBytes: image);
     }
 
+    [LoggerMessage(
+        Level = LogLevel.Warning,
+        Message = "the signal policy skips {Count} discovered stream(s), which will not be "
+            + "stored: {Streams}")]
+    private static partial void LogSkippedStreams(ILogger logger, int count, string streams);
+
     private void AddDataItem(
-        List<MonitoredItem> items, Subscription subscription, StreamKey key, NodeId node,
-        SignalRule rule)
+        List<MonitoredItem> items, List<string> skipped, Subscription subscription,
+        StreamKey key, NodeId node, SignalRule rule)
     {
         if (!rule.Subscribe)
         {
+            skipped.Add($"{key.Code}.{key.Signal}");
             return;
         }
 

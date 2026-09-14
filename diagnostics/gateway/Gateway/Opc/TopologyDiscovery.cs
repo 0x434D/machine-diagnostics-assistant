@@ -182,10 +182,9 @@ public static class TopologyDiscovery
         }
 
         // position_in_line was left null in M1 because it is derivable from the buffers, and
-        // the buffers arrive in M2a. With no buffers at all there is still nothing to derive
-        // it from, and an unknown position is written as null rather than guessed — absence of
-        // evidence. Buffers that contradict each other are the other case, and OrderStations
-        // throws for that one.
+        // the buffers arrive in M2a. With no buffers there is nothing to derive it from, and
+        // an unknown position is written as null rather than guessed — absence of evidence.
+        // Buffers that contradict each other are the other case, and OrderStations throws.
         if (topology.Buffers.Count > 0)
         {
             var order = OrderStations(
@@ -201,6 +200,16 @@ public static class TopologyDiscovery
                     """,
                     ct, order[position], (short)(position + 1)).ConfigureAwait(false);
             }
+        }
+        else
+        {
+            // Cleared, not left alone. "Null rather than a guess" is an argument about writing
+            // an order nothing supports, and a stale order from a plant that no longer
+            // publishes buffers is exactly that — with the extra harm that it looks discovered.
+            await ExecuteAsync(
+                connection,
+                "UPDATE stations SET position_in_line = NULL WHERE position_in_line IS NOT NULL",
+                ct).ConfigureAwait(false);
         }
 
         foreach (var buffer in topology.Buffers)
@@ -297,23 +306,28 @@ public static class TopologyDiscovery
             var children = (await BrowseChildrenAsync(session, child.NodeId, ct)
                 .ConfigureAwait(false)).ToDictionary(node => node.Name, StringComparer.Ordinal);
 
+            var level = Required(children, child.Name, LevelSignal);
+            var capacity = Required(children, child.Name, CapacityVariable);
+            var upstream = Required(children, child.Name, UpstreamVariable);
+            var downstream = Required(children, child.Name, DownstreamVariable);
+
             var values = await ReadAsync(
                 session,
                 [
-                    Attribute(Required(children, child.Name, LevelSignal), Attributes.DataType),
-                    Attribute(Required(children, child.Name, CapacityVariable), Attributes.Value),
-                    Attribute(Required(children, child.Name, UpstreamVariable), Attributes.Value),
-                    Attribute(Required(children, child.Name, DownstreamVariable), Attributes.Value),
+                    Attribute(level, Attributes.DataType),
+                    Attribute(capacity, Attributes.Value),
+                    Attribute(upstream, Attributes.Value),
+                    Attribute(downstream, Attributes.Value),
                 ],
                 ct).ConfigureAwait(false);
 
             buffers.Add(new DiscoveredBuffer(
                 Code: child.Name,
-                LevelNodeId: children[LevelSignal].NodeId,
+                LevelNodeId: level,
                 LevelType: BuiltInTypeOf(values[0]),
-                Upstream: SplitBrowseName(Text(values[2], child.Name, UpstreamVariable)).Code,
-                Downstream: SplitBrowseName(Text(values[3], child.Name, DownstreamVariable)).Code,
-                Capacity: Convert.ToInt32(values[1].Value, CultureInfo.InvariantCulture)));
+                Upstream: SplitBrowseName(Text(values[2], child.Name, upstream)).Code,
+                Downstream: SplitBrowseName(Text(values[3], child.Name, downstream)).Code,
+                Capacity: BufferCapacity(values[1], child.Name, capacity)));
         }
 
         return buffers;
@@ -342,10 +356,43 @@ public static class TopologyDiscovery
             : throw new ServiceResultException(
                 StatusCodes.BadNotFound, $"buffer {buffer} publishes no {variable}");
 
-    private static string Text(DataValue value, string buffer, string variable) =>
-        value.Value as string
+    private static string Text(DataValue value, string buffer, NodeId node) =>
+        Answered(value, buffer, node) as string
         ?? throw new ServiceResultException(
-            StatusCodes.BadTypeMismatch, $"buffer {buffer}'s {variable} is not a string");
+            StatusCodes.BadTypeMismatch, $"buffer {buffer}'s {node} is not a string");
+
+    /// <summary>
+    /// A buffer's capacity, from the value read off its Capacity node.
+    ///
+    /// <para>Public because it is the one conversion in discovery whose failure is a plausible
+    /// number rather than an exception: <c>Convert.ToInt32(null)</c> is 0, and
+    /// <c>buffers.capacity</c> is <c>SMALLINT NOT NULL</c>, so a read that did not answer used
+    /// to store a buffer that holds nothing — which is what §3.3's propagation is measured
+    /// against. Browsing the node proves it exists and nothing about the read.</para>
+    /// </summary>
+    /// <exception cref="ServiceResultException">
+    /// the read did not answer, or answered with a number that is not a buffer size.
+    /// </exception>
+    public static int BufferCapacity(DataValue value, string buffer, NodeId node)
+    {
+        var capacity = Convert.ToInt32(
+            Answered(value, buffer, node), CultureInfo.InvariantCulture);
+
+        // short, not int: the column is SMALLINT, and the cast that writes it would otherwise
+        // wrap a large capacity into a negative one just as quietly.
+        return capacity is >= 0 and <= short.MaxValue
+            ? capacity
+            : throw new ServiceResultException(
+                StatusCodes.BadOutOfRange,
+                $"buffer {buffer}'s capacity ({node}) read as {capacity}, which no buffer holds");
+    }
+
+    private static object Answered(DataValue value, string buffer, NodeId node) =>
+        !StatusCode.IsBad(value.StatusCode) && value.Value is { } answer
+            ? answer
+            : throw new ServiceResultException(
+                StatusCode.IsBad(value.StatusCode) ? value.StatusCode.Code : StatusCodes.BadNoData,
+                $"buffer {buffer}'s {node} read as {value.StatusCode} with no value");
 
     private static BuiltInType BuiltInTypeOf(DataValue value) =>
         value.Value is NodeId dataType && !StatusCode.IsBad(value.StatusCode)
@@ -370,7 +417,16 @@ public static class TopologyDiscovery
         var response = await session
             .ReadAsync(null, 0, TimestampsToReturn.Neither, nodesToRead, ct)
             .ConfigureAwait(false);
-        return response.Results;
+
+        // A short result set is a server that did not answer the whole request. Left unchecked
+        // it surfaces several lines later as an IndexOutOfRangeException naming nothing, and
+        // the node that went unanswered is exactly what the operator needs told.
+        return response.Results.Count == nodesToRead.Count
+            ? response.Results
+            : throw new ServiceResultException(
+                StatusCodes.BadUnexpectedError,
+                $"read of {nodesToRead.Count} attributes returned {response.Results.Count} "
+                + $"results: {string.Join(", ", nodesToRead.Select(read => read.NodeId))}");
     }
 
     private sealed record ChildNode(string Name, NodeId NodeId, NodeClass NodeClass);

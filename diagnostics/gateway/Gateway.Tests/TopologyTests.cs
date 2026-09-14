@@ -7,6 +7,7 @@ public sealed class TopologyTests
 {
     private static readonly string[] Line = ["S1", "S2", "S3", "S4"];
     private static readonly string[] OneStation = ["S1"];
+    private static readonly NodeId CapacityNode = new("B2_3.Capacity", 2);
 
     [Theory]
     [InlineData("S3_Inspection", "S3", "Inspection")]
@@ -87,6 +88,48 @@ public sealed class TopologyTests
     public void OneStationWithNoBuffersIsStillAOneStationLine()
     {
         Assert.Equal(OneStation, TopologyDiscovery.OrderStations(OneStation, []));
+    }
+
+    [Fact]
+    public void ACapacityThatDidNotReadIsRefusedRatherThanStoredAsZero()
+    {
+        // Convert.ToInt32(null) is 0 and buffers.capacity is SMALLINT NOT NULL, so a Bad read
+        // used to store a buffer that holds nothing -- which is the number §3.3's propagation
+        // is measured against. Browsing the node proves it exists, not that the read answered.
+        var exception = Assert.Throws<ServiceResultException>(() =>
+            TopologyDiscovery.BufferCapacity(
+                new DataValue { StatusCode = StatusCodes.BadNodeIdUnknown }, "B2_3", CapacityNode));
+
+        Assert.Contains("B2_3", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("Capacity", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AGoodReadCarryingNoValueIsRefusedToo()
+    {
+        // The other half of the same hole: status Good, value null, and the conversion still
+        // produces a confident zero.
+        Assert.Throws<ServiceResultException>(() =>
+            TopologyDiscovery.BufferCapacity(new DataValue(Variant.Null), "B2_3", CapacityNode));
+    }
+
+    [Fact]
+    public void ACapacityTooLargeForItsColumnIsRefused()
+    {
+        // The node is UInt32 and the column is SMALLINT. The cast that writes it is what would
+        // otherwise turn 70,000 into a negative capacity, just as quietly.
+        var exception = Assert.Throws<ServiceResultException>(() =>
+            TopologyDiscovery.BufferCapacity(
+                new DataValue(new Variant(70_000u)), "B2_3", CapacityNode));
+
+        Assert.Contains("70000", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ACapacityThatReadIsTheCapacity()
+    {
+        Assert.Equal(
+            5, TopologyDiscovery.BufferCapacity(new DataValue(new Variant(5u)), "B2_3", CapacityNode));
     }
 
     private static IReadOnlyList<DiscoveredBuffer> Buffers() =>
