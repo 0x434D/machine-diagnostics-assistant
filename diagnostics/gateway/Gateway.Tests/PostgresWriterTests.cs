@@ -267,7 +267,7 @@ public sealed class PostgresWriterTests : IAsyncLifetime
             SampleEvent("A-1", reject: false, image: null),
         ]);
 
-        foreach (var stream in new[] { "S3.TaktTime", "B1_2.Level", "S3.InspectionResult" })
+        foreach (var stream in new[] { "S3.TaktTime", "B1_2.Level", "S3.Events" })
         {
             await _writer.RecordBackfillWindowAsync(
                 window, Instant, stream, rowsReturned: 1, pages: 1, durationMs: 10);

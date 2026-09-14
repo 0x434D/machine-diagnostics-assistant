@@ -8,6 +8,8 @@ public sealed class TopologyTests
     private static readonly string[] Line = ["S1", "S2", "S3", "S4"];
     private static readonly string[] OneStation = ["S1"];
     private static readonly NodeId CapacityNode = new("B2_3.Capacity", 2);
+    private static readonly NodeId LotNode = new("S1.Lane1_Lot", 2);
+    private static readonly NodeId TaktNode = new("S1.TaktTime", 2);
 
     [Theory]
     [InlineData("S3_Inspection", "S3", "Inspection")]
@@ -130,6 +132,47 @@ public sealed class TopologyTests
     {
         Assert.Equal(
             5, TopologyDiscovery.BufferCapacity(new DataValue(new Variant(5u)), "B2_3", CapacityNode));
+    }
+
+    [Fact]
+    public void AVariableThePlantDoesNotHistoriseIsNotAStreamToIngest()
+    {
+        // D12: three of S1's children restate what an event already carries authoritatively,
+        // so the plant keeps no history of them. Discovery took every variable child as a
+        // signal, which made the gateway subscribe to 28 streams and backfill 28 against a
+        // plant that historises 25 -- three streams with no history to read and no row in the
+        // plant's ledger to reconcile against. It shows up nowhere in `make check`: the
+        // plant's browse-count test asserts the plant's own tree and stays green whatever
+        // this gateway does with it.
+        Assert.Null(TopologyDiscovery.HistorisedSignal(
+            "Lane1_Lot", LotNode, new DataValue(new Variant(DataTypeIds.String)),
+            new DataValue(new Variant(false))));
+    }
+
+    [Fact]
+    public void AVariableThePlantDoesHistoriseKeepsItsBrowsedDataType()
+    {
+        var signal = TopologyDiscovery.HistorisedSignal(
+            "TaktTime", TaktNode, new DataValue(new Variant(DataTypeIds.Double)),
+            new DataValue(new Variant(true)));
+
+        Assert.Equal(new DiscoveredSignal("TaktTime", TaktNode, BuiltInType.Double), signal);
+    }
+
+    [Fact]
+    public void AServerThatDoesNotAnswerTheAttributeKeepsItsStream()
+    {
+        // Only an explicit false drops a stream. A server that will not answer has said
+        // nothing, and dropping a whole stream on silence is the one outcome §5.1 refuses --
+        // the same asymmetry the signal policy's fail-open default has, and the reason a real
+        // plant that never heard of Historizing is still ingested from.
+        Assert.NotNull(TopologyDiscovery.HistorisedSignal(
+            "TaktTime", TaktNode, new DataValue(new Variant(DataTypeIds.Double)),
+            new DataValue { StatusCode = StatusCodes.BadAttributeIdInvalid }));
+
+        Assert.NotNull(TopologyDiscovery.HistorisedSignal(
+            "TaktTime", TaktNode, new DataValue(new Variant(DataTypeIds.Double)),
+            new DataValue(Variant.Null)));
     }
 
     private static IReadOnlyList<DiscoveredBuffer> Buffers() =>

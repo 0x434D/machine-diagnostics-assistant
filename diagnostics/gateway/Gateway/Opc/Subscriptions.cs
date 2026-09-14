@@ -31,19 +31,16 @@ public sealed record StreamKey(StreamOwner Owner, string Code, string Signal);
 public sealed partial class Subscriptions
 {
     /// <summary>
-    /// The one event stream this gateway reads today, and the filter both write paths use.
-    /// The field order is <see cref="PlantEvents"/>'s, stated there independently of the
-    /// plant; the live subscription and the history backfill share this instance so that
-    /// what is asked for and what is decoded cannot drift apart.
+    /// How a station's event stream is named, in the subscription and in the backfill ledger
+    /// alike. Not a variable in the address space — event history hangs off the emitting
+    /// station node itself — so this names the stream rather than a signal.
+    ///
+    /// <para>Plural, and no longer "InspectionResult": four stations publish events now and
+    /// five types ride the four streams, so naming any of them after one type would be wrong
+    /// about three of them. It also spells the stream the way the plant's own ledger does,
+    /// which is what lets the two counts be read side by side.</para>
     /// </summary>
-    public static readonly EventStreamSpec InspectionStream = new([PlantEvents.InspectionResult]);
-
-    /// <summary>
-    /// How S3's event stream is named, in the subscription and in the backfill ledger alike.
-    /// Not a variable in the address space — event history hangs off the emitting station
-    /// node itself — so this names the event type rather than a signal.
-    /// </summary>
-    public const string EventStream = "InspectionResult";
+    public const string EventStream = "Events";
 
     /// <summary>
     /// The one historised variable a buffer has, and the one signal name that routes to a
@@ -115,16 +112,21 @@ public sealed partial class Subscriptions
 
             if (station.EmitsEvents)
             {
+                // One item, one filter, for whatever types this station declares — the
+                // select clauses and the decoder are the same object, so what was asked for
+                // and what is read back cannot drift apart.
+                var spec = EventStreamSpec.For(station);
                 var events = new MonitoredItem(subscription.DefaultItem)
                 {
                     StartNodeId = station.NodeId,
                     AttributeId = Attributes.EventNotifier,
                     NodeClass = NodeClass.Object,
                     DisplayName = $"{station.Code}.{EventStream}",
-                    Handle = new StreamKey(StreamOwner.Station, station.Code, EventStream),
+                    Handle = new EventStreamHandle(
+                        new StreamKey(StreamOwner.Station, station.Code, EventStream), spec),
                     SamplingInterval = 0,
                     QueueSize = _options.EventQueueSize,
-                    Filter = InspectionStream.BuildFilter(),
+                    Filter = spec.BuildFilter(),
                 };
                 events.Notification += OnEvent;
                 items.Add(events);
@@ -306,8 +308,17 @@ public sealed partial class Subscriptions
             return;
         }
 
-        var key = KeyOf(item);
-        _ = _onRecord(
-            InspectionStream.Decode(key.Code, item.StartNodeId.ToString(), fields.EventFields));
+        // The decoder travels on the item rather than being looked up by station code: the
+        // filter that produced these positions is on the same handle, and a second lookup
+        // would be a second chance to decode a page against the wrong one.
+        var handle = item.Handle as EventStreamHandle
+            ?? throw new InvalidOperationException(
+                $"event item '{item.DisplayName}' carries no stream to decode against");
+
+        _ = _onRecord(handle.Spec.Decode(
+            handle.Key.Code, item.StartNodeId.ToString(), fields.EventFields));
     }
+
+    /// <summary>What an event monitored item carries: which stream, and how to read it.</summary>
+    private sealed record EventStreamHandle(StreamKey Key, EventStreamSpec Spec);
 }

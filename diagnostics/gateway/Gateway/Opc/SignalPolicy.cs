@@ -12,6 +12,15 @@ namespace Gateway.Opc;
 public sealed record SignalRule(bool Subscribe, double? Deadband, int PageSize);
 
 /// <summary>
+/// How one event type is read from history: the number of events one HistoryRead asks for.
+///
+/// <para>No <c>Subscribe</c> and no deadband. §3.4's event history has no off switch — the
+/// policy keys on names the address space publishes and an event type is not a variable —
+/// and a deadband compares magnitudes, which an event is not.</para>
+/// </summary>
+public sealed record EventRule(int PageSize);
+
+/// <summary>
 /// §5.1's per-signal ingest policy, mounted rather than compiled in (M2 design D3).
 ///
 /// <para><b>It fails open, and that is the design.</b> The topology is discovered, so the
@@ -34,6 +43,16 @@ public sealed class SignalPolicy
     /// </summary>
     public const int DefaultPageSize = 1_000;
 
+    /// <summary>
+    /// Used for an event type neither <c>events</c> nor <c>defaults.event_page_size</c>
+    /// names. Two thousand rather than <see cref="DefaultPageSize"/>: an event type a plant
+    /// publishes and this file does not name is one nobody has measured, and the one thing
+    /// known about every event type §4.1 has is that a station emits at most a few per part —
+    /// so a window at a 6 s takt holds hundreds, not thousands, and a page that does not
+    /// cover a window is halved rather than read.
+    /// </summary>
+    public const int DefaultEventPageSize = 2_000;
+
     // Explicit property names throughout, so matching never depends on a casing option, and
     // one cached instance because a new one per parse rebuilds the reflection cache (CA1869).
     private static readonly JsonSerializerOptions ParseOptions = new()
@@ -42,16 +61,27 @@ public sealed class SignalPolicy
     };
 
     private readonly IReadOnlyDictionary<string, Entry> _signals;
+    private readonly IReadOnlyDictionary<string, EventEntry> _events;
     private readonly int _defaultPageSize;
+    private readonly int _defaultEventPageSize;
 
-    private SignalPolicy(IReadOnlyDictionary<string, Entry> signals, int defaultPageSize)
+    private SignalPolicy(
+        IReadOnlyDictionary<string, Entry> signals,
+        IReadOnlyDictionary<string, EventEntry> events,
+        int defaultPageSize,
+        int defaultEventPageSize)
     {
         _signals = signals;
+        _events = events;
         _defaultPageSize = defaultPageSize;
+        _defaultEventPageSize = defaultEventPageSize;
     }
 
     /// <summary>The signal names this policy names. Diagnostics only; ingest never asks.</summary>
     public IEnumerable<string> KnownSignals => _signals.Keys;
+
+    /// <summary>The event types this policy names. Diagnostics only.</summary>
+    public IEnumerable<string> KnownEventTypes => _events.Keys;
 
     /// <summary>
     /// Reads the mounted policy.
@@ -84,6 +114,9 @@ public sealed class SignalPolicy
             ?? throw new JsonException("the signal policy is empty");
 
         var defaultPageSize = PageSize(document.Defaults?.PageSize, "defaults") ?? DefaultPageSize;
+        var defaultEventPageSize =
+            PageSize(document.Defaults?.EventPageSize, "defaults") ?? DefaultEventPageSize;
+
         var signals = new Dictionary<string, Entry>(StringComparer.Ordinal);
         foreach (var (name, entry) in
             document.Signals ?? new Dictionary<string, Entry>(StringComparer.Ordinal))
@@ -91,7 +124,30 @@ public sealed class SignalPolicy
             signals[name] = Validated(name, entry);
         }
 
-        return new SignalPolicy(signals, defaultPageSize);
+        var events = new Dictionary<string, EventEntry>(StringComparer.Ordinal);
+        foreach (var (name, entry) in
+            document.Events ?? new Dictionary<string, EventEntry>(StringComparer.Ordinal))
+        {
+            PageSize(entry.PageSize, $"event type '{name}'");
+            events[name] = entry;
+        }
+
+        return new SignalPolicy(signals, events, defaultPageSize, defaultEventPageSize);
+    }
+
+    /// <summary>
+    /// The rule for one event type. Fails open exactly as <see cref="For"/> does, and for
+    /// the same reason: a plant that publishes a type this file does not name is read at a
+    /// stated default rather than not read.
+    /// </summary>
+    public EventRule ForEvent(string typeName)
+    {
+        ArgumentNullException.ThrowIfNull(typeName);
+
+        return new EventRule(
+            _events.TryGetValue(typeName, out var entry) && entry.PageSize is { } size
+                ? size
+                : _defaultEventPageSize);
     }
 
     /// <summary>
@@ -154,11 +210,27 @@ public sealed class SignalPolicy
         [JsonPropertyName("_comment")]
         public string? Comment { get; init; }
 
+        /// <summary>
+        /// The derivation the five event page sizes share, kept once rather than repeated in
+        /// each entry's <c>why</c>. Declared here because the key set is closed: an
+        /// undeclared key is a typo an operator has to learn about at boot.
+        /// </summary>
+        [JsonPropertyName("_events_comment")]
+        public string? EventsComment { get; init; }
+
         [JsonPropertyName("defaults")]
         public Defaults? Defaults { get; init; }
 
         [JsonPropertyName("signals")]
         public IReadOnlyDictionary<string, Entry>? Signals { get; init; }
+
+        /// <summary>
+        /// Keyed by event type browse name, not by station: what one page of a stream weighs
+        /// is what its events carry, and a station's own key would have to be re-measured
+        /// the day two stations swap which type they emit.
+        /// </summary>
+        [JsonPropertyName("events")]
+        public IReadOnlyDictionary<string, EventEntry>? Events { get; init; }
     }
 
     [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
@@ -166,6 +238,20 @@ public sealed class SignalPolicy
     {
         [JsonPropertyName("page_size")]
         public int? PageSize { get; init; }
+
+        [JsonPropertyName("event_page_size")]
+        public int? EventPageSize { get; init; }
+    }
+
+    [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]
+    private sealed record EventEntry
+    {
+        [JsonPropertyName("page_size")]
+        public int? PageSize { get; init; }
+
+        /// <summary>Documentation, carried so the reason lives beside the number it explains.</summary>
+        [JsonPropertyName("why")]
+        public string? Why { get; init; }
     }
 
     [JsonUnmappedMemberHandling(JsonUnmappedMemberHandling.Disallow)]

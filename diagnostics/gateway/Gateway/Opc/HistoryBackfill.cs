@@ -245,14 +245,19 @@ public sealed partial class HistoryBackfill
 
             if (station.EmitsEvents)
             {
-                // Not policy-named. The policy keys on signal names and the event stream is
-                // not a variable, so §3.4's history has no off switch -- the same asymmetry
-                // the live subscription has, stated because the alternative is two files that
-                // look like they disagree.
+                // The policy sets the page size and nothing else. §3.4's event history has no
+                // off switch -- the policy's `subscribe` key names variables and an event
+                // type is not one -- the same asymmetry the live subscription has, stated
+                // because the alternative is two files that look like they disagree.
                 var name = $"{station.Code}.{Subscriptions.EventStream}";
                 discovered.Add(name);
+
+                var spec = EventStreamSpec.For(station);
+                var pageSize = EventPageSize(spec);
                 streams.Add(new BackfillStream(
-                    name, (from, to, ct) => ReadEventPagesAsync(station, from, to, ct)));
+                    name,
+                    (from, to, ct) =>
+                        ReadEventPagesAsync(station, spec, pageSize, from, to, ct)));
             }
         }
 
@@ -362,31 +367,41 @@ public sealed partial class HistoryBackfill
             ct).ConfigureAwait(false);
     }
 
+    /// <summary>
+    /// How many events one read of this stream asks for: the smallest page any type on it is
+    /// given.
+    ///
+    /// <para>The smallest, because one read covers the whole stream — asyncua historises
+    /// events per emitting node, not per type — so a station carrying an imaged type beside
+    /// an unimaged one is bounded by the imaged one's bytes. Today that is S3 alone, at 25;
+    /// S1's two types share a page because neither carries bytes.</para>
+    /// </summary>
+    private int EventPageSize(EventStreamSpec stream) =>
+        stream.Types.Min(type => _policy.ForEvent(type.TypeName).PageSize);
+
     private async Task<PageOutcome> ReadEventPagesAsync(
-        DiscoveredStation station, DateTime from, DateTime to, CancellationToken ct)
+        DiscoveredStation station, EventStreamSpec stream, int pageSize, DateTime from,
+        DateTime to, CancellationToken ct)
     {
         var node = station.NodeId;
         var details = new ExtensionObject(new ReadEventDetails
         {
             StartTime = from,
             EndTime = to,
-            // The one page size the policy does not set. It is forced by image bytes against
-            // the 4 MiB response limit rather than by anything the stream itself is: R4
-            // measured a reject image at up to 110,486 B, so 25 all-reject events is ~2.7 MB.
-            NumValuesPerNode = (uint)_options.HistoryEventPageSize,
+            NumValuesPerNode = (uint)pageSize,
             // The identical filter the live subscription uses. A second filter would be a
             // second statement of the field order, and the order is the decoding contract.
-            Filter = Subscriptions.InspectionStream.BuildFilter(),
+            Filter = stream.BuildFilter(),
         });
 
         return await ReadPagesAsync(
-            node, details, _options.HistoryEventPageSize,
+            node, details, pageSize,
             async result =>
             {
                 var data = (HistoryEvent)ExtensionObject.ToEncodeable(result);
                 foreach (var entry in data.Events)
                 {
-                    await _onRecord(Subscriptions.InspectionStream.Decode(
+                    await _onRecord(stream.Decode(
                         station.Code, node.ToString(), entry.EventFields)).ConfigureAwait(false);
                 }
 

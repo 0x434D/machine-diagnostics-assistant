@@ -1,6 +1,6 @@
 {
-  "_comment": "Per-signal ingest policy (§5.1, M2 design D3). An unrecognised signal is subscribed with no deadband: topology is discovered, so this file will always be incomplete, and losing a stream is worse than storing a few redundant rows.",
-  "defaults": { "page_size": 1000 },
+  "_comment": "Per-signal and per-event-type ingest policy (§5.1, M2 design D3 and D4). An unrecognised signal is subscribed with no deadband and an unrecognised event type is paged at defaults.event_page_size: topology is discovered, so this file will always be incomplete, and losing a stream is worse than storing a few redundant rows.",
+  "defaults": { "page_size": 1000, "event_page_size": 2000 },
   "signals": {
     "TaktTime":         { "deadband": 0.05,  "why": "noisy float; 0.05 s is under the jitter sigma" },
     "JoiningForcePeak": { "deadband": 5.0,   "why": "newtons, against a 4200 N nominal and 40 N sigma" },
@@ -14,5 +14,13 @@
     "RejectCount":      { "deadband": null,  "why": "as PartCount" },
     "State":            { "deadband": null,  "why": "string; every transition matters" },
     "StateReason":      { "deadband": null,  "why": "string; paired with State at one timestamp" }
+  },
+  "_events_comment": "A page is bounded by three things and the tightest wins: it must hold more than a backfill window's events (asyncua emits a continuation point only when a result exceeds ITS OWN cap, never when it merely fills the client's LIMIT, so a page that a window fills comes back with no continuation point, is classified truncated and the window is halved); it must stay under HistoryBackfill.SilentTruncationCeiling = 10,000, where one read's own truncation stops being detectable; and page x bytes-per-event must stay well under the 4 MiB message limit. At §3.1's 6 s takt a one-hour window holds 600 parts, so 600 events per station and 1,800 on S1, which emits one ComponentReadEvent per lane plus one AssemblyCreatedEvent. Bytes per event are the OPC UA binary encoding of the select clauses: a 1-byte Variant mask plus 8 for a Double or a DateTime, 4 for a UInt32, 4 + UTF-8 for a String, 4 + n for a ByteString, 4 for the array count, and 1 for each null Variant a union filter leaves for the type a row is not.",
+  "events": {
+    "ComponentReadEventType":    { "page_size": 4000, "why": "S1's stream carries this and AssemblyCreatedEventType through one read, and both are paged together at the smaller of the two numbers. 1,800 events an hour, so 4,000 is 2.2x a window -- headroom down to a 2.7 s takt before a window starts halving. Bytes: Time 9 + EventType 5 + serial 17 + lane 5 + lot 11 + supplier 11 + 3 nulls + 4 = 65 B, so a full page is 260 KB, 6% of the 4 MiB limit. Not measured against the live plant; derived from §4.1's field set and §3.1's takt" },
+    "AssemblyCreatedEventType":  { "page_size": 4000, "why": "the other half of S1's stream and therefore the same number. Bytes: Time 9 + EventType 5 + serial 15 + two component serials 37 + carrier 5 + 4 nulls + 4 = 79 B, so a full page is 316 KB" },
+    "PartProcessedEventType":    { "page_size": 2000, "why": "600 an hour, so 2,000 is 3.3x a window. The binding constraint is the curve, not the count: 51 samples (simulator.config.curve_samples) is 1 + 4 + 51x8 = 413 B, and with the rest 464 B per event -- a full page is 928 KB, 22% of the 4 MiB limit, which is why this is not also 4,000. The plan's ~320 B assumed a 40-sample curve; the plant samples 51" },
+    "InspectionResultEventType": { "page_size": 25,   "why": "UNCHANGED, and the only page size here forced by bytes rather than by counts. R4 measured a reject image at p50 110,056 B and p99 110,419 B (measurements/r4-image-sizes.txt), so 25 all-reject events is ~2.77 MB against the 4 MiB limit -- 66% of it, already. At 1,000 the response exceeds the limit and the read fails as BadEncodingLimitsExceeded, measured against the live plant. A one-hour window holds 600 of these, so this stream is the one that still halves its windows, which is what GatewayOptions.MinimumBackfillWindow's headroom was measured against" },
+    "PartCompletedEventType":    { "page_size": 2000, "why": "600 an hour and 61 B an event (Time 9 + EventType 5 + serial 15 + disposition 11 + reason 17 + 4), so a full page is 122 KB. 2,000 rather than 4,000 for no reason but symmetry with PartProcessedEventType, which shares its station count" }
   }
 }

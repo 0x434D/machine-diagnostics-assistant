@@ -17,6 +17,15 @@ public sealed class HistoryBackfillTests
 
     private const ushort PlantNamespace = 2;
 
+    /// <summary>
+    /// What a station's GeneratesEvent references browse out to. The fake plant below emits
+    /// §3.4's verdict, which is the type whose images force the small page.
+    /// </summary>
+    private static readonly IReadOnlyList<DiscoveredEventType> Inspection =
+    [
+        new("InspectionResultEventType", new NodeId("InspectionResultEventType", PlantNamespace)),
+    ];
+
     [Fact]
     public void AFullFinalPageWithNoContinuationPointIsTreatedAsTruncated()
     {
@@ -94,7 +103,7 @@ public sealed class HistoryBackfillTests
                         new DiscoveredSignal("TaktTime", taktTime, BuiltInType.Double),
                         new DiscoveredSignal("State", state, BuiltInType.String),
                     ],
-                    EmitsEvents: true),
+                    EmitsEvents: true, EventTypes: Inspection),
             ],
             Buffers:
             [
@@ -112,7 +121,7 @@ public sealed class HistoryBackfillTests
         Assert.Equal(10, RowsFor(report, "S3.TaktTime"));
         Assert.Equal(2, RowsFor(report, "S3.State"));
         Assert.Equal(6, RowsFor(report, "B2_3.Level"));
-        Assert.Equal(5, RowsFor(report, "S3.InspectionResult"));
+        Assert.Equal(5, RowsFor(report, "S3.Events"));
     }
 
     [Fact]
@@ -132,7 +141,7 @@ public sealed class HistoryBackfillTests
                     new DiscoveredSignal("TaktTime", plant.Variable($"{code}.TaktTime", Minutes(1)),
                         BuiltInType.Double),
                 ],
-                EmitsEvents: code == "S3"));
+                EmitsEvents: code == "S3", EventTypes: code == "S3" ? Inspection : []));
         }
 
         var written = new List<IngestRecord>();
@@ -143,16 +152,169 @@ public sealed class HistoryBackfillTests
             PhaseNodeId: null));
 
         Assert.Equal(
-            ["B1_2.Level", "S1.TaktTime", "S2.TaktTime", "S3.InspectionResult", "S3.TaktTime"],
+            ["B1_2.Level", "S1.TaktTime", "S2.TaktTime", "S3.Events", "S3.TaktTime"],
             report.Windows.Select(window => window.Stream).Distinct().Order(StringComparer.Ordinal));
     }
 
     [Fact]
-    public async Task AVariableStreamIsPagedAtItsPolicySizeAndTheEventStreamAtItsOwn()
+    public async Task AnEventStreamCarryingTwoTypesIsReadAsBoth()
     {
-        // One mechanism for a variable's page size -- the mounted policy -- and one exception,
-        // the event stream, whose page is forced by image bytes against the response limit
-        // rather than by anything the signal is.
+        // S1 emits two types and asyncua historises events per emitting node, so both share
+        // one table and one read. The filter has to cover the union, and the decoder has to
+        // put each row back under the type it actually is -- routed on which columns are
+        // non-null, an AssemblyCreatedEvent and a ComponentReadEvent would be told apart by
+        // resemblance, and the genealogy is what pays for a wrong guess.
+        var plant = new FakeHistorian();
+        var feeding = plant.Events(
+            "S1", Minutes(0, 0, 6, 6),
+            "ComponentReadEventType", "AssemblyCreatedEventType");
+
+        var written = new List<IngestRecord>();
+        await RunAsync(
+            plant, written,
+            new AddressSpace(
+                [
+                    new DiscoveredStation(
+                        "S1", "Feeding", feeding, [],
+                        EmitsEvents: true,
+                        EventTypes:
+                        [
+                            new DiscoveredEventType(
+                                "ComponentReadEventType",
+                                new NodeId("ComponentReadEventType", PlantNamespace)),
+                            new DiscoveredEventType(
+                                "AssemblyCreatedEventType",
+                                new NodeId("AssemblyCreatedEventType", PlantNamespace)),
+                        ]),
+                ],
+                [],
+                PhaseNodeId: null));
+
+        Assert.Equal(
+            2,
+            written.Count(record => record.PayloadJson.Contains(
+                "\"EventType\":\"ComponentReadEventType\"", StringComparison.Ordinal)));
+        Assert.Equal(
+            2,
+            written.Count(record => record.PayloadJson.Contains(
+                "\"EventType\":\"AssemblyCreatedEventType\"", StringComparison.Ordinal)));
+
+        // Both types' own fields came back, which is what a union filter is for: a filter
+        // covering only the first type would decode the second into a row of nulls.
+        Assert.Contains(
+            written,
+            record => record.PayloadJson.Contains("\"LotCode\"", StringComparison.Ordinal));
+        Assert.Contains(
+            written,
+            record => record.PayloadJson.Contains("\"ComponentSerials\"", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task AnEventStreamThatFillsItsPageWithNoContinuationPointIsSubdividedToo()
+    {
+        // M1 measured this on the inspection stream and M2a measured it again on the buffer
+        // levels -- every one-hour window came back exactly page-size long, with no
+        // continuation point and no bad status, and 96% of the history was lost on a run that
+        // reported success. The four types M2b adds are read through the same pager at their
+        // own page sizes, and "the guard is shared" is a claim about code rather than about
+        // behaviour until a new type's stream is driven through it.
+        var plant = new FakeHistorian();
+        var feeding = plant.Events(
+            "S1", Minutes(0, 6, 12, 18, 24, 30, 36, 42),
+            "ComponentReadEventType", "AssemblyCreatedEventType");
+
+        var written = new List<IngestRecord>();
+        var report = await RunAsync(
+            plant, written,
+            new AddressSpace(
+                [
+                    new DiscoveredStation(
+                        "S1", "Feeding", feeding, [],
+                        EmitsEvents: true,
+                        EventTypes:
+                        [
+                            new DiscoveredEventType(
+                                "ComponentReadEventType",
+                                new NodeId("ComponentReadEventType", PlantNamespace)),
+                            new DiscoveredEventType(
+                                "AssemblyCreatedEventType",
+                                new NodeId("AssemblyCreatedEventType", PlantNamespace)),
+                        ]),
+                ],
+                [],
+                PhaseNodeId: null),
+            policy: """
+                {
+                  "events": {
+                    "ComponentReadEventType": { "page_size": 3 },
+                    "AssemblyCreatedEventType": { "page_size": 3 }
+                  }
+                }
+                """);
+
+        // Nothing was lost to a window the server answered full and said nothing about.
+        Assert.Equal(plant.SourceTimestamps(feeding), DeliveredFor(written, feeding));
+        Assert.Equal(8, RowsFor(report, "S1.Events"));
+
+        // And the ledger records the halved windows rather than the one that could not be
+        // believed: the duplicate model is one page boundary per page beyond the first, per
+        // window, and a row aggregating several real windows accounts for boundaries that are
+        // not there.
+        Assert.True(
+            report.Windows.Count(window => window.Stream == "S1.Events") > 1,
+            "the window that came back full was not subdivided");
+    }
+
+    [Fact]
+    public async Task AStreamIsPagedAtTheSmallestPageAnyTypeOnItIsGiven()
+    {
+        // One read covers a station's whole event stream, so a station carrying an imaged
+        // type beside an unimaged one is bounded by the imaged one's bytes -- R4 measured a
+        // reject image at p99 110,419 B, and 25 of them is already 2.77 MB of the 4 MiB
+        // response limit. Taking the larger number, or the first type's, is how a read comes
+        // back BadEncodingLimitsExceeded on the one stream that carries §3.4's evidence.
+        var plant = new FakeHistorian();
+        var events = plant.Events(
+            "S3", Minutes(1), "InspectionResultEventType", "ComponentReadEventType");
+
+        await RunAsync(
+            plant, [],
+            new AddressSpace(
+                [
+                    new DiscoveredStation(
+                        "S3", "Inspection", events, [],
+                        EmitsEvents: true,
+                        EventTypes:
+                        [
+                            new DiscoveredEventType(
+                                "ComponentReadEventType",
+                                new NodeId("ComponentReadEventType", PlantNamespace)),
+                            new DiscoveredEventType(
+                                "InspectionResultEventType",
+                                new NodeId("InspectionResultEventType", PlantNamespace)),
+                        ]),
+                ],
+                [],
+                PhaseNodeId: null),
+            policy: """
+                {
+                  "events": {
+                    "InspectionResultEventType": { "page_size": 25 },
+                    "ComponentReadEventType": { "page_size": 4000 }
+                  }
+                }
+                """);
+
+        Assert.Equal([25u], plant.PageSizesRequestedFor(events));
+    }
+
+    [Fact]
+    public async Task AVariableStreamIsPagedAtItsPolicySizeAndAnEventStreamAtItsTypes()
+    {
+        // One mechanism for every page size -- the mounted policy -- keyed by signal name for
+        // a variable and by event type browse name for a stream of events. A page size
+        // compiled into the gateway as well would be a second mechanism for one number, free
+        // to disagree with the file an engineer edits.
         var plant = new FakeHistorian();
         var takt = plant.Variable("S3.TaktTime", Minutes(1));
         var force = plant.Variable("S3.JoiningForcePeak", Minutes(1));
@@ -169,15 +331,75 @@ public sealed class HistoryBackfillTests
                             new DiscoveredSignal("TaktTime", takt, BuiltInType.Double),
                             new DiscoveredSignal("JoiningForcePeak", force, BuiltInType.Double),
                         ],
-                        EmitsEvents: true),
+                        EmitsEvents: true, EventTypes: Inspection),
                 ],
                 [],
                 PhaseNodeId: null),
-            policy: """{ "defaults": { "page_size": 40 }, "signals": { "TaktTime": { "page_size": 7 } } }""");
+            policy: """
+                {
+                  "defaults": { "page_size": 40 },
+                  "signals": { "TaktTime": { "page_size": 7 } },
+                  "events": { "InspectionResultEventType": { "page_size": 25 } }
+                }
+                """);
 
         Assert.Equal([7u], plant.PageSizesRequestedFor(takt));
         Assert.Equal([40u], plant.PageSizesRequestedFor(force));
-        Assert.Equal([(uint)EventPageSize], plant.PageSizesRequestedFor(events));
+        Assert.Equal([25u], plant.PageSizesRequestedFor(events));
+    }
+
+    [Fact]
+    public async Task AnEventTypeThePolicyDoesNotNameIsPagedAtAStatedDefault()
+    {
+        // The event half of §5.1's fail-open rule. A plant that gains a type this file has
+        // never heard of is read at a number stated in one place, not at whatever the last
+        // stream happened to use -- and not skipped, which is the one outcome §5.1 refuses.
+        var plant = new FakeHistorian();
+        var events = plant.Events("S3", Minutes(1));
+
+        await RunAsync(
+            plant, [],
+            new AddressSpace(
+                [
+                    new DiscoveredStation(
+                        "S3", "Inspection", events, [],
+                        EmitsEvents: true, EventTypes: Inspection),
+                ],
+                [],
+                PhaseNodeId: null),
+            policy: "{}");
+
+        Assert.Equal(
+            [(uint)SignalPolicy.DefaultEventPageSize], plant.PageSizesRequestedFor(events));
+    }
+
+    [Fact]
+    public async Task AStationGeneratingATypeThisGatewayCannotDecodeStopsTheRun()
+    {
+        // The stream would be read through a filter that matches none of its fields, decode
+        // into rows of nulls, and still write a ledger row claiming every event was pulled --
+        // a green run over data that never arrived, which is the shape every other guard in
+        // this file exists to refuse.
+        var plant = new FakeHistorian();
+
+        var exception = await Assert.ThrowsAsync<InvalidOperationException>(() => RunAsync(
+            plant, [],
+            new AddressSpace(
+                [
+                    new DiscoveredStation(
+                        "S5", "Packing", plant.Events("S5", Minutes(1)), [],
+                        EmitsEvents: true,
+                        EventTypes:
+                        [
+                            new DiscoveredEventType(
+                                "ToolChangeEventType",
+                                new NodeId("ToolChangeEventType", PlantNamespace)),
+                        ]),
+                ],
+                [],
+                PhaseNodeId: null)));
+
+        Assert.Contains("ToolChangeEventType", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -197,7 +419,7 @@ public sealed class HistoryBackfillTests
                         "S3", "Inspection", events,
                         [new DiscoveredSignal("TaktTime", plant.Variable("S3.TaktTime", Minutes(1)),
                             BuiltInType.Double)],
-                        EmitsEvents: true),
+                        EmitsEvents: true, EventTypes: Inspection),
                 ],
                 [],
                 PhaseNodeId: null)));
@@ -222,7 +444,7 @@ public sealed class HistoryBackfillTests
                         "S1", "Feeding", new NodeId("S1", PlantNamespace),
                         [new DiscoveredSignal("TaktTime", plant.Variable("S1.TaktTime", Minutes(1)),
                             BuiltInType.Double)],
-                        EmitsEvents: false),
+                        EmitsEvents: false, EventTypes: []),
                 ],
                 [],
                 PhaseNodeId: null)));
@@ -243,7 +465,7 @@ public sealed class HistoryBackfillTests
                     "S3", "Inspection", plant.Events("S3", Minutes(1)),
                     [new DiscoveredSignal("TaktTime", plant.Variable("S3.TaktTime", Minutes(1)),
                         BuiltInType.Double)],
-                    EmitsEvents: true),
+                    EmitsEvents: true, EventTypes: Inspection),
             ],
             [],
             PhaseNodeId: null);
@@ -252,7 +474,7 @@ public sealed class HistoryBackfillTests
             plant, [], space,
             streamsReadBefore: new HashSet<string>(StringComparer.Ordinal)
             {
-                "S3.TaktTime", "S3.InspectionResult", "S3.PartCount",
+                "S3.TaktTime", "S3.Events", "S3.PartCount",
             }));
 
         Assert.Contains("S3.PartCount", exception.Message, StringComparison.Ordinal);
@@ -280,7 +502,7 @@ public sealed class HistoryBackfillTests
                     new DiscoveredStation(
                         "S3", "Inspection", plant.Events("S3", Minutes(1)),
                         [new DiscoveredSignal("TaktTime", takt, BuiltInType.Double)],
-                        EmitsEvents: true),
+                        EmitsEvents: true, EventTypes: Inspection),
                 ],
                 [new DiscoveredBuffer("B2_3", level, BuiltInType.UInt32, "S2", "S3", Capacity: 5)],
                 PhaseNodeId: null),
@@ -313,14 +535,14 @@ public sealed class HistoryBackfillTests
                         [new DiscoveredSignal(
                             "TaktTime", plant.Variable("S3.TaktTime", Minutes(1)),
                             BuiltInType.Double)],
-                        EmitsEvents: true),
+                        EmitsEvents: true, EventTypes: Inspection),
                 ],
                 [new DiscoveredBuffer("B2_3", level, BuiltInType.UInt32, "S2", "S3", Capacity: 5)],
                 PhaseNodeId: null),
             policy: """{ "signals": { "Level": { "subscribe": false } } }""",
             streamsReadBefore: new HashSet<string>(StringComparer.Ordinal)
             {
-                "S3.TaktTime", "S3.InspectionResult", "B2_3.Level",
+                "S3.TaktTime", "S3.Events", "B2_3.Level",
             });
 
         Assert.DoesNotContain(report.Windows, window => window.Stream == "B2_3.Level");
@@ -338,7 +560,7 @@ public sealed class HistoryBackfillTests
                     "S3", "Inspection", plant.Events("S3", Minutes(1)),
                     [new DiscoveredSignal("TaktTime", plant.Variable("S3.TaktTime", Minutes(1)),
                         BuiltInType.Double)],
-                    EmitsEvents: true),
+                    EmitsEvents: true, EventTypes: Inspection),
             ],
             [],
             PhaseNodeId: null));
@@ -363,7 +585,7 @@ public sealed class HistoryBackfillTests
                         [new DiscoveredSignal(
                             "TaktTime", plant.Variable("S3.TaktTime", Minutes(1)),
                             BuiltInType.Double)],
-                        EmitsEvents: true),
+                        EmitsEvents: true, EventTypes: Inspection),
                 ],
                 [],
                 PhaseNodeId: null),
@@ -389,7 +611,7 @@ public sealed class HistoryBackfillTests
                     new DiscoveredStation(
                         "S3", "Inspection", plant.Events("S3", Minutes(1)),
                         [new DiscoveredSignal("TaktTime", takt, BuiltInType.Double)],
-                        EmitsEvents: true),
+                        EmitsEvents: true, EventTypes: Inspection),
                 ],
                 [],
                 PhaseNodeId: null),
@@ -423,7 +645,7 @@ public sealed class HistoryBackfillTests
                             "TaktTime",
                             plant.Variable("S3.TaktTime", Minutes(0, 10, 20, 30, 40, 50)),
                             BuiltInType.Double)],
-                        EmitsEvents: true),
+                        EmitsEvents: true, EventTypes: Inspection),
                 ],
                 [],
                 PhaseNodeId: null)));
@@ -457,7 +679,7 @@ public sealed class HistoryBackfillTests
                             "TaktTime",
                             plant.Variable("S3.TaktTime", Minutes(0, 10, 20, 30, 40, 50)),
                             BuiltInType.Double)],
-                        EmitsEvents: true),
+                        EmitsEvents: true, EventTypes: Inspection),
                 ],
                 [],
                 PhaseNodeId: null),
@@ -466,7 +688,18 @@ public sealed class HistoryBackfillTests
         Assert.True(plant.ReleaseAttempted, "the continuation point was never released");
     }
 
-    private const int EventPageSize = 3;
+    /// <summary>
+    /// The default policy every test here runs under, unless it passes its own. Small on
+    /// purpose: the point of these tests is that a full page with no continuation point is
+    /// not believed, and a page nothing fills proves nothing.
+    /// </summary>
+    private const string SmallPages =
+        """
+        {
+          "defaults": { "page_size": 4 },
+          "events": { "InspectionResultEventType": { "page_size": 3 } }
+        }
+        """;
 
     private static DateTime[] Minutes(params int[] offsets) =>
         [.. offsets.Select(offset => Ts.AddMinutes(offset))];
@@ -477,7 +710,7 @@ public sealed class HistoryBackfillTests
 
     private static Task<BackfillReport> RunAsync(
         FakeHistorian plant, List<IngestRecord> written, AddressSpace space,
-        string policy = """{ "defaults": { "page_size": 4 } }""",
+        string policy = SmallPages,
         IReadOnlySet<string>? streamsReadBefore = null,
         CancellationToken ct = default)
     {
@@ -485,7 +718,6 @@ public sealed class HistoryBackfillTests
         {
             BackfillWindow = TimeSpan.FromHours(1),
             MinimumBackfillWindow = TimeSpan.FromMinutes(1),
-            HistoryEventPageSize = EventPageSize,
         };
 
         var backfill = new HistoryBackfill(
@@ -529,9 +761,11 @@ public sealed class HistoryBackfillTests
         private static readonly string[] DefectClasses = ["gap", "crack"];
         private static readonly double[] Confidences = [0.02, 0.01];
 
+        private static readonly string[] ComponentSerials = ["C-1-000001", "C-2-000001"];
+
         private readonly Dictionary<NodeId, DateTime[]> _rows = [];
         private readonly Dictionary<NodeId, List<uint>> _pageSizes = [];
-        private readonly HashSet<NodeId> _eventNodes = [];
+        private readonly Dictionary<NodeId, string[]> _eventNodes = [];
         private int _reads;
 
         /// <summary>Answers every window full, whatever it is asked for.</summary>
@@ -562,11 +796,19 @@ public sealed class HistoryBackfillTests
             return node;
         }
 
-        public NodeId Events(string station, DateTime[] sourceTimestamps)
+        /// <param name="typeNames">
+        /// Which types this station's stream carries, cycled row by row. A station emitting
+        /// two is how the plant really behaves — asyncua historises events per emitting node,
+        /// so both types share one table and one read.
+        /// </param>
+        public NodeId Events(
+            string station, DateTime[] sourceTimestamps, params string[] typeNames)
         {
             var node = new NodeId(station, PlantNamespace);
             _rows[node] = sourceTimestamps;
-            _eventNodes.Add(node);
+            _eventNodes[node] = typeNames.Length > 0
+                ? typeNames
+                : ["InspectionResultEventType"];
             return node;
         }
 
@@ -593,10 +835,18 @@ public sealed class HistoryBackfillTests
                 throw new OperationCanceledException("the gateway is shutting down");
             }
 
-            var (from, to, pageSize) = ExtensionObject.ToEncodeable(details) switch
+            // The select clauses come off the request, the way a server answers them: asyncua
+            // re-aligns a stored event to whatever the client asked for and puts a null
+            // Variant where it has nothing. A fake with its own idea of the field order would
+            // be testing the fake's order rather than the reader's.
+            var (from, to, pageSize, selected) = ExtensionObject.ToEncodeable(details) switch
             {
-                ReadRawModifiedDetails raw => (raw.StartTime, raw.EndTime, raw.NumValuesPerNode),
-                ReadEventDetails e => (e.StartTime, e.EndTime, e.NumValuesPerNode),
+                ReadRawModifiedDetails raw =>
+                    (raw.StartTime, raw.EndTime, raw.NumValuesPerNode, (IReadOnlyList<string>)[]),
+                ReadEventDetails e => (
+                    e.StartTime, e.EndTime, e.NumValuesPerNode,
+                    (IReadOnlyList<string>)
+                    [.. e.Filter.SelectClauses.Select(clause => clause.BrowsePath[0].Name)]),
                 var other => throw new InvalidOperationException($"unexpected details {other}"),
             };
 
@@ -611,7 +861,7 @@ public sealed class HistoryBackfillTests
             {
                 var full = Enumerable.Range(0, (int)pageSize)
                     .Select(i => from.AddTicks(i)).ToList();
-                return Task.FromResult(Page(node, full, null));
+                return Task.FromResult(Page(node, full, null, selected));
             }
 
             var all = _rows[node].Where(ts => ts >= from && ts < to).Order().ToList();
@@ -622,7 +872,8 @@ public sealed class HistoryBackfillTests
             var page = Page(
                 node,
                 inWindow,
-                OffersContinuation && next < all.Count ? BitConverter.GetBytes(next) : null);
+                OffersContinuation && next < all.Count ? BitConverter.GetBytes(next) : null,
+                selected);
 
             // After the page is built, so the pager decodes it and then finds the flag set on
             // the loop condition rather than on the read itself.
@@ -631,13 +882,14 @@ public sealed class HistoryBackfillTests
         }
 
         private HistoryReadResult Page(
-            NodeId node, IReadOnlyList<DateTime> sourceTimestamps, byte[]? continuationPoint) =>
+            NodeId node, IReadOnlyList<DateTime> sourceTimestamps, byte[]? continuationPoint,
+            IReadOnlyList<string> selected) =>
             new()
             {
                 StatusCode = StatusCodes.Good,
                 ContinuationPoint = continuationPoint,
-                HistoryData = _eventNodes.Contains(node)
-                    ? EventPage(sourceTimestamps)
+                HistoryData = _eventNodes.TryGetValue(node, out var types)
+                    ? EventPage(sourceTimestamps, selected, types)
                     : DataPage(sourceTimestamps),
             };
 
@@ -657,33 +909,60 @@ public sealed class HistoryBackfillTests
             return new ExtensionObject(new HistoryData { DataValues = values });
         }
 
-        private static ExtensionObject EventPage(IReadOnlyList<DateTime> sourceTimestamps)
+        /// <summary>
+        /// One page of events, answered clause by clause in the order the client asked for
+        /// them -- which is what the server does, and therefore what the reader has to be
+        /// right about. Rows cycle through the station's types, so a two-type stream really
+        /// does interleave them the way one shared event table does.
+        /// </summary>
+        private static ExtensionObject EventPage(
+            IReadOnlyList<DateTime> sourceTimestamps, IReadOnlyList<string> selected,
+            string[] types)
         {
             var events = new HistoryEventFieldListCollection();
-            foreach (var ts in sourceTimestamps)
+            for (var i = 0; i < sourceTimestamps.Count; i++)
             {
-                // Positional, in the select-clause order the stream asked for -- that order
-                // is the wire format, and a page decoded against a different one would be a
-                // different test than the one the live subscription passes.
+                var typeName = types[i % types.Length];
+                var ts = sourceTimestamps[i];
                 events.Add(new HistoryEventFieldList
                 {
-                    EventFields =
-                    [
-                        new Variant(ts),
-                        new Variant(new NodeId("InspectionResultEventType", PlantNamespace)),
-                        new Variant($"A-{ts:HHmmss}"),
-                        new Variant(1u),
-                        new Variant("good"),
-                        new Variant(DefectClasses),
-                        new Variant(Confidences),
-                        new Variant(0.99),
-                        new Variant("m-1"),
-                        new Variant(Array.Empty<byte>()),
-                    ],
+                    EventFields = [.. selected.Select(field => Field(field, typeName, ts))],
                 });
             }
 
             return new ExtensionObject(new HistoryEvent { Events = events });
         }
+
+        /// <summary>
+        /// What one event type puts in one field, and a null Variant where it has nothing --
+        /// which is exactly what a server returns for a select clause the row's own type does
+        /// not have, rather than an error.
+        /// </summary>
+        private static Variant Field(string field, string typeName, DateTime ts) =>
+            (field, typeName) switch
+            {
+                ("Time", _) => new Variant(ts),
+                ("EventType", _) => new Variant(new NodeId(typeName, PlantNamespace)),
+
+                ("ComponentSerial", "ComponentReadEventType") => new Variant($"C-1-{ts:HHmmss}"),
+                ("Lane", "ComponentReadEventType") => new Variant(1u),
+                ("LotCode", "ComponentReadEventType") => new Variant("L-2305"),
+                ("Supplier", "ComponentReadEventType") => new Variant("SUP-01"),
+
+                ("AssemblySerial", "AssemblyCreatedEventType") => new Variant($"A-{ts:HHmmss}"),
+                ("ComponentSerials", "AssemblyCreatedEventType") => new Variant(ComponentSerials),
+                ("CarrierId", "AssemblyCreatedEventType") => new Variant(7u),
+
+                ("AssemblySerial", "InspectionResultEventType") => new Variant($"A-{ts:HHmmss}"),
+                ("CarrierId", "InspectionResultEventType") => new Variant(1u),
+                ("Disposition", "InspectionResultEventType") => new Variant("good"),
+                ("DefectClasses", "InspectionResultEventType") => new Variant(DefectClasses),
+                ("Confidences", "InspectionResultEventType") => new Variant(Confidences),
+                ("Confidence", "InspectionResultEventType") => new Variant(0.99),
+                ("ModelVersion", "InspectionResultEventType") => new Variant("m-1"),
+                ("Image", "InspectionResultEventType") => new Variant(Array.Empty<byte>()),
+
+                _ => Variant.Null,
+            };
     }
 }

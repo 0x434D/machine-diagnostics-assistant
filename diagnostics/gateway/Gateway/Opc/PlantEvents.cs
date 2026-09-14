@@ -155,6 +155,49 @@ public sealed class EventStreamSpec
         Fields = fields;
     }
 
+    /// <summary>
+    /// The stream one discovered station publishes: the types it declares, matched against
+    /// §4.1's table above and ordered by it rather than by the order they browsed out in, so
+    /// that the select clauses this produces are the same on every run.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// the station declares an event type this build cannot decode, or declares none at all.
+    /// Both are loud: an event stream read through a filter that does not match it decodes
+    /// into nothing while the ledger counts every row of it as pulled, which is a green run
+    /// over missing data.
+    /// </exception>
+    public static EventStreamSpec For(DiscoveredStation station)
+    {
+        ArgumentNullException.ThrowIfNull(station);
+
+        var declared = station.EventTypes
+            .Select(type => type.TypeName)
+            .ToHashSet(StringComparer.Ordinal);
+
+        var unknown = declared
+            .Where(name => PlantEvents.ByName(name) is null)
+            .Order(StringComparer.Ordinal)
+            .ToList();
+        if (unknown.Count > 0)
+        {
+            throw new InvalidOperationException(
+                $"station {station.Code} generates {string.Join(", ", unknown)}, which this "
+                + "gateway has no field order for; its events would be read and decoded into "
+                + "nothing");
+        }
+
+        var types = PlantEvents.All.Where(type => declared.Contains(type.TypeName)).ToList();
+        if (types.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"station {station.Code} notifies events but declares no event type, so there "
+                + "is no field order to read its history with");
+        }
+
+        var byId = station.EventTypes.ToDictionary(type => type.NodeId, type => type.TypeName);
+        return new EventStreamSpec(types, byId);
+    }
+
     public IReadOnlyList<EventTypeSpec> Types { get; }
 
     /// <summary>The select-clause order, which is the positional decoding contract.</summary>

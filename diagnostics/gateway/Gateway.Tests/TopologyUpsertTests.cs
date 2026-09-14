@@ -106,7 +106,7 @@ public sealed class TopologyUpsertTests : IAsyncLifetime
     private static IReadOnlyList<DiscoveredStation> Stations(params string[] codes) =>
     [
         .. codes.Select(code => new DiscoveredStation(
-            code, code + "Function", new NodeId(code, 2), [], EmitsEvents: false)),
+            code, code + "Function", new NodeId(code, 2), [], EmitsEvents: false, EventTypes: [])),
     ];
 
     private static DiscoveredBuffer Buffer(string code, string upstream, string downstream) =>

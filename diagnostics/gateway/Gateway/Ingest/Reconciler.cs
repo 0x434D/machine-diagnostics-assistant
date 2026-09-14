@@ -142,11 +142,22 @@ public sealed class Reconciler
 
         var query = signal switch
         {
+            // raw_events, and this is the second stream that has to be counted there. One
+            // event is no longer one derived row: S1's three events per part become two
+            // component rows, one assembly row and two genealogy rows across three tables,
+            // and S2's one event becomes two values and a curve. No derived table is 1:1
+            // with an event stream any more, so counting one of them would report a loss or
+            // a surplus that is an artefact of which table was picked.
+            //
+            // raw_events is verbatim and InsertRawAsync runs before any derivation, so every
+            // event the read handed over is there. DISTINCT on the payload rather than on
+            // the timestamp because S1 emits three events at one instant and a page boundary
+            // re-delivers one of them byte for byte.
             Subscriptions.EventStream => new StoredQuery(
                 """
-                SELECT count(*) FROM inspection_results r
-                JOIN stations s ON s.id = r.station_id
-                WHERE s.code = $1 AND r.source_ts >= $2 AND r.source_ts < $3
+                SELECT count(DISTINCT payload) FROM raw_events
+                WHERE kind = 'event' AND payload->>'Station' = $1
+                  AND source_ts >= $2 AND source_ts < $3
                 """,
                 new object[] { code, from, to }),
 
