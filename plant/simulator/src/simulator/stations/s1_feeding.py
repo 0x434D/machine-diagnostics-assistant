@@ -94,6 +94,35 @@ class FeedingStation(Station):
             )
         await self._nodes.write_live("CurrentAssemblySerial", at, assembly.serial)
 
+    @override
+    def external_reserve(self, at: datetime) -> float | None:
+        """How many more parts the feeder lanes can supply, on the emptier of the two.
+
+        §3.5's scenario 1 is upstream of S1, so it is not a buffer condition and
+        `buffers.suspend_reason_for` cannot see it: without this, starvation drove
+        `LaneFill_n` to zero and S1 kept loading carriers off an empty lane -- measured
+        at full magnitude, the only suspends anywhere on the line were the ordinary
+        buffer ones.
+
+        The emptier lane decides, because an assembly needs one component from each and
+        a lane that has run out stops the station whatever the other one holds.
+        """
+        return (
+            min(self._true_lane_level(lane, at) for lane in LANES)
+            / self._settings.lane_draw_per_part
+        )
+
+    def _lane_drawn(self) -> float:
+        """How far into the current lane load production has drawn, in units."""
+        capacity = self._settings.lane_capacity
+        return (self._part_count * self._settings.lane_draw_per_part) % capacity
+
+    def _true_lane_level(self, lane: int, at: datetime) -> float:
+        """What is actually in the lane, with no sensor noise on it -- what decides
+        whether S1 can run, as against `_lane_level`, which is what the sensor reports."""
+        level = self._settings.lane_capacity - self._lane_drawn()
+        return clamp_level(self._faults.modify(LANE_FILL, level, at, lane=lane))
+
     def _lane_level(self, lane: int, at: datetime) -> float:
         """A slow sawtooth with measurement noise: drawn down by production, topped
         back up when the lane runs out.
@@ -112,9 +141,11 @@ class FeedingStation(Station):
         Called once per lane, so each stream carries its own noise draw and the two are
         two measurements rather than one number published twice.
         """
-        capacity = self._settings.lane_capacity
-        drawn = (self._part_count * self._settings.lane_draw_per_part) % capacity
-        level = capacity - drawn + self._rng.gauss(0.0, self._settings.lane_fill_sigma)
+        level = (
+            self._settings.lane_capacity
+            - self._lane_drawn()
+            + self._rng.gauss(0.0, self._settings.lane_fill_sigma)
+        )
         # Applied to the drawn value rather than to the sawtooth it came from, so the
         # noise draw above happens identically whether or not a fault is active --
         # see `faults`' identity property.

@@ -22,6 +22,7 @@ from simulator.stations.base import (
     Station,
     StationNodes,
     require_assembly,
+    require_joining_work,
 )
 
 
@@ -41,7 +42,12 @@ class InspectionStation(Station):
     @override
     async def on_part(self, at: datetime, carrier: Carrier, part: PartState) -> None:
         assembly = require_assembly(part, carrier, self.code)
-        outcome = await self._produce(assembly.serial, carrier.carrier_id, at)
+        outcome = await self._produce(
+            assembly.serial,
+            carrier.carrier_id,
+            require_joining_work(part, carrier, self.code),
+            at,
+        )
         # S4 sorts on these. Putting them on the part rather than leaving S4 to
         # time-join the event stream is §3.4a's rule applied one station early, and the
         # reason is the same one station on: the part S4 sorts is the part S3 inspected,

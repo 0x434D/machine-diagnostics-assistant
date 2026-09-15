@@ -19,9 +19,10 @@ from datetime import datetime
 from typing import override
 
 from simulator.carriers import Carrier
-from simulator.curve import force_distance, peak_of
+from simulator.curve import force_distance, peak_of, work_of
 from simulator.events import PART_PROCESSED
-from simulator.faults import JOINING_CLAMP_FORCE
+from simulator.faults import JOINING_CLAMP_FORCE, PRESS_CONTACT
+from simulator.identity import LANES
 from simulator.line import PartState
 from simulator.stations.base import Station, require_assembly
 
@@ -52,6 +53,13 @@ class JoiningStation(Station):
         contact_mm = self._rng.gauss(
             settings.press_contact_nominal_mm, settings.press_contact_sigma_mm
         )
+        # Once per lane, threading the result through: the ram meets the stack of both
+        # components, so an undersized one on either lane pushes contact later by its own
+        # shortfall and two undersized lanes add up. Applied after the draw for the same
+        # reason the clamp's drift is, and the two lanes are asked about separately
+        # because §3.5's scenario 7 delivers its bad lot to exactly one of them.
+        for lane in LANES:
+            contact_mm = self._faults.modify(PRESS_CONTACT, contact_mm, at, lane=lane)
         stiffness = self._rng.gauss(
             settings.press_stiffness_nominal, settings.press_stiffness_sigma
         )
@@ -78,6 +86,14 @@ class JoiningStation(Station):
             ),
             4,
         )
+
+        # What the press actually left in the joint, carried to S3 on the part. The area
+        # under the trace is the one statistic that falls both when the clamp drifts down
+        # (a lower plateau) and when the components are undersized (a shorter one), while
+        # the two published scalars move for the first and not at all for the second --
+        # which is what makes §3.5's scenarios 3 and 7 separable while their symptom is
+        # the same rising `gap`. `Settings.gap_work_exponent` is where it becomes one.
+        part.joining_work = work_of(curve, settings)
 
         await self._nodes.write("JoiningForcePeak", at, peak)
         await self._nodes.write("JoiningDistance", at, distance)

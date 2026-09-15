@@ -46,7 +46,21 @@ from typing import Final
 
 
 class FaultKind(StrEnum):
-    """§3.5's six, and only these six. A scenario composes them; it does not add one."""
+    """§3.5's six, plus the one its own scenario table needs and its fault list omits.
+
+    **The spec is short one fault, and this says so rather than working around it.**
+    §3.5 lists six available faults and then eight scenarios; rows 7 and 8 are
+    "lane 1 receives lot L-4471 with undersized components" and "one single defective
+    component reaches the line", and neither is expressible as any of the six. Lane
+    contamination is the nearest, and §3.5 fixes its classes as `missing_part` +
+    `contamination` on row 5 -- using it for row 7 would make scenarios 5 and 7 the same
+    fault, which is the collapse `DEFECT_CLASSES_BY_KIND` exists to prevent.
+
+    So `UNDERSIZED_COMPONENTS` is the seventh, and it is a component fault rather than a
+    machine one: it moves the press's contact point (§3.4a's components' knob) and
+    nothing else. Rows 7 and 8 differ only in its magnitude and how long its window is.
+    A scenario composes these seven; it does not add an eighth.
+    """
 
     FEEDER_STARVATION = "feeder_starvation"
     OUTFEED_BLOCKAGE = "outfeed_blockage"
@@ -54,6 +68,7 @@ class FaultKind(StrEnum):
     CARRIER_WEAR = "carrier_wear"
     LANE_CONTAMINATION = "lane_contamination"
     OPTICS_FOULING = "optics_fouling"
+    UNDERSIZED_COMPONENTS = "undersized_components"
 
 
 # The quantities a fault may modify -- one name per place in the plant where a number a
@@ -75,6 +90,14 @@ Scenarios 4 and 5 raise it -- each for the two classes §3.5 names and nothing e
 OPTICS_CLARITY: Final = "optics_clarity"
 """How much of the camera's nominal contrast survives to the image, 1.0 when clean.
 Scenario 6 (D8) lowers it, and the classifier's confidence falls out of the image."""
+PRESS_CONTACT: Final = "press_contact"
+"""Where the ram meets resistance, in millimetres of travel from the top of the stroke.
+
+§3.4a's components' knob. Scenarios 7 and 8 push it later -- an undersized component
+lets the ram travel further before it meets anything -- and it moves **neither**
+published scalar: the clamp still caps the load and the ram still runs to the same stop.
+It is visible in the shape of the trace, and in the joining work that falls out of it,
+which is what makes scenario 7 separable from scenario 3 at all."""
 
 # The context keys a call site supplies. Context is what a modifier reads to decide
 # whether it applies to *this* part -- see `FaultSet.modify`.
@@ -142,6 +165,14 @@ _SPECS: Final[Mapping[FaultKind, _KindSpec]] = {
         defect_classes=("missing_part", "contamination"),
     ),
     FaultKind.OPTICS_FOULING: _KindSpec(OPTICS_CLARITY, _Form.SCALE, "factor"),
+    FaultKind.UNDERSIZED_COMPONENTS: _KindSpec(
+        PRESS_CONTACT,
+        _Form.OFFSET,
+        "millimetres",
+        "lane",
+        LANE,
+        scope_required=True,
+    ),
 }
 
 DEFECT_CLASSES_BY_KIND: Final[Mapping[FaultKind, tuple[str, ...]]] = {
@@ -163,6 +194,7 @@ _CONTEXT_KEYS: Final[Mapping[str, tuple[str, ...]]] = {
     JOINING_CLAMP_FORCE: (),
     DEFECT_PROPENSITY: (CARRIER_ID, LANE, DEFECT_CLASS),
     OPTICS_CLARITY: (),
+    PRESS_CONTACT: (LANE,),
 }
 """What a call site must supply for each quantity, checked on **every** call.
 

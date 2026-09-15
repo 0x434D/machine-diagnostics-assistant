@@ -275,6 +275,26 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
         return math.exp(self.carrier_wear_sigmas * self.carrier_quality_log_sigma)
 
     @property
+    def press_nominal_work(self) -> float:
+        """Joining work, N.mm, for a part pressed at every nominal (`curve.work_of`).
+
+        Derived from the four knobs rather than configured, for the reason
+        `press_stiffness_nominal` is: it is the area under `min(clamp, max(0, k(x - c)))`
+        across the stroke -- a triangle of `clamp/2 x clamp/k` up to the knee and a
+        rectangle of `clamp` from there to the stop -- and a fifth field holding the
+        product would be a number that could disagree with the other four.
+
+        **This is the reference the gap propensity is measured against**
+        (`gap_work_exponent`), so a configuration change that moves the press moves the
+        reference with it instead of silently making every part look badly joined.
+        """
+        return self.joining_force_nominal * (
+            self.joining_distance_nominal
+            - self.press_contact_nominal_mm
+            - 0.5 * self.joining_force_nominal / self.press_stiffness_nominal
+        )
+
+    @property
     def press_stiffness_nominal(self) -> float:
         """Newtons per millimetre of compression.
 
@@ -359,6 +379,72 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # that change lands.
     optics_fouling_factor: float = 0.55
     optics_fouling_ramp_seconds: float = 7200.0
+    # Scenario 7: how much further the ram travels before it meets an undersized
+    # component, in millimetres. 0.6 mm is 12 x press_contact_sigma_mm, so the shifted
+    # contact point sits far outside the part-to-part spread it has to be seen through,
+    # and it leaves the knee at 10.6 mm of the 12.5 mm stroke -- comfortably short of
+    # the stop `curve.force_distance` refuses to reach without clamping. Measured
+    # consequence, in test_scenarios: the joining work falls 17.1 % while
+    # JoiningForcePeak does not move at all.
+    undersized_component_mm: float = 0.6
+    # Scenario 8: the same fault on one part instead of one lot, and far larger, because
+    # a single bad component has one part to be visible in rather than five hundred. At
+    # 2.0 mm the knee is at 12.0 mm, still inside the stroke, and the gap propensity
+    # below saturates -- so that one part is certainly gapped and its neighbours are not.
+    defective_component_mm: float = 2.0
+    # **How a badly joined part becomes a `gap`.** §3.5 rows 3 and 7 both demand a rising
+    # `gap` rate -- from a drifting clamp and from undersized components respectively --
+    # and the plant had no path at all from the press to the defect draw, so neither row
+    # could be produced. This is that path: the true `gap` propensity scales as
+    # `(nominal work / this part's joining work) ** exponent`, and the joining work is the
+    # one statistic that falls for both causes (`curve.work_of`). A lower clamp lowers the
+    # plateau; a later contact point shortens it. Neither moves `JoiningForcePeak` and
+    # `JoiningDistance` in the same way, which is exactly what keeps scenarios 3 and 7
+    # distinguishable while their symptom is identical.
+    #
+    # A power, not a linear term, because the exponent is what makes a ~7 % work deficit
+    # a visible defect rate rather than a 7 % one. 10 is a declared starting value in the
+    # sense station_takt_seconds' were; test_scenarios measures where it lands.
+    gap_work_exponent: float = 10.0
+
+    # scenarios — §3.5's eight (`simulator.scenarios`), as the offsets they fire at.
+    #
+    # **Which one this boot runs, or 0 for a clean line.** A run with no scenario is what
+    # every measurement of the noise floor is taken against, so it is the default: a
+    # plant that shipped misbehaving by default would make its own baseline unobtainable
+    # without an override. `simulator.scenarios.scenario` refuses anything outside 1-8.
+    scenario: int = 0
+    #
+    # Every scenario waits this long before it fires, so that every one of them has a
+    # clean baseline in front of it on the same run. 1800 s is ~300 parts at the line's
+    # takt, which is enough of a before for a rate to be compared against.
+    scenario_warmup_seconds: float = 1800.0
+    # Scenario 1's window. 900 s is thirty times the ~30 s a full buffer takes to drain,
+    # so the starvation chain completes several times over inside it and the line is
+    # genuinely idle rather than momentarily short.
+    feeder_starvation_seconds: float = 900.0
+    # Scenario 2's window, comfortably past its own 600 s ramp: the blockage has to
+    # build, propagate all the way back to S1 and still hold there for a while before an
+    # operator clears it.
+    outfeed_blockage_seconds: float = 2400.0
+    # **Which carrier scenario 4 wears and which lane scenario 5 contaminates.** §3.5
+    # names carrier 7 and lane 2 in its own table, and they are settings because
+    # `carrier_count` and `LANES` are what bound them -- a scenario naming carrier 25 of
+    # an 18-carrier pool, or lane 3 of two, injects a fault that fires, is logged and
+    # matches no part at all. test_scenarios asserts both are in range.
+    worn_carrier_id: int = 7
+    contaminated_lane: int = 2
+    # Scenario 7's lane, and which of that lane's lots the bad components arrive in.
+    # Lot 1 rather than lot 0, so the run has a whole clean lot in front of the bad one
+    # to compare against -- lot 0 starts at `history_start`, where there is no before.
+    bad_lot_lane: int = 1
+    bad_lot_index: int = 1
+    # Scenario 8's offset past the warmup, in seconds. **Measured, not chosen**: the
+    # window is one takt wide, so it has to land on a cycle S2 actually presses, and a
+    # window that fell on a suspended one would be a fault that fires, is logged and has
+    # no consequence anywhere. At the shipped settings S2 presses inside this window;
+    # test_scenarios is what re-measures it.
+    defective_component_offset: float = 300.0
 
     # noise floor — §3.5's permanent background (`simulator.noise`), and the one ratio
     # that decides whether this milestone's scenario 4 is findable at all.

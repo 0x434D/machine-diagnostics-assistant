@@ -34,6 +34,9 @@ _classifier: Classifier = SimulatedClassifier(
     # that runs it and never reach the simulator.
     false_accept_rate=_settings.false_accept_rate,
     false_reject_rate=_settings.false_reject_rate,
+    # D8: what a clean lens renders, so that the clarity the confidences are scaled by
+    # is a ratio against a measured frame rather than against an assumed one.
+    reference_contrast=_settings.reference_contrast,
 )
 
 

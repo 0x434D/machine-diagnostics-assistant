@@ -19,11 +19,19 @@ from simulator.faults import Fault, FaultKind, FaultSet
 from simulator.inspection_client import InspectionClient
 from simulator.noise import NoiseFloor
 from simulator.packml import State
+from simulator.scenarios import scenario
 
 T0 = datetime(2026, 9, 13, 6, 0, tzinfo=UTC)
+NOMINAL_WORK = Settings().press_nominal_work
+"""A part pressed at every nominal, so the `gap` propensity is unscaled.
 
-WORN_CARRIER = 7
-"""§3.5 scenario 4 names carrier 7."""
+Nothing in this file is about the press: the baseline scrap and the carrier spread
+measured here are what a nominally joined part carries, and `test_scenarios` is where
+a press that did less work changes the answer.
+"""
+
+WORN_CARRIER = Settings().worn_carrier_id
+"""§3.5 scenario 4 names carrier 7, and `config` is where the scenario reads it from."""
 
 WEAR_CLASSES = ("misalignment", "scratch")
 """The two classes §3.5 says concentrate on a worn carrier -- and the query M3 will run,
@@ -37,16 +45,19 @@ PRODUCTION_PARTS = 19_800
 
 
 def _wear(settings: Settings) -> FaultSet:
-    """Scenario 4, at the configured ratio."""
+    """§3.5's scenario 4, as it actually ships.
+
+    The shipped scenario rather than a fault built here to look like it, and the
+    difference is the whole value of this file: the separation measured below is the
+    number that decides whether M3 inherits a findable scenario or an unwinnable one, and
+    a hand-built copy would keep reporting it after the scenario's own magnitude moved.
+    Its offset is dropped -- `T0` stands in as the origin -- because nothing in this file
+    runs a line, so every part here is drawn at one instant well inside the window.
+    """
+    injected = scenario(4, settings).faults
+    assert [fault.kind for fault in injected] == [FaultKind.CARRIER_WEAR]
     return FaultSet(
-        [
-            Fault(
-                FaultKind.CARRIER_WEAR,
-                timedelta(0),
-                {"carrier": WORN_CARRIER, "factor": settings.carrier_wear_factor},
-            )
-        ],
-        T0,
+        [Fault(fault.kind, timedelta(0), fault.params) for fault in injected], T0
     )
 
 
@@ -64,7 +75,7 @@ def _rates_by_carrier(
     at = T0 + timedelta(hours=4)
     for index in range(PRODUCTION_PARTS):
         carrier = index % pool
-        defects = client.truth_for(f"A-{index:08d}", carrier, at)
+        defects = client.truth_for(f"A-{index:08d}", carrier, NOMINAL_WORK, at)
         seen[carrier] += 1
         if defects if classes is None else set(defects) & set(classes):
             hits[carrier] += 1
@@ -292,8 +303,8 @@ async def test_the_baseline_scrap_rate_is_unrelated_to_any_injected_fault() -> N
         for index in range(4_000):
             carrier = index % settings.carrier_count
             part = f"A-{index:08d}"
-            before = set(clean.truth_for(part, carrier, at))
-            after = set(worn.truth_for(part, carrier, at))
+            before = set(clean.truth_for(part, carrier, NOMINAL_WORK, at))
+            after = set(worn.truth_for(part, carrier, NOMINAL_WORK, at))
             assert before <= after, (
                 f"{part} on carrier {carrier} lost {sorted(before - after)} when a "
                 "fault was injected: the fault reached the draw and not the threshold"

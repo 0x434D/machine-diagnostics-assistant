@@ -46,6 +46,19 @@ when it does. Both conditions are real and both are reachable, which is why S1 n
 name for each rather than one name stretched over both.
 """
 
+FEEDER = "feeder"
+"""What S1 names when the feed upstream of the line has run dry -- §3.5's scenario 1.
+
+Not a buffer either, and for the same reason `CARRIER_RETURN` is not: §4.1 gives the
+line three buffers, all of them between two stations, and the feeder lanes are outside
+it. `buffers.suspend_reason_for` is passed `None` for S1's upstream side precisely
+because the line ends there, so it can never produce this and the Line has to.
+"""
+
+OUTFEED = "outfeed"
+"""What S4 names when the discharge below the line has stopped taking parts -- §3.5's
+scenario 2. The mirror of `FEEDER`, at the other end, for the same reason."""
+
 
 _BRING_UP: tuple[Command, ...] = (Command.CLEAR, Command.RESET, Command.START)
 """The commands that take a station from `Aborted` to `Execute`, in order.
@@ -81,6 +94,8 @@ class StationCycle(Protocol):
 
     def next_takt(self) -> float: ...
 
+    def external_reserve(self, _at: datetime, /) -> float | None: ...
+
 
 @dataclass
 class PartState:
@@ -89,18 +104,32 @@ class PartState:
     Keyed by carrier id on the Line rather than stored in the buffers, because that
     is what a real line does -- the carrier has a tag and the part is whatever is
     currently on it. S1 creates the assembly and puts it here; S2 presses against its
-    serial; S3 writes the disposition and the reason; S4 reads all three.
+    serial and leaves what the press did to it; S3 writes the disposition and the
+    reason; S4 reads the identity and the pair.
 
-    **Three fields, and each is one an event needs.** `assembly` is §3.1's identity
-    with its as-built components, and it is what makes S2's press and S4's sorting
-    record the serial they actually handled rather than the one a later time-join
-    would guess at -- §3.4a's rule. `disposition` and `reason` are §5.2's
-    `part_dispositions` row, carried from the station that decided them to the station
-    that publishes them. Nothing else belongs here: the process values are published
-    where they are measured, and the Line never reads any of this.
+    **Four fields, and each is one a later station cannot recompute.** `assembly` is
+    §3.1's identity with its as-built components, and it is what makes S2's press and
+    S4's sorting record the serial they actually handled rather than the one a later
+    time-join would guess at -- §3.4a's rule. `joining_work` is what S2's press left in
+    the joint. `disposition` and `reason` are §5.2's `part_dispositions` row, carried
+    from the station that decided them to the station that publishes them. Nothing else
+    belongs here: the process values are published where they are measured, and the Line
+    never reads any of this.
     """
 
     assembly: Assembly | None = None
+    # The area under this part's press trace, N.mm (`curve.work_of`), written by S2 and
+    # read by S3. A fourth field, and it earns its place the way `disposition` does: it
+    # is a fact one station establishes and another consumes, and time-joining the two
+    # streams to recover it is §3.4a's forbidden inference. It is here rather than
+    # published because §4.1's two S2 scalars are the press's own settings and this is
+    # not one of them -- the curve on `PartProcessedEvent` is the authoritative copy and
+    # `curve.work_of` is how anything downstream recomputes it.
+    #
+    # Why S3 needs it: §3.5 rows 3 and 7 both demand a rising `gap` rate, from a
+    # drifting clamp and from undersized components, and joining work is the one
+    # statistic that falls for both (see `Settings.gap_work_exponent`).
+    joining_work: float | None = None
     disposition: str | None = None
     # The classifier's named reason for a reject, empty for a good part. A plain str
     # rather than `str | None`, because "no reason" and "not inspected yet" are not the
@@ -402,7 +431,7 @@ class Line:
                 station.code, at, False, machine.state, machine.reason, next_at
             )
 
-        reason = self._suspend_reason(upstream, downstream)
+        reason = self._suspend_reason(station, upstream, downstream, at)
         if reason is not None:
             # The reason is latched at the moment of suspension and deliberately not
             # refreshed while the station stays Suspended -- which means a station can
@@ -476,16 +505,37 @@ class Line:
         )
 
     def _suspend_reason(
-        self, upstream: Buffer | None, downstream: Buffer | None
+        self,
+        station: StationCycle,
+        upstream: Buffer | None,
+        downstream: Buffer | None,
+        at: datetime,
     ) -> SuspendReason | None:
-        """§3.3's buffer rule, plus the one condition that is not a buffer.
+        """§3.3's buffer rule, plus the three conditions that are not buffers.
 
         `upstream is None` is what identifies the head of the line, so no station
         index is needed: the same fact that says S1 has no feeding buffer is the fact
-        that says the carrier pool is what feeds it.
+        that says the carrier pool and the feeder lanes are what feed it. `downstream is
+        None` says the same about the tail and its outfeed. That is also what turns the
+        one number `StationCycle.external_reserve` returns into a direction -- one rule,
+        "the outside cannot take one more part", read as `starved` at the head and
+        `blocked` at the tail.
+
+        **The feeder is checked before the carrier pool.** Both are `starved` at S1 and
+        the two can hold at once, but a starved feeder is a cause outside the line while
+        an empty pool is a consequence of something inside it; §5.4 categorises a chain
+        by direction, and naming the pool would point diagnosis back into a line whose
+        problem is upstream of it. In practice they rarely meet -- a station that stops
+        feeding stops consuming carriers, so the pool refills while the feeder is empty.
         """
-        if upstream is None and self._carriers.available == 0:
-            return SuspendReason("starved", CARRIER_RETURN)
+        reserve = station.external_reserve(at)
+        if upstream is None:
+            if reserve is not None and reserve < 1.0:
+                return SuspendReason("starved", FEEDER)
+            if self._carriers.available == 0:
+                return SuspendReason("starved", CARRIER_RETURN)
+        if downstream is None and reserve is not None and reserve < 1.0:
+            return SuspendReason("blocked", OUTFEED)
         return suspend_reason_for(upstream, downstream)
 
 

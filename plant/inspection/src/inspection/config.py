@@ -49,3 +49,23 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # scoreable; nothing before it reads them.
     false_accept_rate: float = 0.06
     false_reject_rate: float = 0.004
+
+    # **D8's reference**: the RMS contrast of a frame through a clean lens, in grey
+    # levels, which `SimulatedClassifier` divides `contrast_of` by to get the clarity it
+    # scales every score and the verdict confidence with. §3.5 calls scenario 6 the
+    # weakest because the confidence decay is stipulated; this is the number that makes
+    # it read off the pixels instead.
+    #
+    # **Measured, not chosen**, over 200 clean renders at the shipped image settings:
+    # mean 66.364 grey levels, sd 0.016 -- a spread of 0.02 %, because the frame is the
+    # same geometry every time and only the seeded sensor noise moves. A frame rendered
+    # at clarity 0.55 comes back at 0.554 of it, so the statistic tracks the fouling
+    # almost exactly. `test_the_configured_reference_contrast_is_what_a_clean_lens_
+    # renders` re-measures it, so a change to render.py cannot leave this behind.
+    #
+    # The cost, stated because it is real and small: a defect big enough to change the
+    # frame's own contrast moves this too -- a `missing_part` band renders at 62.6, so
+    # such a part reads as 94 % clarity and is reported a few per cent less confidently
+    # than a clean one. That is a property of reading confidence off an image, which is
+    # what D8 asked for.
+    reference_contrast: float = 66.364

@@ -55,7 +55,9 @@ def _stamp(stamp: datetime | None) -> datetime:
     return stamp
 
 
-async def _stub_produce(part_id: str, _carrier_id: int, _ts: datetime) -> PartOutcome:
+async def _stub_produce(
+    part_id: str, _carrier_id: int, _joining_work: float, _ts: datetime
+) -> PartOutcome:
     reject = part_id.endswith("7")
     return PartOutcome(
         disposition="reject" if reject else "good",
@@ -364,10 +366,10 @@ async def test_live_production_resumes_where_catch_up_stopped(tmp_path: Path) ->
     stamps: list[datetime] = []
 
     async def _recording_produce(
-        part_id: str, carrier_id: int, ts: datetime
+        part_id: str, carrier_id: int, joining_work: float, ts: datetime
     ) -> PartOutcome:
         stamps.append(ts)
-        return await _stub_produce(part_id, carrier_id, ts)
+        return await _stub_produce(part_id, carrier_id, joining_work, ts)
 
     boot = datetime.now(UTC)
     wall = [boot]

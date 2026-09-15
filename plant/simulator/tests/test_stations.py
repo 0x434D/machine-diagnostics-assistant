@@ -57,14 +57,21 @@ _CODES: dict[type[Station], str] = {
 
 
 def loaded(carrier_id: int = 0, at: datetime = T0) -> PartState:
-    """A part as it leaves S1: the assembly created, nothing decided about it yet.
+    """A part as the station under test receives it.
 
-    Every station below S1 now refuses a part with no assembly, so this is what a real
-    cycle actually hands them -- and building it through `identity.load_carrier` rather
-    than by hand is what keeps it the same object S1 produces.
+    The assembly S1 created, and the joining work a nominal press would have left --
+    every station below S1 refuses a part with no assembly and S3 refuses one with no
+    press, so this is what a real cycle actually hands them. Building it through
+    `identity.load_carrier` rather than by hand is what keeps it the same object S1
+    produces, and S2 overwrites the work with what its own press did.
+
+    The nominal rather than nothing, because these tests drive one station at a time and
+    a part that reached S3 without passing S2 is an artefact of that, not a case. The
+    real guard has its own test below.
     """
     return PartState(
-        assembly=load_carrier(LotSchedule(Settings(), at), 0, carrier_id, at)
+        assembly=load_carrier(LotSchedule(Settings(), at), 0, carrier_id, at),
+        joining_work=Settings().press_nominal_work,
     )
 
 
@@ -82,7 +89,9 @@ def build_one(
         )
     if factory is InspectionStation:
 
-        async def produce(_serial: str, _carrier_id: int, _at: datetime) -> PartOutcome:
+        async def produce(
+            _serial: str, _carrier_id: int, _joining_work: float, _at: datetime
+        ) -> PartOutcome:
             reject = bool(always_reject)
             return PartOutcome(
                 disposition="reject" if reject else "good",

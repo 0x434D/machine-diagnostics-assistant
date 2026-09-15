@@ -19,7 +19,7 @@ from asyncua import Server, ua
 from asyncua.crypto.truststore import TrustStore
 from asyncua.crypto.validator import CertificateValidator, CertificateValidatorOptions
 
-from simulator import hmi, status
+from simulator import hmi, scenarios, status
 from simulator.address_space import (
     BUFFERS,
     AddressSpace,
@@ -269,17 +269,32 @@ async def main() -> None:
         # image, and wrapping here keeps the four stations free of a dependency on a
         # screen -- which is also what lets them stay testable without one.
         recent = hmi.RecentParts(settings.hmi_recent_parts)
+        # §3.5's scenario for this boot, placed on the same origin the line starts at.
+        # **One FaultSet, handed to both**: the stations modify the numbers they compute
+        # and the inspection client modifies the defect propensity, and two sets built
+        # separately would drift the instant either was built from a different origin --
+        # a scenario that moved the press and left the defects alone, with nothing
+        # raised anywhere.
+        faults = (
+            scenarios.scenario(settings.scenario, settings).fault_set(
+                clock.history_start
+            )
+            if settings.scenario
+            else NO_FAULTS
+        )
         line = build_line(
             writer,
             settings,
-            recent.watching(InspectionClient(settings, http).produce),
+            recent.watching(InspectionClient(settings, http, faults=faults).produce),
             LotSchedule(settings, clock.history_start),
+            faults,
         )
         _log(
             "catchup.start",
             endpoint=settings.endpoint_url,
             depth_hours=settings.history_depth_hours,
             catchup_speed=settings.catchup_speed,
+            scenario=settings.scenario,
         )
         # The number R1 budgets at <=180 s, measured here rather than inferred from two
         # log timestamps -- the lines carry none of their own, since the container

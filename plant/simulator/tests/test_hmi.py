@@ -24,6 +24,10 @@ from simulator.hmi import (
 from simulator.packml import State
 from simulator.stations.base import PartOutcome
 
+NOMINAL_WORK = Settings().press_nominal_work
+"""What `ProduceFn` carries from S2. The strip reads the serial and the instant
+off the call and the rest off the verdict, so this is only here to be passed."""
+
 PLANT = Path(__file__).resolve().parents[2]
 HMI = PLANT / "hmi"
 NGINX_TEMPLATE = HMI / "nginx.conf.template"
@@ -196,15 +200,23 @@ async def _strip_with(*outcomes: PartOutcome) -> RecentParts:
     recent = RecentParts(Settings().hmi_recent_parts)
     queue = list(outcomes)
 
-    # The two parameters are `ProduceFn`'s and are what `RecentParts.watching` reads off
-    # the call rather than off the result; this stand-in only has to return the verdicts.
-    async def produce(_part_id: str, _carrier_id: int, _at: datetime) -> PartOutcome:
+    # The serial and the instant are `ProduceFn`'s and are what `RecentParts.watching`
+    # reads off the call rather than off the result; this stand-in only has to return
+    # the verdicts.
+    async def produce(
+        _part_id: str, _carrier_id: int, _joining_work: float, _at: datetime
+    ) -> PartOutcome:
         return queue.pop(0)
 
     watched = recent.watching(produce)
     at = datetime(2026, 9, 13, 6, 9, 48, tzinfo=UTC)
     for index in range(len(outcomes)):
-        await watched(f"A-{index:08d}", index % 18, at + timedelta(seconds=6 * index))
+        await watched(
+            f"A-{index:08d}",
+            index % 18,
+            NOMINAL_WORK,
+            at + timedelta(seconds=6 * index),
+        )
     return recent
 
 

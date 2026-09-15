@@ -10,6 +10,7 @@ from simulator.carriers import Carrier, CarrierPool
 from simulator.clock import SimulatedClock
 from simulator.config import ClockConfig, Settings
 from simulator.events import EventType
+from simulator.faults import NO_FAULTS, FaultSet
 from simulator.identity import LotSchedule
 from simulator.inspection_client import DEFECT_CLASSES
 from simulator.line import BRING_UP_TRANSITIONS, Line, PartState
@@ -20,6 +21,7 @@ from simulator.stations import (
     JoiningStation,
     OutfeedStation,
     PartOutcome,
+    ProduceFn,
     Station,
 )
 
@@ -33,6 +35,18 @@ TRANSITION = timedelta(seconds=Settings().state_transition_seconds)
 """The configured spacing between two published PackML states, read from Settings
 rather than restated: a test line whose transitions land on top of each other would
 not be exercising what the plant does."""
+
+
+def new_clock(settings: Settings) -> SimulatedClock:
+    """A clock a test line can be started on, at a one-hour depth: nothing here
+    generates history, and the depth only decides where `history_start` sits -- which is
+    the origin a scenario's offsets are measured from."""
+    return SimulatedClock(
+        ClockConfig(
+            history_depth=timedelta(hours=1),
+            catchup_speed=settings.catchup_speed,
+        )
+    )
 
 
 def new_server() -> Server:
@@ -72,6 +86,11 @@ class FakeStation:
 
     def next_takt(self) -> float:
         return self.takt
+
+    def external_reserve(self, _at: datetime) -> float | None:
+        """A fake station has no feed or discharge outside the line, so the Line's
+        outer-end gate never fires on one -- these lines test the buffer rule."""
+        return None
 
 
 def fake_line(carriers: int = 12, capacity: int = 5) -> tuple[Line, list[FakeStation]]:
@@ -159,7 +178,9 @@ class RecordingNodes:
         return [fields for name, _, fields in self.events if name == event.name]
 
 
-async def _stub_produce(serial: str, _carrier_id: int, _at: datetime) -> PartOutcome:
+async def _stub_produce(
+    serial: str, _carrier_id: int, _joining_work: float, _at: datetime
+) -> PartOutcome:
     """S3's inspection call, with no inspection service in reach.
 
     Deterministic rather than drawn: a proof that failed one run in twenty would be
@@ -184,6 +205,10 @@ async def _stub_produce(serial: str, _carrier_id: int, _at: datetime) -> PartOut
 
 async def build_running_line(
     settings: Settings | None = None,
+    *,
+    faults: FaultSet = NO_FAULTS,
+    produce: ProduceFn = _stub_produce,
+    clock: SimulatedClock | None = None,
 ) -> tuple[Line, SimulatedClock, dict[str, RecordingNodes]]:
     """A four-station line with recording node sets, built the way `server.build_line`
     builds the real one -- same station classes, same buffer capacities, same carrier
@@ -201,14 +226,13 @@ async def build_running_line(
 
     A one-hour history depth rather than the shipped 33 h: nothing here generates
     history, and the depth only decides where `history_start` sits.
+
+    `clock` is a parameter for one reason, and it is the scenarios': a `FaultSet` has to
+    be built on the origin the line will actually start at, so a caller that needs both
+    has to make the clock first. Left out, one is made here.
     """
     settings = settings or Settings()
-    clock = SimulatedClock(
-        ClockConfig(
-            history_depth=timedelta(hours=1),
-            catchup_speed=settings.catchup_speed,
-        )
-    )
+    clock = clock or new_clock(settings)
     nodes = {code: RecordingNodes(code) for code in STATION_CODES}
     stations: list[Station] = [
         FeedingStation(
@@ -216,12 +240,13 @@ async def build_running_line(
             settings,
             settings.seed,
             LotSchedule(settings, clock.history_start),
+            faults=faults,
         ),
-        JoiningStation(nodes["S2_Joining"], settings, settings.seed),
+        JoiningStation(nodes["S2_Joining"], settings, settings.seed, faults=faults),
         InspectionStation(
-            nodes["S3_Inspection"], settings, settings.seed, _stub_produce
+            nodes["S3_Inspection"], settings, settings.seed, produce, faults=faults
         ),
-        OutfeedStation(nodes["S4_Outfeed"], settings, settings.seed),
+        OutfeedStation(nodes["S4_Outfeed"], settings, settings.seed, faults=faults),
     ]
     buffers = [
         Buffer(buffer_id, settings.buffer_capacity, upstream, downstream)

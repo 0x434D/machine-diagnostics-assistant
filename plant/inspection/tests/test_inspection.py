@@ -1,4 +1,5 @@
 import base64
+import statistics
 
 from fastapi.testclient import TestClient
 from inspection.app import DEFECT_CLASSES, app
@@ -7,6 +8,7 @@ from inspection.classifier import (
     PartContext,
     SimulatedClassifier,
     TruthChannel,
+    contrast_of,
 )
 from inspection.config import Settings
 from inspection.render import render_part
@@ -170,3 +172,121 @@ def test_a_good_part_scores_low_on_every_class_and_is_confidently_good() -> None
     assert result.disposition == "good"
     assert all(v < 0.5 for v in result.confidences.values())
     assert result.confidence > 0.5
+
+
+# --- D8: the confidence comes off the image -------------------------------------------
+
+
+def _clean_frames(count: int, clarity: float = 1.0) -> list[bytes]:
+    """`count` frames of good parts at the shipped image settings, so the contrast below
+    is the one the plant actually renders rather than one at a test resolution."""
+    settings = Settings()
+    return [
+        render_part(
+            f"A-{index:08d}",
+            [],
+            320,
+            240,
+            seed=settings.seed,
+            compress_level=1,
+            clarity=clarity,
+        )
+        for index in range(count)
+    ]
+
+
+def test_the_configured_reference_contrast_is_what_a_clean_lens_renders() -> None:
+    """`reference_contrast` is what every confidence is divided by, so a change to
+    `render.py` that left it behind would scale every verdict in the plant by a constant
+    and nothing would say so.
+
+    Measured here rather than asserted from memory: 200 clean frames, mean 66.364 grey
+    levels with a standard deviation of 0.016 -- the geometry is identical every time and
+    only the seeded sensor noise moves, which is why the tolerance can be this tight.
+    """
+    measured = statistics.fmean(contrast_of(frame) for frame in _clean_frames(60))
+    configured = Settings().reference_contrast
+    assert abs(measured - configured) < 0.5, (
+        f"a clean frame renders {measured:.3f} grey levels of contrast and "
+        f"reference_contrast says {configured}: every confidence the service reports is "
+        "being divided by the wrong number"
+    )
+
+
+def test_a_fouled_frame_decays_the_verdict_and_every_class_together() -> None:
+    """**D8, and §3.5's row 6.** The decay is caused rather than declared: the frame
+    carries less contrast and the classifier reads it off the pixels, with no knob and no
+    sight of the truth channel or the fault.
+
+    All six classes and the verdict fall **together**, which is the shape §3.4's
+    independent scores exist to allow -- six values that must sum to 1 cannot all fall.
+
+    Measured over 120 good parts at the fouling scenario's own 0.55: the verdict
+    confidence goes 0.9303 -> 0.5150 and the mean class score 0.0452 -> 0.0249, both
+    0.55 of where they started.
+
+    The honest limit, stated where it belongs: contrast -> clarity -> confidence is still
+    a formula. It is one layer below the knob it replaces, not nowhere.
+    """
+    settings = Settings()
+    classifier = SimulatedClassifier(
+        TruthChannel(),
+        seed=settings.seed,
+        reference_contrast=settings.reference_contrast,
+    )
+
+    def readings(clarity: float) -> tuple[float, float]:
+        results = [
+            classifier.classify(frame, PartContext(f"A-{index:08d}", carrier_id=1))
+            for index, frame in enumerate(_clean_frames(60, clarity))
+        ]
+        return (
+            statistics.fmean(r.confidence for r in results),
+            statistics.fmean(statistics.fmean(r.confidences.values()) for r in results),
+        )
+
+    clarity = 0.55
+    clean_confidence, clean_scores = readings(1.0)
+    fouled_confidence, fouled_scores = readings(clarity)
+
+    assert abs(fouled_confidence / clean_confidence - clarity) < 0.05
+    assert abs(fouled_scores / clean_scores - clarity) < 0.05
+
+
+def test_a_fouled_lens_costs_certainty_and_not_the_verdict() -> None:
+    """§3.5's row 6 has two halves and this is the second: the scrap rate stays flat.
+
+    What a fouled lens takes away is certainty. The disposition still comes from the
+    truth channel and D7's two error rates, so a run under scenario 6 rejects exactly the
+    parts it would have rejected with a clean lens -- which is what separates fouling
+    from anything that damages parts, and what makes the pair of consequences a test
+    rather than one observation stated twice.
+    """
+    settings = Settings()
+    truth = TruthChannel()
+    defective = {f"A-{index:08d}" for index in range(0, 60, 7)}
+    for part_id in defective:
+        truth.declare(part_id, ["scratch"])
+    classifier = SimulatedClassifier(
+        truth, seed=settings.seed, reference_contrast=settings.reference_contrast
+    )
+
+    def dispositions(clarity: float) -> list[str]:
+        return [
+            classifier.classify(
+                render_part(
+                    f"A-{index:08d}",
+                    ["scratch"] if f"A-{index:08d}" in defective else [],
+                    320,
+                    240,
+                    seed=settings.seed,
+                    compress_level=1,
+                    clarity=clarity,
+                ),
+                PartContext(f"A-{index:08d}", carrier_id=1),
+            ).disposition
+            for index in range(60)
+        ]
+
+    assert dispositions(0.55) == dispositions(1.0)
+    assert set(dispositions(1.0)) == {"good", "reject"}

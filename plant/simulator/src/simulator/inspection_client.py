@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import base64
+import math
 from datetime import datetime
 from typing import Final
 
 import httpx
 
 from simulator.config import Settings
-from simulator.faults import DEFECT_PROPENSITY, NO_FAULTS, FaultSet
+from simulator.faults import DEFECT_PROPENSITY, NO_FAULTS, OPTICS_CLARITY, FaultSet
 from simulator.identity import LANES
 from simulator.noise import NoiseFloor
 from simulator.render import render_part
@@ -27,6 +28,14 @@ DEFECT_CLASSES = [
     "scratch",
     "contamination",
 ]
+
+GAP: Final = "gap"
+"""The one class the press decides rather than the carrier or the lane.
+
+Named because two of §3.5's eight scenarios turn on it and neither of them injects it:
+a drifting clamp (row 3) and undersized components (row 7) both leave a part badly
+joined, and this is what a badly joined part looks like to a camera. See `_gap_scale`.
+"""
 
 
 TRUTH_DRAWS_PER_PART: Final = len(LANES) * len(DEFECT_CLASSES)
@@ -92,14 +101,14 @@ class InspectionClient:
         self._faults = faults
 
     async def produce(
-        self, part_id: str, carrier_id: int, sim_ts: datetime
+        self, part_id: str, carrier_id: int, joining_work: float, sim_ts: datetime
     ) -> PartOutcome:
         """Render the part, declare its truth on the side channel, then classify it.
 
         Raises `httpx.HTTPStatusError` if the inspection service responds with an error
         status.
         """
-        defects = self.truth_for(part_id, carrier_id, sim_ts)
+        defects = self.truth_for(part_id, carrier_id, joining_work, sim_ts)
         image = render_part(
             part_id,
             defects,
@@ -107,6 +116,12 @@ class InspectionClient:
             self._s.image_height,
             self._s.seed,
             self._s.image_compress_level,
+            # D8: §3.5 calls scenario 6 the weakest because the confidence decay is
+            # stipulated. This is what stops it being: a fouled lens renders a genuinely
+            # lower-contrast frame, and the classifier reads its confidence off the
+            # image (`inspection.classifier.contrast_of`) rather than off a knob. 1.0
+            # when nothing is fouling, which renders exactly the bytes a clean run does.
+            clarity=self._faults.modify(OPTICS_CLARITY, 1.0, sim_ts),
         )
 
         # Truth goes down the side channel, keyed by part id -- never in the /inspect
@@ -152,7 +167,9 @@ class InspectionClient:
             model_version=result["model_version"],
         )
 
-    def truth_for(self, part_id: str, carrier_id: int, sim_ts: datetime) -> list[str]:
+    def truth_for(
+        self, part_id: str, carrier_id: int, joining_work: float, sim_ts: datetime
+    ) -> list[str]:
         """Which defect classes this part genuinely carries (§3.6's true defect state).
 
         Public because it is the plant's own declaration about the part and nothing else
@@ -170,24 +187,62 @@ class InspectionClient:
         that two lanes carrying the same class name produce one entry: the classifier
         scores a class, not a component, and a duplicate would make one defect look like
         two on §3.4's vector.
+
+        `joining_work` is the area under this part's own press trace (`curve.work_of`),
+        and it is what makes `GAP` a consequence of the press rather than a declaration
+        -- see `_gap_scale`. Raises ValueError for a non-positive one, which is not a
+        press that happened.
         """
         draws = self._noise.scrap_draws(part_id, TRUTH_DRAWS_PER_PART)
         propensity = self._noise.class_propensity(carrier_id, TRUTH_DRAWS_PER_PART)
+        gap_scale = self._gap_scale(joining_work)
         present: set[str] = set()
         for index, (lane, name) in enumerate(
             (lane, name) for lane in LANES for name in DEFECT_CLASSES
         ):
             threshold = self._faults.modify(
                 DEFECT_PROPENSITY,
-                propensity,
+                propensity * (gap_scale if name == GAP else 1.0),
                 sim_ts,
                 carrier_id=carrier_id,
                 lane=lane,
                 defect_class=name,
             )
-            if draws[index] < threshold:
+            # A probability, so it saturates rather than exceeding 1. Scenario 8's single
+            # defective component is deliberately far past the point where it does: one
+            # part must be certainly gapped, and a threshold above 1 that was not clamped
+            # would still only mean "certain" while reading as a rate.
+            if draws[index] < min(1.0, threshold):
                 present.add(name)
         return [name for name in DEFECT_CLASSES if name in present]
+
+    def _gap_scale(self, joining_work: float) -> float:
+        """How much more likely a `gap` is on a part this badly joined, 1.0 at nominal.
+
+        **This is the only path in the plant from the press to the defect draw, and
+        §3.5 needs it twice.** Row 3 (the clamp drifts down) and row 7 (the components
+        are undersized) both demand a rising `gap` rate, and joining work is the one
+        statistic that falls for both -- a lower clamp lowers the plateau of the trace, a
+        later contact point shortens it. Neither cause moves `JoiningForcePeak` the same
+        way, which is what keeps the two scenarios distinguishable while their symptom is
+        identical, and is exactly what §3.4a keeps the curve for.
+
+        The honest limit, in the same terms D8's is stated in: this is still a formula.
+        A real press would not have an exponent; what it would have is a joint that is
+        either sound or is not, and the exponent is standing in for the slope of that
+        transition. It moves the stipulation from "gap rises when a fault is running" to
+        "gap rises when the press did less work", which is one layer down rather than
+        gone.
+        """
+        if joining_work <= 0.0:
+            raise ValueError(
+                f"a part was joined with {joining_work!r} N.mm of work: a press that did "
+                "no work did not happen, and scoring a part against it would put a "
+                "defect rate on a joint nobody made"
+            )
+        return math.pow(
+            self._s.press_nominal_work / joining_work, self._s.gap_work_exponent
+        )
 
 
 def _ordered_confidences(scored: dict[str, float]) -> tuple[float, ...]:

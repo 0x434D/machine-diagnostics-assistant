@@ -59,12 +59,17 @@ class PartOutcome:
     model_version: str
 
 
-ProduceFn = Callable[[str, int, datetime], Awaitable[PartOutcome]]
-"""`(assembly serial, carrier id, simulated instant) -> the vision system's verdict`.
+ProduceFn = Callable[[str, int, float, datetime], Awaitable[PartOutcome]]
+"""`(assembly serial, carrier id, joining work, simulated instant) -> the verdict`.
 
 The carrier is here because §3.5's scenario 4 wears one and the plant's *truth* about a
 part therefore depends on which carrier it rode -- so the id has to reach the draw, not
 only the event S3 publishes afterwards. M2b passed a placeholder and said so.
+
+The joining work is here for the same shape of reason one station on: §3.5's rows 3 and
+7 make a badly joined part a `gap`, and how well this part was joined is something only
+S2's press knows (`Settings.gap_work_exponent`). Without it the plant had no path at all
+from the press to the defect draw, and neither row could be produced.
 """
 
 
@@ -107,6 +112,23 @@ def require_assembly(part: PartState, carrier: Carrier, station: str) -> Assembl
             "nobody issued is a traceability record that points at nothing"
         )
     return part.assembly
+
+
+def require_joining_work(part: PartState, carrier: Carrier, station: str) -> float:
+    """What S2's press left in the joint. Raises ValueError if there is none.
+
+    Raising rather than substituting the nominal, for the reason `require_assembly`
+    raises: a part whose press nobody recorded would be scored against a press that did
+    not happen, and §3.5's scenarios 3 and 7 both turn on exactly that number. Silently
+    nominal would make both of them produce nothing, on a line that looked fine.
+    """
+    if part.joining_work is None:
+        raise ValueError(
+            f"the part on carrier {carrier.carrier_id} reached {station} with no "
+            "joining work: S2 did not press it, and inspecting a part against a press "
+            "that never happened is a verdict drawn from a joint nobody made"
+        )
+    return part.joining_work
 
 
 def clamp_level(value: float) -> float:
@@ -188,6 +210,29 @@ class Station(ABC):
     @property
     def code(self) -> str:
         return self._nodes.code
+
+    def external_reserve(self, _at: datetime, /) -> float | None:
+        """How many more parts the feed or discharge **outside the line** can handle,
+        or None for a station that has neither.
+
+        One number for both ends, because the rule the Line applies to it is one rule:
+        a station whose external side cannot take one more part cannot cycle. Which end
+        it is comes from the station's position -- the head of the line is fed from
+        outside and the tail discharges to outside -- so `Line._suspend_reason` derives
+        the direction the same way it already derives which buffer feeds a station, and
+        this never has to say whether it is a feed or a discharge.
+
+        **The true level, never the published one.** `LaneFill_n` and `OutfeedFill` are
+        measurements and carry the sensor noise that goes with that; whether the station
+        physically has material is not a measurement. Reading the published value here
+        would also draw from the station's RNG once per cycle rather than once per part,
+        which would move every subsequent draw on the line.
+
+        Returns None here, and two of the four stations leave it that way: S2 and S3 are
+        fed and discharged entirely by buffers, which `buffers.suspend_reason_for`
+        already owns.
+        """
+        return None
 
     def _nominal_takt(self) -> float:
         """Per station, not one line-wide number (§3.1).

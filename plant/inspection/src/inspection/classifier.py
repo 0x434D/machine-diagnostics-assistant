@@ -7,9 +7,12 @@ would not change -- that is the whole point of the split (§3.4).
 
 from __future__ import annotations
 
+import io
 import random
 from dataclasses import dataclass, field
 from typing import Protocol
+
+from PIL import Image, ImageStat
 
 DEFECT_CLASSES = [
     "gap",
@@ -48,6 +51,26 @@ class Classifier(Protocol):
     def classify(self, image: bytes, ctx: PartContext) -> InspectionResult: ...
 
 
+def contrast_of(image: bytes) -> float:
+    """RMS contrast of a frame: the standard deviation of its luminance, in grey levels.
+
+    **D8.** §3.5 calls scenario 6 -- optics fouling -- the weakest of the eight, because
+    the confidence decay is stipulated rather than caused. This is the statistic that
+    makes it caused: the simulator renders a genuinely lower-contrast frame when the lens
+    is fouled, and the number below is read off the pixels that arrived rather than off
+    any knob. Nothing here can see the fault, the scenario or the truth channel.
+
+    RMS contrast rather than Michelson: the frame is a part against a background with
+    sensor noise on it, not a grating, and a single bright noise pixel would swing a
+    max-minus-min measure across the whole range while moving this by almost nothing.
+
+    Raises `PIL.UnidentifiedImageError` for bytes that are not an image, which is what a
+    caller that passed something other than a frame deserves.
+    """
+    with Image.open(io.BytesIO(image)) as frame:
+        return float(ImageStat.Stat(frame.convert("L")).stddev[0])
+
+
 @dataclass
 class TruthChannel:
     """The side channel. Keyed by part id, reachable only inside plant-net, and
@@ -84,16 +107,36 @@ class SimulatedClassifier:
         seed: int,
         false_accept_rate: float = 0.0,
         false_reject_rate: float = 0.0,
+        reference_contrast: float = 0.0,
     ) -> None:
         """`false_accept_rate` is the share of genuinely defective parts reported good;
         `false_reject_rate` the share of genuinely good parts reported defective. Both
         default to zero, so a caller that wants a faithful classifier gets one by
         saying nothing; `inspection.app` passes the configured values.
+
+        `reference_contrast` is the RMS contrast of a frame through a clean lens, in grey
+        levels, and it is what `contrast_of` is divided by to get the clarity every score
+        and the verdict confidence are scaled with (D8). It defaults to 0, which turns
+        the scaling off entirely -- a caller that has not measured the reference for its
+        own renderer gets the pre-D8 behaviour rather than confidences divided by a
+        number nobody established.
         """
         self._truth = truth
         self._seed = seed
         self._false_accept_rate = false_accept_rate
         self._false_reject_rate = false_reject_rate
+        self._reference_contrast = reference_contrast
+
+    def _clarity_of(self, image: bytes) -> float:
+        """How much of a clean lens's contrast this frame carries, capped at 1.
+
+        Capped because the reference is the *mean* clean frame and roughly half of them
+        sit above it; a part that happened to render a little crisper than average is not
+        evidence the model is more than certain.
+        """
+        if self._reference_contrast <= 0.0:
+            return 1.0
+        return min(1.0, contrast_of(image) / self._reference_contrast)
 
     def classify(self, image: bytes, ctx: PartContext) -> InspectionResult:
         truth = self._truth.lookup(ctx.part_id)
@@ -120,10 +163,32 @@ class SimulatedClassifier:
         if not defects:
             # Confidently OK: nothing scored high, so 1 - the loudest false alarm
             # is the verdict's own confidence, not any one class's.
-            return InspectionResult("good", None, 1.0 - max(scores.values()), scores)
+            confidence = 1.0 - max(scores.values())
+        else:
+            # Confidently NOK: the verdict's confidence is the strongest signal seen,
+            # whichever class it came from -- not `scores[defects[0]]` specifically,
+            # since a second defect could plausibly score higher than the first.
+            confidence = max(scores.values())
 
-        top = defects[0]
-        # Confidently NOK: the verdict's confidence is the strongest signal seen,
-        # whichever class it came from -- not `scores[top]` specifically, since a
-        # second defect could plausibly score higher than the first.
-        return InspectionResult("reject", top, max(scores.values()), scores)
+        # **D8, and the whole of what makes scenario 6 more than a stipulation.** Every
+        # score and the verdict's own confidence are scaled by how much of a clean lens's
+        # contrast this frame actually carried. Applied to all six together and to the
+        # verdict, which is §3.5's row 6 exactly -- "confidence decays across all classes"
+        # -- and a shape the softmax §3.4 rejected could not produce at all.
+        #
+        # **The verdict itself is untouched**, so the scrap rate stays flat while the
+        # confidences fall: what a fouled lens costs is certainty, and the disposition
+        # still comes from the truth side channel and the two error rates above.
+        #
+        # The honest limit: `contrast -> clarity -> confidence` is still a formula. It
+        # moves the stipulation one layer down -- from "confidence decays while the fault
+        # runs" to "confidence decays when the image carries less contrast" -- rather than
+        # removing it. A trained model is what removes it, and §3.4's seam is where one
+        # drops in.
+        clarity = self._clarity_of(image)
+        scores = {name: score * clarity for name, score in scores.items()}
+        confidence *= clarity
+
+        if not defects:
+            return InspectionResult("good", None, confidence, scores)
+        return InspectionResult("reject", defects[0], confidence, scores)

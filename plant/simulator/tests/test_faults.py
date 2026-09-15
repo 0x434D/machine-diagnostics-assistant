@@ -267,6 +267,7 @@ def test_a_quantity_no_fault_modifies_is_refused() -> None:
         JOINING_CLAMP_FORCE,
         DEFECT_PROPENSITY,
         "optics_clarity",
+        "press_contact",
     }
 
 

@@ -358,8 +358,24 @@ for the part.
 
 A scenario is declarative: a list of `(offset, fault, params)`. Faults available: feeder
 starvation, outfeed blockage, joining-force drift, carrier wear, lane contamination,
-optics fouling. They fire from the scenario script during catch-up to build history, or by
-hand from the HMI while live. **Every injection writes to the ground-truth log.**
+optics fouling, undersized components. They fire from the scenario script during catch-up
+to build history, or by hand from the HMI while live. **Every injection writes to the
+ground-truth log.**
+
+*Amended in M2c: this list said six, and the table below needs seven.* Rows 7 and 8 are
+component faults rather than machine faults — the seventh moves the press's contact point
+(§3.4a's components' knob) and nothing else, and the two rows differ only in its magnitude
+and how long its window is. Lane contamination is the nearest of the six, and row 5 fixes
+its classes as `missing_part` + `contamination`, so reusing it for row 7 would make
+scenarios 5 and 7 the same injection and destroy the distinction the pair exists for.
+
+*Also amended in M2c:* rows 3 and 7 both produce a rising `gap`, and nothing in the
+original design connected the press to the defect state, so neither row could produce its
+own symptom. The plant now derives a part's `gap` propensity from the **joining work** its
+own press left in it (§3.4a's curve integrated) — which falls both when the clamp drifts
+down and when the components are undersized, while `JoiningForcePeak` moves for the first
+and not the second. That is what makes the two rows share a symptom and stay separable,
+which is the premise row 7 rests on.
 
 | # | Scenario | Expected diagnosis |
 |---|---|---|
