@@ -1,4 +1,5 @@
 using System.Globalization;
+using Gateway.Ingest;
 using Npgsql;
 using Opc.Ua;
 
@@ -162,7 +163,8 @@ public static class TopologyDiscovery
     {
         ArgumentNullException.ThrowIfNull(topology);
 
-        await using var connection = new NpgsqlConnection(connectionString);
+        await using var connection = new NpgsqlConnection(
+            PostgresWriter.WithSearchPath(connectionString));
         await connection.OpenAsync(ct).ConfigureAwait(false);
         await using var transaction =
             await connection.BeginTransactionAsync(ct).ConfigureAwait(false);

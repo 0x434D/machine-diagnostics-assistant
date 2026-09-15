@@ -1,32 +1,45 @@
-"""The one tool M1 ships (§13), with coverage folded into it.
+"""§5.3's `/inspection/stats`: the counts, the breakdown, the coverage and the groupings.
 
-§5.3 lists /coverage as its own endpoint so the agent can ask whether it has data before
-answering. Here it is part of the stats response instead, so §6.1's step-3 coverage check
-cannot be skipped by forgetting to call a second endpoint. Splitting them out is M3's.
+M1 shipped this as the one tool with coverage folded in, and left both splits to M3. Both
+are done, and neither by duplication: `/coverage` and this endpoint's `coverage` field come
+from `routes_coverage.coverage_of`, and `by_defect_class` and `group_by=defect_class` come
+from `queries.defect_class_counts`. One implementation behind two exposures each, because
+the one thing worse than a missing endpoint is two endpoints that disagree.
+
+The coverage field stays folded in even now that `/coverage` exists, for M2b's reason: §6.1's
+step-3 coverage check must not be skippable by forgetting to call a second endpoint.
 """
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Query
+from psycopg import Connection
 
+from analysis import queries, windows
 from analysis.config import Settings
 from analysis.db import connection
-from analysis.dependencies import settings_dependency
-from analysis.models import Coverage, DefectClassCount, Gap, InspectionStats, Window
+from analysis.dependencies import SettingsDep, WindowDep
+from analysis.models import (
+    DefectClassCount,
+    GroupBy,
+    InspectionStats,
+    StatsGroup,
+    Window,
+)
+from analysis.routes_coverage import coverage_of
 
 router = APIRouter()
 
 
 @router.get("/inspection/stats", operation_id="inspectionStats")
 def inspection_stats(
-    from_: Annotated[datetime, Query(alias="from")],
-    to: Annotated[datetime, Query()],
-    settings: Annotated[Settings, Depends(settings_dependency)],
+    window: WindowDep,
+    settings: SettingsDep,
+    group_by: Annotated[GroupBy | None, Query()] = None,
 ) -> InspectionStats:
-    """Counts over a closed window, with the gaps that make them incomplete.
+    """Counts over a half-open window, with the gaps that make them incomplete.
 
     **The breakdown reads §3.4's score vector, not a scalar class.** It grouped by
     `inspection_results.defect_class` until M2b Task 7, and by then nothing filled that
@@ -35,88 +48,112 @@ def inspection_stats(
     erroring, the writer resolves that to `DBNull`, and `defect_class IS NOT NULL` then
     emptied the group-by. No exception and no 500 — `by_defect_class: []` beside a correct
     `total` and `rejects`, which is a silently empty answer to "which defects are we
-    seeing" and the exact failure §1 exists to prevent.
+    seeing" and the exact failure §1 exists to prevent. The column is no longer in the read
+    layer at all, so the query that produced that answer can no longer be written.
+
+    `group_by` is absent by default and `groups` is then null rather than empty: a caller
+    that asked for no grouping and a caller that asked for one over an empty window are not
+    entitled to the same answer.
     """
-    with connection(settings) as conn, conn.cursor() as cur:
-        cur.execute(
-            "SELECT count(*), count(*) FILTER (WHERE result = 'reject') "
-            "FROM inspection_results WHERE source_ts >= %s AND source_ts < %s",
-            (from_, to),
+    with connection(settings) as conn:
+        total, rejects = queries.inspection_totals(conn, window)
+        class_counts = queries.defect_class_counts(
+            conn, window, settings.defect_class_threshold
         )
-        total, rejects = cur.fetchone() or (0, 0)
+        return InspectionStats(
+            window=Window.of(window),
+            total=total,
+            rejects=rejects,
+            by_defect_class=[
+                DefectClassCount(defect_class=name, count=count)
+                for name, count in class_counts
+            ],
+            defect_class_threshold=settings.defect_class_threshold,
+            rejects_without_class=queries.rejects_without_class(
+                conn, window, settings.defect_class_threshold
+            ),
+            sample_serials=queries.reject_sample_serials(
+                conn, window, settings.sample_serial_limit
+            ),
+            coverage=coverage_of(conn, window),
+            group_by=group_by,
+            groups=(
+                None
+                if group_by is None
+                else _groups(conn, window, group_by, settings, total, class_counts)
+            ),
+        )
 
-        # No filter on `result`, and none is needed: `inspection.classifier` boosts a class
-        # only where the model believes it saw that defect, and any part with a boosted
-        # class is a reject. So the threshold is the filter, and a part that scored high on
-        # a class without being rejected would be a thing worth seeing rather than a thing
-        # to hide.
-        #
-        # unnest of the two arrays together, so a class stays paired with its own score.
-        # They are parallel by construction — the plant fills both from one dict and the
-        # gateway writes both from one event — which is what makes the pairing safe here
-        # rather than an assumption this query makes about them.
-        cur.execute(
-            "SELECT scored.defect_class, count(*) "
-            "FROM inspection_results r, "
-            "     unnest(r.defect_classes, r.confidences) AS scored(defect_class, score) "
-            "WHERE r.source_ts >= %s AND r.source_ts < %s AND scored.score >= %s "
-            "GROUP BY scored.defect_class "
-            # The class name breaks ties, so two classes on the same count come back in a
-            # stable order rather than in whichever order the plan happened to produce.
-            "ORDER BY count(*) DESC, scored.defect_class",
-            (from_, to, settings.defect_class_threshold),
-        )
-        by_class = [
-            DefectClassCount(defect_class=row[0], count=row[1])
-            for row in cur.fetchall()
+
+def _groups(
+    conn: Connection,
+    window: windows.Window,
+    group_by: GroupBy,
+    settings: Settings,
+    total: int,
+    class_counts: list[tuple[str, int]],
+) -> list[StatsGroup]:
+    """One group per value of the requested dimension.
+
+    `class_counts` is passed in rather than re-queried: it is the same list
+    `by_defect_class` is built from, and a second query would be a second chance for the two
+    halves of one response to disagree about what a defect-class count counts.
+
+    What `parts` means differs by dimension and `StatsGroup` is where that is spelled out.
+    The short of it: for `defect_class` the denominator is every inspected part in the
+    window, because a class is not a subset of parts.
+    """
+    if group_by == "time":
+        return [
+            StatsGroup(
+                key=bucket_from.isoformat(),
+                from_ts=clipped_from,
+                to_ts=clipped_to,
+                parts=parts,
+                rejects=rejects,
+                reject_share=_share(rejects, parts),
+            )
+            for bucket_from, clipped_from, clipped_to, parts, rejects in (
+                queries.counts_by_time_bucket(
+                    conn, window, int(settings.stats_time_bucket.total_seconds())
+                )
+            )
         ]
-
-        # What the breakdown above cannot explain. Removing the cause of the empty
-        # `by_defect_class` did not remove the shape: a row written before the vector
-        # existed carries no scores at all and contributes nothing to the group-by, and
-        # §3.5 scenario 6 is a run where every score falls together and nothing crosses
-        # the threshold. Both leave rejects unaccounted for, and counting them is what
-        # turns "we saw no defects" into "we saw 30 rejects and could name none of them".
-        #
-        # NOT EXISTS over the same unnest, so this number and the breakdown are the two
-        # halves of one rule rather than two rules that can drift. A NULL vector unnests
-        # to no rows at all, which is why it lands here.
-        cur.execute(
-            "SELECT count(*) FROM inspection_results r "
-            "WHERE r.source_ts >= %s AND r.source_ts < %s AND r.result = 'reject' "
-            "  AND NOT EXISTS ("
-            "    SELECT 1 FROM unnest(r.defect_classes, r.confidences) AS scored(c, score)"
-            "    WHERE scored.score >= %s)",
-            (from_, to, settings.defect_class_threshold),
-        )
-        unclassified = (cur.fetchone() or (0,))[0]
-
-        cur.execute(
-            "SELECT assembly_serial FROM inspection_results "
-            "WHERE source_ts >= %s AND source_ts < %s AND result = 'reject' "
-            "ORDER BY source_ts LIMIT %s",
-            (from_, to, settings.sample_serial_limit),
-        )
-        samples = [row[0] for row in cur.fetchall()]
-
-        # Overlap, not containment: a gap that starts before the window and ends inside it
-        # still makes the window incomplete.
-        cur.execute(
-            "SELECT from_ts, to_ts, reason FROM ingest_gaps "
-            "WHERE from_ts < %s AND to_ts > %s ORDER BY from_ts",
-            (to, from_),
-        )
-        gaps = [
-            Gap(from_ts=row[0], to_ts=row[1], reason=row[2]) for row in cur.fetchall()
+    if group_by == "defect_class":
+        return [
+            StatsGroup(
+                key=name,
+                from_ts=None,
+                to_ts=None,
+                parts=total,
+                rejects=count,
+                reject_share=_share(count, total),
+            )
+            for name, count in class_counts
         ]
-
-    return InspectionStats(
-        window=Window(from_ts=from_, to_ts=to),
-        total=total,
-        rejects=rejects,
-        by_defect_class=by_class,
-        defect_class_threshold=settings.defect_class_threshold,
-        rejects_without_class=unclassified,
-        sample_serials=samples,
-        coverage=Coverage(gaps=gaps),
+    rows = (
+        queries.counts_by_carrier(conn, window)
+        if group_by == "carrier"
+        else queries.counts_by_lane(conn, window)
     )
+    return [
+        StatsGroup(
+            key=key,
+            from_ts=None,
+            to_ts=None,
+            parts=parts,
+            rejects=rejects,
+            reject_share=_share(rejects, parts),
+        )
+        for key, parts, rejects in rows
+    ]
+
+
+def _share(rejects: int, parts: int) -> float | None:
+    """The reject share, or None when there is nothing to take a share of.
+
+    Never 0.0 for an empty group. "No parts, so no rate" and "parts, none of them rejected"
+    are different facts and the agent says different things about them — an empty hour
+    flattened to 0 % is a line reported as running perfectly while it was stopped.
+    """
+    return None if parts == 0 else rejects / parts

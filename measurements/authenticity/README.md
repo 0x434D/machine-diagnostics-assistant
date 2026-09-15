@@ -7,6 +7,16 @@ proof and a passing one look identical from a green pipeline.
 
 Each proof below says where it runs, or which milestone it waits on and why.
 
+**Five of the nine are proved after M3, and four are not.** 1.1 to 1.4 were M1's; **M3 closes
+1.5**, the analysis, and closes nothing else. What remains: **1.6** (the agent does not invent)
+and **1.7** (the tool layer answers two callers alike) wait on **M4**, which is where a model
+and an MCP server first exist; **1.8** (identity) waits on **M5**, because there is no identity
+layer to prove anything about; **1.9** (traceability returns *exactly* the affected serials)
+waits on **M7**, because it is a scored answer and M7 is the harness that scores. M3 wrote
+1.9's query and that is all it could do — the comparison is against ground truth, which never
+reaches this stack. The one non-§1 row, `read_rows == pg_rows`, waits on a runner outside both
+stacks and is argued at the bottom of this file.
+
 ## Provable today
 
 | § | Link | Proof | Runs as |
@@ -189,11 +199,134 @@ table against §3.5's rows in **both** directions. And `source` is asserted as t
 `"scenario"`, not against the constant that produces it: the previous round's fix moved with
 the constant and survived the same mutation.
 
+### M3 closes §1.5, and it is the one §8.4 says matters most
+
+| Claim | Proof | Runs as |
+|---|---|---|
+| §3.5's eight scenarios, each seeded as the **consequences** it declares and never as its fault, each answered by M3's endpoints: the chain's root and category, the dimension a quality problem concentrates in, and the two rows that have the same symptom and different answers | `diagnostics/analysis/tests/test_analysis_proof.py` | `make check` |
+
+§8.4: *"Propagation correctness is where the system's truth actually lives, and it is
+directly checkable: inject a known fault, assert the computed chain against ground truth …
+It is more important than the LLM evaluation, and it is the suite most easily forgotten."*
+This is that suite. No model is involved in any of it, which is why it has no variance and
+why every number below is a fact rather than a sample.
+
+**The seeding rule is the whole of what makes it worth anything.** `scenarios.py` declares
+twelve consequences per §3.5's rows and deliberately names no cause — *"writing the expected
+cause here would make every one of M7's numbers circular"* — and the same applies one
+milestone on. So each fixture carries PackML transitions with the buffer each one names,
+class rates that rise on a carrier or a lot, a clamp stream that falls or does not, and
+confidences that decay while no verdict moves. The ground-truth log is never read; it is on
+a volume no diagnostics container mounts and `test_compose_invariants.py` is what keeps it
+that way.
+
+**What the analysis computed.** Every number is out of the endpoints on the run the test
+performs.
+
+| # | Answered by | Computed |
+|---|---|---|
+| 1 | `/stops`, `/stops/{id}` | **`external_upstream`**, rooted at **S1** on `starved:feeder`, through all three buffers in order — S4 ← B3_4 ← S3 ← B2_3 ← S2 ← B1_2 ← S1, terminating `line_edge` with no cause candidate |
+| 2 | the same | **`external_downstream`**, rooted at **S4** on `blocked:outfeed`, in **one link** — the three stations backing up behind it are consequences of the same blockage and the walk is right not to climb them |
+| 3 | the same | **`internal`**, rooted at **S2** in `Aborted`, terminating `cause_candidate` with S2 the only candidate — while an **older, still unacknowledged alarm stands at S4**, downstream of the root and raised 60 s before S2's own. `/signals/trend` puts the clamp **10.3 σ** below where it started |
+| 4 | `/stops`, `/inspection/patterns` | **no stop, and no micro-stop.** With the worn carrier at the pool's **median** and §3.5's own 33 h depth: the carrier dimension **tested inside the defect class** reports `carrier 7 × misalignment` (12/1100 = 1.09 % against 0.283 %, adjusted *p* = 0.023) and **nothing else out of 108 pairs**, while the plain carrier dimension reports carrier **18** and leaves carrier 7 at adjusted *p* = 0.159, `not_significant` |
+| 5 | the same | no stop; the classes significantly **above** expectation are exactly `missing_part` and `contamination` (*p* = 0.0056 and 1.8 × 10⁻⁶), and the **lane dimension carries no verdict at all**, refused in §3.5's own words |
+| 6 | `/stops`, `/inspection/stats`, `/inspection/patterns` | no stop; the scrap rate holds (1.50 % → 1.35 %) while the breakdown empties — **25 of 27 rejects carry no class the threshold can name**, against 0 of 15 before the fouling. No defect class, no time bucket and no lot is a pattern |
+| 7 | `/inspection/patterns`, `/signals/trend`, `/alarms` | no stop, no alarm; **`gap` is the one class above expectation** (*p* = 2.7 × 10⁻⁶); the **lot** `L-1-01` is significant (24/500 against 2.18 %, *p* = 0.0136) and is the only significant value anywhere in carrier, lot or time; **no time bucket reaches a verdict**; the force moved **0.15 σ** |
+| 8 | the same | **nothing significant in any dimension** — 13 lots tested, every one of them past the sample gate, every one `not_significant`. The one defective part is still findable: `/parts/affected?defect_class=gap` returns it |
+
+**Rows 7 and 8 are the pair, and they came out the right way round.** Their symptom is
+identical and it is also scenario 3's: rising `gap`. DP-01 attributes that to a drifting
+joining process at S2, and for both of these rows that is the wrong answer. The proof asserts
+the two halves of not giving it — the S2 force trend does not move (0.15 σ against scenario
+3's 10.3) and the lot dimension does. M3 stops there: naming the lot as *the cause* is
+interpretation and belongs to M4. What M3 must not do is assert the mechanical answer, and
+what it must do is surface the evidence that separates them.
+
+The two are seeded from one generator under one name, so both runs draw identically about
+every part and differ only in what was injected. That is what makes "the lot is significant
+in one and nothing is significant in the other" a statement about the injection rather than
+about two seeds.
+
+**What the measurement showed, and the dimension it forced.**
+
+*§5.5's four dimensions could not answer row 4, and the fifth is now there.* Row 4's
+consequence is `CLASS_CONCENTRATES` — `misalignment` and `scratch` on carrier 7 — and the
+carrier dimension tests each carrier's **whole reject rate**, diluting two of six raised
+classes into all six. So `/inspection/patterns` now also tests the carrier **within each
+defect class**: carrier 7's `misalignment` rate against the other carriers' `misalignment`
+rate, with the multiplicity family every stratum's comparisons together (18 × 6 = 108
+hypotheses, because "does any carrier concentrate any class" is one question). It is a
+dimension §5.5 happened not to list, in exactly the sense the lot dimension already was, and
+the row that demanded it is the one row §3.5 states as a pair.
+
+*What that bought, measured on this generator at the pool's median placement.* The plain
+dimension's verdict on carrier 7 moves with the draw; the stratified one does not.
+
+| parts per carrier | plain carrier dimension | carrier within class |
+|---|---|---|
+| 600 | 7, 18 | — |
+| 700 | 7 | — |
+| 800 | 7, 18 | **7 × misalignment** |
+| 900 | 18, 7 | **7 × misalignment** |
+| 1,000 | 18, 7 | **7 × misalignment** |
+| **1,100** (§3.5's own 33 h) | **18** — and not 7 | **7 × misalignment** |
+| 1,300 | 18, 7 | **7 × misalignment** |
+| 2,000 | 18, 7, 3, 2, 1 | **7 × misalignment** |
+
+The smallest depth at which the cross holds is **800 parts per carrier**, two thirds of the
+plant's own history. Below that it correctly reports nothing. Above it, it reports the worn
+carrier and the class it wore, alone, at every depth tried — while the plain dimension
+alternates between naming carrier 7 and not, and by 2,000 parts per carrier is naming five
+carriers because the noise floor's own carrier-to-carrier variation has itself become
+detectable (which `significance.py` already measured from the other direction).
+
+*The placement mattered more than the wear, and that is why it was taken out.* An earlier
+round of this proof placed the worn carrier where the shipped seed drew it — `test_noise`'s
+2.18 % `misalignment | scratch` against the pool's 0.571 %, which with the 2.86 × wear divided
+out is **1.34 ×** the pool baseline before anything was injected. Scenario 4 passed there on
+the plain dimension, and it was passing on the seed's luck. Put at the pool's median it does
+not, and placed three ranks below it — quality 0.872, the seventh of eighteen and an entirely
+ordinary carrier — the plain dimension never names carrier 7 at any depth from 600 to 2,000
+while the cross names it from 1,300. A capability that depends on
+where a draw put the worn carrier is not a capability, so the fixture places it at the median
+and the proof asserts the cross.
+
+*Carrier 18 is the wrong finding and not a false one.* It is the top of §3.5's own quality
+spread and genuinely scraps more than the rest, so reporting it is what `patterns.py` says
+Benjamini-Hochberg's false-discovery bound means. That is a different complaint from a false
+positive, and it is the complaint §3.5 row 4 exists to make: a line has a worst carrier
+whether or not anything is wrong with it, and the answer to "which carrier is wearing" has to
+be more specific than "the worst one".
+
+**Where scenario 7's lot beats the clock, and why that is arranged.** A 500-part lot inside
+60-minute buckets sits almost entirely in one of them unless the window is placed so that a
+bucket boundary cuts the lot in half. The fixture opens at **:45** for exactly that reason,
+and it is not a thumb on the scale: it is the arrangement in which *"the defects follow the
+lot"* and *"the defects follow the clock"* are different claims at all. On a window opening
+on the hour the same run reports the time bucket more strongly than the lot, which is a true
+statement about that window and a useless one for telling scenario 7 from a bad hour.
+
+**What it does not establish**, in the same words M2c's section uses: the rows it reads are
+seeded, not carried over OPC UA by the gateway. §1.2 and §1.3 own that half. What is new here
+is only that the *computing* is real, which is the half §1.5 was waiting for.
+
+**In `make check`, not behind `make verify`.** It starts no container of its own — it runs in
+process against the Postgres the analysis suite already uses — and the whole file is **8 s**,
+of which the largest single cost is seeding §3.5's 33 h of history for scenario 4 (2.7 s,
+19,800 parts and their genealogy; every other fixture is under a second). That is the same
+shape as the propagation, traceability and consequence proofs, all three of which are in the
+gate for the same reason.
+
+§1's container-dependent proofs stay where they are and the marker set is not collapsed; this
+one file moved to where its cost says it belongs. §8.4's argument is the whole of the reason:
+*"That suite runs in seconds, costs nothing, has no variance, and catches the failures that
+matter most … it is the suite most easily forgotten."* A proof that runs only when somebody
+deliberately looks is one nobody sees fail, which is the definition of forgotten.
+
 ## Not provable yet
 
 | § | Link | Waits on | Why not yet |
 |---|---|---|---|
-| 1.5 | Analysis | M3 | **the ground truth it was waiting on exists.** M2c runs §3.5's eight scenarios, records every injection with the consequences the row claims, and proves those consequences are in §5.2's tables — so there is now a run with a known cause and a history carrying its effects. What is left is the computing: M3 is what infers a cause from that history, and only then is there something to compare |
 | 1.6 | Agent | M4 | the claim is behavioural — the agent says "I have no data for that window" rather than inventing. M1 tests the empty-window *response*, which is the endpoint's contract, not the agent's judgement. The scripted provider cannot be asked whether a model would resist inventing |
 | 1.7 | Tool layer | M4 | there is no MCP server. "The same tools, the same results" needs two callers to compare |
 | 1.8 | Identity | M5 | there is no identity layer, so every diagnostics endpoint answers unauthenticated requests. The README says so in those words, and that is the whole of the current posture |

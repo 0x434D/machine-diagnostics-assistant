@@ -28,6 +28,17 @@ Reconciler? reconciler = null;
 if (!string.IsNullOrWhiteSpace(options.PostgresConnectionString))
 {
     await PostgresWriter.ApplySchemaAsync(options.PostgresConnectionString).ConfigureAwait(false);
+    if (options.AnalysisRolePassword.Length > 0)
+    {
+        // Left unset on purpose in a deployment with no analysis service: the role then has
+        // no password and cannot authenticate at all, which is a better resting state than
+        // one every copy of this image shares.
+        await PostgresWriter
+            .SetAnalysisRolePasswordAsync(
+                options.PostgresConnectionString, options.AnalysisRolePassword)
+            .ConfigureAwait(false);
+    }
+
     writer = new PostgresWriter(options.PostgresConnectionString);
     reconciler = new Reconciler(options.PostgresConnectionString);
     drain = new QueueDrain(

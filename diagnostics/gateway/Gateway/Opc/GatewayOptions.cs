@@ -50,6 +50,18 @@ public sealed record GatewayOptions
 
     /// <summary>Empty until Postgres exists for this deployment; the queue then simply fills.</summary>
     public string PostgresConnectionString { get; init; } = "";
+
+    /// <summary>
+    /// What the <c>analysis</c> role of <c>005_m3_read_layer.sql</c> authenticates with.
+    /// Empty leaves the role unable to log in, which is the right state for a deployment
+    /// that runs no analysis service.
+    ///
+    /// <para>The migration creates that role deliberately without a password: a literal in
+    /// an embedded SQL resource is a credential compiled into the binary and identical
+    /// everywhere it is deployed. The gateway holds the only connection privileged enough
+    /// to set one, and already owns applying the schema.</para>
+    /// </summary>
+    public string AnalysisRolePassword { get; init; } = "";
     public int DrainBatchSize { get; init; } = 200;
     public int DrainIdleMs { get; init; } = 250;
     public int DrainRetryMs { get; init; } = 2_000;
@@ -142,6 +154,7 @@ public sealed record GatewayOptions
             SignalPolicyPath = Read(
                 environment, "GATEWAY_SIGNAL_POLICY", DefaultSignalPolicyPath),
             PostgresConnectionString = Read(environment, "GATEWAY_POSTGRES", ""),
+            AnalysisRolePassword = Read(environment, "GATEWAY_ANALYSIS_PASSWORD", ""),
             DrainBatchSize = ReadInt(environment, "GATEWAY_DRAIN_BATCH_SIZE", 200),
             BackfillWindow = TimeSpan.FromMinutes(
                 ReadWindowLength(environment, "GATEWAY_BACKFILL_WINDOW_MINUTES", 60)),

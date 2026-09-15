@@ -7,6 +7,319 @@
 # Regenerate with: make contract
 components:
   schemas:
+    AffectedParts:
+      description: "The containment scope: which parts this condition touched, split by where they went.\n\
+        \n`unplaceable` is the count of parts that match every criterion but the window, because\nthe\
+        \ instant the window would be applied to is null for them \u2014 an assembly created\nbefore the\
+        \ gateway's history horizon has no creation instant. They are reported rather\nthan dropped: a\
+        \ containment list silently short is worse than one that says it is."
+      properties:
+        criteria:
+          $ref: '#/components/schemas/AppliedCriteria'
+        parts:
+          $ref: '#/components/schemas/PartsByOutcome'
+        unplaceable:
+          title: Unplaceable
+          type: integer
+        window:
+          $ref: '#/components/schemas/Window'
+      required:
+      - window
+      - criteria
+      - parts
+      - unplaceable
+      title: AffectedParts
+      type: object
+    Alarm:
+      description: "One alarm and its whole lifecycle (\xA74.1).\n\n**Not an input to propagation, and\
+        \ this is the file to say so in.** \xA73.3 and\n`004_m2c.sql` both warn that \"the first station\
+        \ to raise an alarm\" is circular, and two\nof M2c's eight scenarios raise no alarm at all. An\
+        \ alarm is what a terminated chain is\nannotated with; `/stops/{id}` returns both and connects\
+        \ neither."
+      properties:
+        acked_at:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: Acked At
+        active:
+          title: Active
+          type: boolean
+        cleared_at:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: Cleared At
+        code:
+          title: Code
+          type: string
+        id:
+          title: Id
+          type: integer
+        raised_at:
+          format: date-time
+          title: Raised At
+          type: string
+        severity:
+          title: Severity
+          type: integer
+        station:
+          title: Station
+          type: string
+        status:
+          enum:
+          - raised
+          - acknowledged
+          - cleared
+          title: Status
+          type: string
+        text:
+          title: Text
+          type: string
+      required:
+      - id
+      - station
+      - code
+      - text
+      - severity
+      - raised_at
+      - acked_at
+      - cleared_at
+      - status
+      - active
+      title: Alarm
+      type: object
+    AlarmList:
+      description: 'The alarms overlapping a window, newest first.
+
+
+        Overlap, not containment: an alarm raised before the window and still uncleared inside
+
+        it is one of the more important things the window holds, and a containment test is
+
+        exactly what would drop it.'
+      properties:
+        alarms:
+          items:
+            $ref: '#/components/schemas/Alarm'
+          title: Alarms
+          type: array
+        station:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Station
+        window:
+          $ref: '#/components/schemas/Window'
+      required:
+      - window
+      - station
+      - alarms
+      title: AlarmList
+      type: object
+    AppliedCriteria:
+      description: "What `/parts/affected` was actually asked, echoed back \u2014 and what the window\
+        \ meant.\n\n`anchor` is the field a reader must see and `window_selects` is the sentence that\
+        \ says\nwhat it cost. The window is applied to a *per-part* instant, and which instant that is\n\
+        depends on the criteria: with a station it is that station's own record for the part,\nwithout\
+        \ one it is `assemblies.created_at`. \xA73.4a forbids reconstructing either by\njoining the time\
+        \ series, so a station whose record carries no instant cannot be asked\nfor at all rather than\
+        \ being answered with a neighbouring station's.\n\n**That matters most exactly where \xA75.3's\
+        \ own worked example lands.** *\"Which parts\npassed S2 while the joining force was out of tolerance?\"\
+        * is answerable \u2014 but not as a\nwindow on S2, because the press records its two numbers against\
+        \ the serial and no time\nbeside them. It is answerable as a *value* question: `signal` with `below`\
+        \ and `above`\nselects the parts whose own recorded force is out of tolerance, which is precisely\
+        \ the\nper-part record \xA73.4a says exists for this. The window then bounds when those parts\
+        \ were\n*completed*, not when they were pressed, and `window_selects` says so in as many words\
+        \ \u2014\nthe two differ by the S2\u2192S3 transit, and pretending they do not would be the same\n\
+        approximation \xA73.4a rejects."
+      properties:
+        above:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Above
+        anchor:
+          enum:
+          - created
+          - inspected
+          - left
+          title: Anchor
+          type: string
+        below:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Below
+        carrier:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Carrier
+        defect_class:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Defect Class
+        lot_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lot Code
+        signal:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Signal
+        station:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Station
+        window_selects:
+          title: Window Selects
+          type: string
+      required:
+      - station
+      - carrier
+      - lot_code
+      - defect_class
+      - signal
+      - below
+      - above
+      - anchor
+      - window_selects
+      title: AppliedCriteria
+      type: object
+    BufferLevelPoint:
+      description: "One `buffer_levels` row. \xA74.1 publishes one only when a carrier moves through the\n\
+        buffer, so a flat stretch here is a line that moved nothing, not a sampling interval."
+      properties:
+        at:
+          format: date-time
+          title: At
+          type: string
+        buffer:
+          title: Buffer
+          type: string
+        level:
+          title: Level
+          type: integer
+      required:
+      - buffer
+      - at
+      - level
+      title: BufferLevelPoint
+      type: object
+    BufferStatus:
+      description: "A buffer's last published level, and when it was published.\n\n`at` is load-bearing:\
+        \ \xA74.1 publishes a level only when a carrier moves through, so a\nstopped line's last level\
+        \ is arbitrarily old and the number alone would read as now.\n\nBoth are null for a buffer that\
+        \ has published nothing at all \u2014 the line has not moved a\ncarrier through it since the gateway\
+        \ connected. The buffer is listed anyway, for the\nreason `StationStatus` lists a silent station:\
+        \ a line reported with two buffers when it\nhas three is a wrong picture, where a buffer with\
+        \ an explicit \"no level\" is a true one."
+      properties:
+        at:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: At
+        buffer:
+          title: Buffer
+          type: string
+        capacity:
+          title: Capacity
+          type: integer
+        level:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Level
+      required:
+      - buffer
+      - level
+      - capacity
+      - at
+      title: BufferStatus
+      type: object
+    CarrierParts:
+      description: "Which assemblies rode this carrier. \xA73.1 keeps the carriers in a closed loop, so\
+        \ a\ncarrier returns \u2014 this is a list over a window, never a list of one pass."
+      properties:
+        carrier_id:
+          title: Carrier Id
+          type: integer
+        parts:
+          $ref: '#/components/schemas/PartsByOutcome'
+        window:
+          anyOf:
+          - $ref: '#/components/schemas/Window'
+          - type: 'null'
+      required:
+      - carrier_id
+      - window
+      - parts
+      title: CarrierParts
+      type: object
+    ComponentAssembly:
+      description: "\xA75.3's single-component recall: a supplier names one serial months later.\n\n`assembly_serial`\
+        \ null is a real answer and not a miss \u2014 the component was read at a\nfeeder and has not\
+        \ been built into anything yet. The component being unknown is a 404,\nand the two must not look\
+        \ alike (\xA76.5)."
+      properties:
+        assembly_created_at:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: Assembly Created At
+        assembly_serial:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Assembly Serial
+        carrier_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Carrier Id
+        component_serial:
+          title: Component Serial
+          type: string
+        disposition:
+          anyOf:
+          - $ref: '#/components/schemas/Disposition'
+          - type: 'null'
+        lane:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Lane
+        lot:
+          anyOf:
+          - $ref: '#/components/schemas/LotRef'
+          - type: 'null'
+        read_at:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: Read At
+      required:
+      - component_serial
+      - lane
+      - read_at
+      - lot
+      - assembly_serial
+      - assembly_created_at
+      - carrier_id
+      - disposition
+      title: ComponentAssembly
+      type: object
     ComponentOrigin:
       description: "One as-built component of an assembly, and the supplier lot it was drawn from.\n\n\
         Everything but the serial and the position is nullable, and null means **unknown**, not\nabsent:\
@@ -51,16 +364,46 @@ components:
       - supplier
       title: ComponentOrigin
       type: object
+    Correction:
+      description: 'NONE is not a default anyone should deploy; it is what the other two are measured
+
+        against, and what a caller testing a single value by hand does not need.'
+      enum:
+      - none
+      - bonferroni
+      - benjamini_hochberg
+      title: Correction
+      type: string
     Coverage:
-      description: "\xA74.4: without gap markers, missing data is indistinguishable from a quiet machine."
+      description: "\xA74.4: without gap markers, missing data is indistinguishable from a quiet machine.\n\
+        \n`fully_covered` is carried rather than left to a reader comparing `covered_fraction`\nagainst\
+        \ 1.0, for the reason `coverage.Coverage` gives: `gaps == []` and \"fully covered\"\nare only\
+        \ the same fact when nothing was clipped into `gaps` in the first place.\n\n`window` is repeated\
+        \ here and in the response that embeds this, and deliberately: the\ncoverage of a window is unreadable\
+        \ without the window it is of, and a UI that passes\nthis object around alone would otherwise\
+        \ be holding a fraction of nothing."
       properties:
+        covered_fraction:
+          title: Covered Fraction
+          type: number
+        fully_covered:
+          title: Fully Covered
+          type: boolean
         gaps:
           items:
             $ref: '#/components/schemas/Gap'
           title: Gaps
           type: array
+        observed:
+          $ref: '#/components/schemas/ObservedSpan'
+        window:
+          $ref: '#/components/schemas/Window'
       required:
+      - window
       - gaps
+      - covered_fraction
+      - fully_covered
+      - observed
       title: Coverage
       type: object
     DefectClassCount:
@@ -79,6 +422,170 @@ components:
       - defect_class
       - count
       title: DefectClassCount
+      type: object
+    Derivation:
+      description: "\xA75.4's chain as data, seed first and root last.\n\nReturned whole, with the episode\
+        \ and the buffer behind every step, because \xA76.5 means\nthe agent to be able to *contradict*\
+        \ it \u2014 which is only possible against reasoning it\ncan see. A verdict with the same category\
+        \ and no links would be the same answer with\nthe checking removed.\n\n`category` is derived from\
+        \ where the chain terminates and is never assigned; null means\nthe chain did not terminate, and\
+        \ `unexplained` says where it ran out.\n\n`cause_candidates` holds every `Held` or `Aborted` episode\
+        \ the walk met. More than one\nis `ambiguous`: the line had two independent faults over the interval,\
+        \ and \xA75.4 keeps\nboth rather than picking the nearer."
+      properties:
+        category:
+          anyOf:
+          - enum:
+            - internal
+            - external_upstream
+            - external_downstream
+            - ambiguous
+            type: string
+          - type: 'null'
+          title: Category
+        cause_candidates:
+          items:
+            $ref: '#/components/schemas/StateEpisode'
+          title: Cause Candidates
+          type: array
+        links:
+          items:
+            $ref: '#/components/schemas/DerivationLink'
+          title: Links
+          type: array
+        termination:
+          $ref: '#/components/schemas/Termination'
+        unexplained:
+          anyOf:
+          - $ref: '#/components/schemas/Unexplained'
+          - type: 'null'
+      required:
+      - links
+      - termination
+      - category
+      - cause_candidates
+      - unexplained
+      title: Derivation
+      type: object
+    DerivationLink:
+      description: "One step of \xA75.4's chain: an episode, and the buffer that leads to the next.\n\n\
+        `buffer` is null on the last link. `buffer_condition_since` alone being null says the\nepisode\
+        \ named a buffer whose empty-or-full moment could not be found within the\nlead-in \u2014 the\
+        \ difference between the end of a chain and the end of the evidence."
+      properties:
+        buffer:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Buffer
+        buffer_condition_since:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: Buffer Condition Since
+        from_ts:
+          format: date-time
+          title: From Ts
+          type: string
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        state:
+          title: State
+          type: string
+        station:
+          title: Station
+          type: string
+        to_ts:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: To Ts
+      required:
+      - station
+      - state
+      - from_ts
+      - to_ts
+      - reason
+      - buffer
+      - buffer_condition_since
+      title: DerivationLink
+      type: object
+    Dimension:
+      description: "\xA75.5's four names, and the one \xA73.5 scenario 7 cannot be answered without.\n\
+        \nEach is one field of an `Observation`.\n\n**`LOT` is not in \xA75.5's list and has to be.**\
+        \ Scenario 7 is a run of rising `gap`\ndefects where the joining force is *perfectly stable*:\
+        \ the symptom points straight at a\npress drift, and the only thing separating that wrong answer\
+        \ from the right one is that\nthe defects correlate with the supplier lot rather than with the\
+        \ force. Without a lot\ndimension there is nothing for that correlation to be measured in, and\
+        \ the scenario's\nwhole proof has nothing to stand on.\n\nIt is a legitimate dimension and not\
+        \ a special case: a part's lot membership is a\nper-part fact, reached through `genealogy` to\
+        \ `components.lot_id`, and never a time\njoin \u2014 which is exactly what \xA73.5's staggered\
+        \ lot boundaries exist to make checkable."
+      enum:
+      - carrier
+      - lane
+      - lot
+      - defect_class
+      - time_bucket
+      title: Dimension
+      type: string
+    DimensionPatterns:
+      description: "One dimension's findings, or the reason there can be none.\n\n`not_comparable` is\
+        \ the field this response exists to be able to set. \xA75.3 and \xA75.5\nboth list `lane` as a\
+        \ dimension, and \xA73.5 says in the same document that the line\ncannot distinguish it: every\
+        \ assembly draws one component from each feeder lane, so\n\"these parts saw lane 2 and those did\
+        \ not\" has no contrast group. Running the test\nanyway would return *not significant* over two\
+        \ groups holding the same parts, and \"we\nlooked and found nothing\" is a materially different\
+        \ \u2014 and here false \u2014 statement from\n\"there is nothing to look at\". The counts themselves\
+        \ stay available at\n`/inspection/stats?group_by=lane`, which is where a count with no comparison\
+        \ belongs.\n\n`unattributed` counts the observations that carry no value along this dimension\
+        \ \u2014 a\npart whose carrier the gateway never saw belongs to no carrier and can be compared\
+        \ to\nnone. Counted rather than quietly dropped, and **null when `comparable` is false**: no\n\
+        observations were built for a dimension nothing was computed over, and a zero there\nwould be\
+        \ a measurement nobody made. That is the same distinction `PatternValue` keeps\nbetween a null\
+        \ share and a zero one, and this endpoint defends it everywhere else.\n\n`within` is the dimension\
+        \ this section's comparisons were stratified by, and is part of\nthe section's identity rather\
+        \ than a note about it: `carrier` and `carrier` within\n`defect_class` are two different questions,\
+        \ both are in this response, and they do not\nhave the same answer. \xA73.5 scenario 4 is the\
+        \ row where the difference decides."
+      properties:
+        comparable:
+          title: Comparable
+          type: boolean
+        dimension:
+          $ref: '#/components/schemas/Dimension'
+        not_comparable:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Not Comparable
+        patterns:
+          items:
+            $ref: '#/components/schemas/PatternValue'
+          title: Patterns
+          type: array
+        unattributed:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Unattributed
+        within:
+          anyOf:
+          - $ref: '#/components/schemas/Dimension'
+          - type: 'null'
+      required:
+      - dimension
+      - within
+      - comparable
+      - not_comparable
+      - patterns
+      - unattributed
+      title: DimensionPatterns
       type: object
     Disposition:
       description: How the part left the line, and why. Absent while the part is still on it.
@@ -206,6 +713,23 @@ components:
         defect_class_threshold:
           title: Defect Class Threshold
           type: number
+        group_by:
+          anyOf:
+          - enum:
+            - time
+            - carrier
+            - lane
+            - defect_class
+            type: string
+          - type: 'null'
+          title: Group By
+        groups:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/StatsGroup'
+            type: array
+          - type: 'null'
+          title: Groups
         rejects:
           title: Rejects
           type: integer
@@ -231,7 +755,191 @@ components:
       - rejects_without_class
       - sample_serials
       - coverage
+      - group_by
+      - groups
       title: InspectionStats
+      type: object
+    LastPartOut:
+      description: The most recent part to leave S4, which is the line's real output clock.
+      properties:
+        assembly_serial:
+          title: Assembly Serial
+          type: string
+        at:
+          format: date-time
+          title: At
+          type: string
+        disposition:
+          title: Disposition
+          type: string
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+      required:
+      - assembly_serial
+      - at
+      - disposition
+      - reason
+      title: LastPartOut
+      type: object
+    LineStatus:
+      description: "\xA75.3's \"what is happening right now\", answered honestly with the plant shut down.\n\
+        \n\xA72.2 requires the diagnostics stack to answer from history when the plant is not\nrunning,\
+        \ and this is the endpoint where that becomes visible or does not. Every field\nbelow is the *last\
+        \ known* value and none of them is timestamped \"now\"; `staleness_seconds`\nis the one number\
+        \ that separates a live line from a stopped gateway, and it is beside\nthe threshold it was judged\
+        \ against so that `live` is not a verdict without a reason.\n\n`staleness_seconds` is null only\
+        \ when the database holds no row at all \u2014 a fresh\ndeployment, not a stale one, and reporting\
+        \ an infinite staleness there would be a\nmeasurement of nothing."
+      properties:
+        active_alarms:
+          items:
+            $ref: '#/components/schemas/Alarm'
+          title: Active Alarms
+          type: array
+        as_of:
+          format: date-time
+          title: As Of
+          type: string
+        buffers:
+          items:
+            $ref: '#/components/schemas/BufferStatus'
+          title: Buffers
+          type: array
+        last_part_out:
+          anyOf:
+          - $ref: '#/components/schemas/LastPartOut'
+          - type: 'null'
+        latest_data_at:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: Latest Data At
+        live:
+          title: Live
+          type: boolean
+        live_within_seconds:
+          title: Live Within Seconds
+          type: number
+        staleness_seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Staleness Seconds
+        stations:
+          items:
+            $ref: '#/components/schemas/StationStatus'
+          title: Stations
+          type: array
+      required:
+      - as_of
+      - latest_data_at
+      - staleness_seconds
+      - live
+      - live_within_seconds
+      - stations
+      - buffers
+      - active_alarms
+      - last_part_out
+      title: LineStatus
+      type: object
+    LotParts:
+      description: 'Which assemblies contain a component from this lot.
+
+
+        `lots` is a list because a lot code is unique per *lane*, not per line: the same code
+
+        loaded on both feeders is two rows and two populations, and answering as though it were
+
+        one would merge them.'
+      properties:
+        lot_code:
+          title: Lot Code
+          type: string
+        lots:
+          items:
+            $ref: '#/components/schemas/LotRef'
+          title: Lots
+          type: array
+        parts:
+          $ref: '#/components/schemas/PartsByOutcome'
+        window:
+          anyOf:
+          - $ref: '#/components/schemas/Window'
+          - type: 'null'
+      required:
+      - lot_code
+      - lots
+      - window
+      - parts
+      title: LotParts
+      type: object
+    LotRef:
+      description: 'One `component_lots` row.
+
+
+        `depleted_at` is absent and is never coming: 003 never writes it, and a lot is depleted
+
+        at the first draw of the next lot on its lane, which is a query over `loaded_at`.
+
+        Exposed, it would read as "no lot has ever been depleted".'
+      properties:
+        id:
+          title: Id
+          type: integer
+        lane:
+          title: Lane
+          type: integer
+        loaded_at:
+          format: date-time
+          title: Loaded At
+          type: string
+        lot_code:
+          title: Lot Code
+          type: string
+        supplier:
+          title: Supplier
+          type: string
+      required:
+      - id
+      - lot_code
+      - lane
+      - supplier
+      - loaded_at
+      title: LotRef
+      type: object
+    ObservedSpan:
+      description: "What the window actually holds, across every stream the analysis reads.\n\nThis is\
+        \ the half of coverage the gap rows cannot supply. A window with no gaps and no\nrows is a quiet\
+        \ line; a window with no rows because a gap covers all of it is a\nblackout; and the two are the\
+        \ same empty answer until something counts what is there.\n`events` is deliberately a total over\
+        \ the streams rather than a breakdown \u2014 the\nquestion it answers is \"is there anything here\
+        \ at all\", and a per-stream count would\ninvite it being read as a production figure, which it\
+        \ is not."
+      properties:
+        events:
+          title: Events
+          type: integer
+        from_ts:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: From Ts
+        to_ts:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: To Ts
+      required:
+      - from_ts
+      - to_ts
+      - events
+      title: ObservedSpan
       type: object
     Part:
       description: "\xA714's end-to-end trace of one serial, every section read by that serial alone.\n\
@@ -289,6 +997,160 @@ components:
       - disposition
       title: Part
       type: object
+    PartGroup:
+      description: "One outcome of a containment scope: how many, and enough serials to act on.\n\n`count`\
+        \ is exact and `serials` is capped, so a containment list can be trusted as a\nnumber even where\
+        \ it is too long to be read as a list. `truncated` is what stops the\ncapped list being mistaken\
+        \ for the whole of it \u2014 the failure mode that matters here is\na short list read as complete\
+        \ at three in the morning."
+      properties:
+        count:
+          title: Count
+          type: integer
+        serials:
+          items:
+            type: string
+          title: Serials
+          type: array
+        truncated:
+          title: Truncated
+          type: boolean
+      required:
+      - count
+      - serials
+      - truncated
+      title: PartGroup
+      type: object
+    PartsByOutcome:
+      description: "\xA75.3's split, and the reason `/parts/affected` exists.\n\n*\"340 serials, 62 rejected,\
+        \ 278 shipped and need checking.\"* `rejected` is already\ncontained; `shipped` is the number\
+        \ someone has to act on tonight; `on_the_line` is\nneither yet, because the part has no disposition\
+        \ row and is still between stations.\nCollapsing the three into a total is what makes a containment\
+        \ answer useless."
+      properties:
+        on_the_line:
+          $ref: '#/components/schemas/PartGroup'
+        rejected:
+          $ref: '#/components/schemas/PartGroup'
+        shipped:
+          $ref: '#/components/schemas/PartGroup'
+        total:
+          title: Total
+          type: integer
+      required:
+      - total
+      - rejected
+      - shipped
+      - on_the_line
+      title: PartsByOutcome
+      type: object
+    PatternReport:
+      description: "\xA75.5 over every dimension, and the empty answer is the expected one.\n\n`/inspection/patterns`\
+        \ returning nothing significant is what a healthy line looks like,\nand it is the answer that\
+        \ stops the agent inventing a story out of the noise floor.\n`significant_count` is carried so\
+        \ that \"nothing\" is a number in the response rather\nthan an absence a reader has to notice."
+      properties:
+        alpha:
+          title: Alpha
+          type: number
+        correction:
+          $ref: '#/components/schemas/Correction'
+        coverage:
+          $ref: '#/components/schemas/Coverage'
+        defect_class_threshold:
+          title: Defect Class Threshold
+          type: number
+        dimensions:
+          items:
+            $ref: '#/components/schemas/DimensionPatterns'
+          title: Dimensions
+          type: array
+        minimum_sample:
+          title: Minimum Sample
+          type: integer
+        significant_count:
+          title: Significant Count
+          type: integer
+        window:
+          $ref: '#/components/schemas/Window'
+      required:
+      - window
+      - coverage
+      - alpha
+      - minimum_sample
+      - correction
+      - defect_class_threshold
+      - dimensions
+      - significant_count
+      title: PatternReport
+      type: object
+    PatternValue:
+      description: "\xA75.5's answer for one value of one dimension: everything a reader needs to disagree.\n\
+        \nObserved share, expected share, sample size, effect size and a verdict \u2014 and the raw\n\
+        p-value beside the corrected one, because the correction is the step a reader most\nneeds to check.\n\
+        \n`p_value` and `adjusted_p_value` are null exactly when the verdict is `not_enough_data`.\nA\
+        \ number there would be an invitation to compare it against \u03B1 somewhere downstream,\nwhich\
+        \ is the collapse the third verdict exists to prevent.\n\n`observed_share`, `expected_share` and\
+        \ `effect_size` are null when there was nothing to\ntake a share of. Null is \"not computed\"\
+        ; it is never a zero.\n\n`stratum` is the value of the dimension this comparison was made *inside*,\
+        \ and is null\nunless the section was stratified \u2014 carrier 7 measured on `misalignment` alone\
+        \ rather\nthan on everything it scrapped. Read without it, a class-scoped finding would be taken\n\
+        for a line-wide one, which is the opposite of what \xA73.5 scenario 4 claims."
+      properties:
+        adjusted_p_value:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Adjusted P Value
+        effect_size:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Effect Size
+        expected_share:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Expected Share
+        observed:
+          title: Observed
+          type: integer
+        observed_share:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Observed Share
+        p_value:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: P Value
+        stratum:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stratum
+        trials:
+          title: Trials
+          type: integer
+        value:
+          title: Value
+          type: string
+        verdict:
+          $ref: '#/components/schemas/Verdict'
+      required:
+      - value
+      - stratum
+      - observed
+      - trials
+      - observed_share
+      - expected_share
+      - effect_size
+      - p_value
+      - adjusted_p_value
+      - verdict
+      title: PatternValue
+      type: object
     ProcessCurve:
       description: "D6's force\u2013distance curve for this part, as the samples the press recorded.\n\
         \nThe thing the two scalars cannot reconstruct: two presses reach the same peak at the\nsame final\
@@ -336,6 +1198,434 @@ components:
       - value
       title: ProcessValue
       type: object
+    SignalTrend:
+      description: "\xA75.3's `/signals/trend`, aggregated in SQL.\n\n`bucket_seconds` is null for `raw`\
+        \ and is the bucket width otherwise. Buckets are\naligned to the clock in UTC and half-open `[at,\
+        \ at + bucket_seconds)`, so the same\nminute means the same minute across two calls with different\
+        \ windows.\n\n`truncated` is what stops a cut series reading as a complete one. A trend that stops\n\
+        early looks exactly like a signal that stopped, which is a diagnosis."
+      properties:
+        agg:
+          enum:
+          - raw
+          - minute
+          - hour
+          title: Agg
+          type: string
+        bucket_seconds:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Bucket Seconds
+        points:
+          items:
+            $ref: '#/components/schemas/TrendPoint'
+          title: Points
+          type: array
+        signal:
+          title: Signal
+          type: string
+        station:
+          title: Station
+          type: string
+        truncated:
+          title: Truncated
+          type: boolean
+        window:
+          $ref: '#/components/schemas/Window'
+      required:
+      - station
+      - signal
+      - window
+      - agg
+      - bucket_seconds
+      - points
+      - truncated
+      title: SignalTrend
+      type: object
+    StateEpisode:
+      description: "One station holding one state, for a UI to draw as a bar.\n\n`to_ts` is null while\
+        \ the station was still in this state at the end of the history\nthat was read \u2014 not \"until\
+        \ now\", which is a claim about a clock this record has not\nconsulted."
+      properties:
+        from_ts:
+          format: date-time
+          title: From Ts
+          type: string
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        reason_buffer:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason Buffer
+        state:
+          title: State
+          type: string
+        station:
+          title: Station
+          type: string
+        to_ts:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: To Ts
+      required:
+      - station
+      - state
+      - from_ts
+      - to_ts
+      - reason
+      - reason_buffer
+      title: StateEpisode
+      type: object
+    StationStatus:
+      description: "What one station was last seen doing, and when it was last seen.\n\n`since` is when\
+        \ the state began. `as_of` is the newest row this station has of any\nkind \u2014 with the plant\
+        \ down, `since` goes on reading like a live state while `as_of`\nis what says the reading is hours\
+        \ old."
+      properties:
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        since:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: Since
+        state:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: State
+        station:
+          title: Station
+          type: string
+      required:
+      - station
+      - state
+      - reason
+      - since
+      title: StationStatus
+      type: object
+    StatsGroup:
+      description: "One value of the requested grouping, and the reject share within it.\n\n**`parts`\
+        \ is the denominator and it is not the same quantity for every grouping.** For\n`time`, `carrier`\
+        \ and `lane` the group is a set of parts and `parts` counts them. For\n`defect_class` the group\
+        \ is a *class*, which is not a set of parts at all \u2014 \xA73.4's six\nscores are independent,\
+        \ a part can carry several and most carry none \u2014 so the\ndenominator is every inspected part\
+        \ in the window, the same number under every class,\nand `rejects` is how many of them scored\
+        \ at or above the threshold on this one.\n\nThat choice is the per-part denominator, and it is\
+        \ the same one `/inspection/patterns`\ntests with: a part is one trial for each class, not one\
+        \ trial shared between them. The\nconsequence to read the numbers with is that the defect-class\
+        \ shares do not sum to the\nwindow's reject rate and were never going to \u2014 a part carrying\
+        \ two classes is counted\nunder both, exactly as `DefectClassCount` describes.\n\n`lane` is a\
+        \ third case again, and the one to be careful with: every assembly draws one\ncomponent from *each*\
+        \ feeder lane (\xA73.5), so the lane groups hold the same parts and\ntheir `parts` counts sum\
+        \ to more than the window's. The counts are real; what they do\nnot support is a comparison between\
+        \ the lanes, which is why `/inspection/patterns`\nrefuses that dimension rather than returning\
+        \ a verdict on it.\n\n`from_ts` and `to_ts` are set for `time` and null for everything else. They\
+        \ are the\nbucket's edges **clipped to the requested window**, so a bucket the window only partly\n\
+        covers is visibly short rather than quietly under-counted."
+      properties:
+        from_ts:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: From Ts
+        key:
+          title: Key
+          type: string
+        parts:
+          title: Parts
+          type: integer
+        reject_share:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Reject Share
+        rejects:
+          title: Rejects
+          type: integer
+        to_ts:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: To Ts
+      required:
+      - key
+      - from_ts
+      - to_ts
+      - parts
+      - rejects
+      - reject_share
+      title: StatsGroup
+      type: object
+    Stop:
+      description: "\xA75.4's line stop \u2014 an absence of output, not a state.\n\n`id` is derived from\
+        \ the instant the line stopped producing and resolves against the\ndatabase on its own (\xA76.5),\
+        \ so two windows that both contain this stop cite it by the\nsame id. For a stop already running\
+        \ when the window opened that instant is the part that\nleft before it, not the window's edge\
+        \ -- the edge is a property of the question.\n\n**`id` is null when the database holds no such\
+        \ part**: the window opens before the\nhistory does, so the stop's start is the caller's own boundary\
+        \ and there is no instant\nto cite that `/stops/{id}` could verify. An id minted anyway would\
+        \ be a citation the\nagent could name and nobody could open.\n\n`started_before_window` and `open_at_window_end`\
+        \ are what keep `duration_seconds`\nhonest: a stop reported as 90 s because the window closed\
+        \ 90 s into it is a different\nclaim from a stop that ended after 90 s, and only these two say\
+        \ which was meant.\n\n`category` is null when the derivation could not be completed, which is\
+        \ an answer\nrather than a gap \u2014 see `Derivation`."
+      properties:
+        category:
+          anyOf:
+          - enum:
+            - internal
+            - external_upstream
+            - external_downstream
+            - ambiguous
+            type: string
+          - type: 'null'
+          title: Category
+        duration_seconds:
+          title: Duration Seconds
+          type: number
+        from_ts:
+          format: date-time
+          title: From Ts
+          type: string
+        id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Id
+        open_at_window_end:
+          title: Open At Window End
+          type: boolean
+        started_before_window:
+          title: Started Before Window
+          type: boolean
+        to_ts:
+          format: date-time
+          title: To Ts
+          type: string
+      required:
+      - id
+      - from_ts
+      - to_ts
+      - duration_seconds
+      - started_before_window
+      - open_at_window_end
+      - category
+      title: Stop
+      type: object
+    StopDetail:
+      description: "One stop, everything around it, and \xA75.4's derivation \u2014 shaped for a Gantt.\n\
+        \n`timeline` is every station's episodes over the stop *and the history read before it*,\nso the\
+        \ chart shows the run-up rather than starting at the moment output stopped:\n`history_from_ts`\
+        \ says how far back that goes. `buffer_levels` is the second row of the\nsame chart, and is what\
+        \ makes a chain's `buffer_condition_since` checkable by eye.\n\n`alarms` is an annotation and\
+        \ nothing more. \xA73.3 and `004_m2c.sql` both warn that \"the\nfirst station to raise an alarm\"\
+        \ is circular, and two of M2c's eight scenarios raise no\nalarm at all \u2014 so the derivation\
+        \ is computed without them and they are returned beside\nit, never through it.\n\n`coverage` is\
+        \ over the stop's own interval and is not decoration: both of this stop's\nboundaries were reconstructed\
+        \ from `part_dispositions` rows that are *not there*, and a\nwindow the gateway was down for holds\
+        \ no such rows either. Without it a five-minute\noutage reads as a five-minute line stop with\
+        \ an unexplained derivation, which is exactly\nthe confusion \xA74.4's gap markers exist to prevent.\n\
+        \n`as_of` is the clock this was answered at, and matters for exactly one case: a stop with\nno\
+        \ part out after it is measured to `as_of`, and `stop.open_at_window_end` is what says\nthe end\
+        \ is a reading of the clock rather than an observation of a part."
+      properties:
+        alarms:
+          items:
+            $ref: '#/components/schemas/Alarm'
+          title: Alarms
+          type: array
+        as_of:
+          format: date-time
+          title: As Of
+          type: string
+        buffer_levels:
+          items:
+            $ref: '#/components/schemas/BufferLevelPoint'
+          title: Buffer Levels
+          type: array
+        coverage:
+          $ref: '#/components/schemas/Coverage'
+        derivation:
+          $ref: '#/components/schemas/Derivation'
+        history_from_ts:
+          format: date-time
+          title: History From Ts
+          type: string
+        stop:
+          $ref: '#/components/schemas/Stop'
+        timeline:
+          items:
+            $ref: '#/components/schemas/StateEpisode'
+          title: Timeline
+          type: array
+      required:
+      - stop
+      - as_of
+      - coverage
+      - history_from_ts
+      - timeline
+      - buffer_levels
+      - alarms
+      - derivation
+      title: StopDetail
+      type: object
+    StopList:
+      description: "Every stop in the window, the micro-stops beneath it, and where the data is not.\n\
+        \nCoverage rides along because a stop list is a claim about *absence* \u2014 no part left S4 \u2014\
+        \nand absence is exactly what an ingest gap also looks like. A stop list read without it\nwould\
+        \ report the gateway's outage as the line's."
+      properties:
+        coverage:
+          $ref: '#/components/schemas/Coverage'
+        micro_stop_threshold_seconds:
+          title: Micro Stop Threshold Seconds
+          type: number
+        micro_stops:
+          title: Micro Stops
+          type: integer
+        stops:
+          items:
+            $ref: '#/components/schemas/Stop'
+          title: Stops
+          type: array
+        truncated:
+          title: Truncated
+          type: boolean
+        window:
+          $ref: '#/components/schemas/Window'
+      required:
+      - window
+      - coverage
+      - stops
+      - micro_stops
+      - micro_stop_threshold_seconds
+      - truncated
+      title: StopList
+      type: object
+    Termination:
+      description: Where the walk stopped. `Derivation.category` is a function of this.
+      enum:
+      - cause_candidate
+      - line_edge
+      - unexplained
+      title: Termination
+      type: string
+    TimeResolution:
+      description: 'What `/time/resolve` made of a phrase, and as of when.
+
+
+        `now` is echoed because `closed` is a statement about the clock and not about the
+
+        window: the same expression resolved a minute later can answer the same window and a
+
+        different `closed`, and a cache that kept the flag without the instant it was taken at
+
+        would be asserting a fact it cannot support.'
+      properties:
+        closed:
+          title: Closed
+          type: boolean
+        expression:
+          title: Expression
+          type: string
+        label:
+          title: Label
+          type: string
+        now:
+          format: date-time
+          title: Now
+          type: string
+        window:
+          $ref: '#/components/schemas/Window'
+      required:
+      - expression
+      - window
+      - label
+      - closed
+      - now
+      title: TimeResolution
+      type: object
+    TrendPoint:
+      description: 'One point of a trend: a bucket, or a single sample when `agg` is `raw`.
+
+
+        `at` is the bucket''s start (half-open, clock-aligned) or the sample''s own
+
+        `SourceTimestamp`. `value` is the bucket''s mean or the sample''s value; `count` is how
+
+        many samples it is of, and is 1 for a raw point.
+
+
+        `value`, `min_value` and `max_value` are nullable for one reason only: a bucket the
+
+        query emitted with nothing in it. They are never a stand-in for a value that exists.'
+      properties:
+        at:
+          format: date-time
+          title: At
+          type: string
+        count:
+          title: Count
+          type: integer
+        max_value:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Max Value
+        min_value:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Min Value
+        value:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Value
+      required:
+      - at
+      - value
+      - min_value
+      - max_value
+      - count
+      title: TrendPoint
+      type: object
+    Unexplained:
+      description: Where a chain stopped short, named precisely enough to be checked by hand.
+      properties:
+        buffer:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Buffer
+        detail:
+          title: Detail
+          type: string
+        station:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Station
+      required:
+      - station
+      - buffer
+      - detail
+      title: Unexplained
+      type: object
     ValidationError:
       properties:
         ctx:
@@ -362,6 +1652,17 @@ components:
       - type
       title: ValidationError
       type: object
+    Verdict:
+      description: "The three answers, and the third is not the second.\n\n`NOT_SIGNIFICANT` is \"we looked\
+        \ and found nothing\". `NOT_ENOUGH_DATA` is \"we could\nnot look\". \xA75.5 rests on the difference:\
+        \ the agent says different things about them,\nand a system that collapsed the second into the\
+        \ first would report a clean line\nwhere nobody had checked."
+      enum:
+      - significant
+      - not_significant
+      - not_enough_data
+      title: Verdict
+      type: string
     Window:
       properties:
         from_ts:
@@ -382,18 +1683,230 @@ info:
   version: 0.1.0
 openapi: 3.1.0
 paths:
+  /alarms:
+    get:
+      description: "Every alarm whose life overlaps the window, newest first.\n\nA `station` that the\
+        \ line does not have is a 404 rather than an empty list: \xA76.5 checks\ncited ids against the\
+        \ database, and \"S9 raised no alarms\" is a false statement about a\nstation that does not exist."
+      operationId: listAlarms
+      parameters:
+      - in: query
+        name: station
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Station
+      - in: query
+        name: from
+        required: true
+        schema:
+          format: date-time
+          title: From
+          type: string
+      - in: query
+        name: to
+        required: true
+        schema:
+          format: date-time
+          title: To
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlarmList'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Alarms
+  /carriers/{carrier_id}/parts:
+    get:
+      description: "Which assemblies rode this carrier.\n\n\xA73.1 keeps the carriers in a closed loop,\
+        \ so a carrier comes round again \u2014 this is a\nlist over however much history the window admits,\
+        \ never a list of one pass. That is also\nwhat makes carrier wear detectable at all: a carrier\
+        \ that passed once would leave no\nstatistical signal to find."
+      operationId: carrierParts
+      parameters:
+      - in: path
+        name: carrier_id
+        required: true
+        schema:
+          title: Carrier Id
+          type: integer
+      - in: query
+        name: from
+        required: false
+        schema:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: From
+      - in: query
+        name: to
+        required: false
+        schema:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: To
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CarrierParts'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Carrier Parts
+  /components/{serial}/assembly:
+    get:
+      description: "\xA75.3's single-component recall: a supplier finds a defect months later and gives\
+        \ you\none serial.\n\nOnly answerable because components are individually serialised (\xA73.3).\
+        \ A component that\nhas been read at a feeder and not yet built into anything answers with a null\
+        \ assembly \u2014\na real state, and one a 404 would have misreported as an unknown component."
+      operationId: componentAssembly
+      parameters:
+      - in: path
+        name: serial
+        required: true
+        schema:
+          title: Serial
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComponentAssembly'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Component Assembly
+  /coverage:
+    get:
+      description: Where the data is, and where it is not, over a half-open window.
+      operationId: coverage
+      parameters:
+      - in: query
+        name: from
+        required: true
+        schema:
+          format: date-time
+          title: From
+          type: string
+      - in: query
+        name: to
+        required: true
+        schema:
+          format: date-time
+          title: To
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Coverage'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Coverage
+  /inspection/patterns:
+    get:
+      description: "Every \xA75.5 dimension over the window, each value against the rest of its pool.\n\
+        \nThree observation sets, because the dimensions do not all count the same thing. Carrier\nand\
+        \ time bucket are one trial per part with \"was it rejected\" as the outcome. Lot is one\ntrial\
+        \ per part *per lot it was built from* \u2014 a part contains two, one per feeder lane \u2014\n\
+        with the same outcome. Defect class is one trial per part *per class* with \"did it reach\nthe\
+        \ threshold on this class\" as the outcome, and those same trials carry the carrier, so\nthe sixth\
+        \ section reads carrier within class off the set the fourth already built \u2014 \xA73.4's six\
+        \ scores are independent, a part can carry several, and dividing a\npart between the classes it\
+        \ carries would invent a constraint the classifier does not\nhave. Both use the part as the denominator,\
+        \ which is the same denominator\n`/inspection/stats?group_by=defect_class` counts against.\n\n\
+        Coverage rides along for the reason it rides along everywhere: a window the gateway was\ndown\
+        \ for produces a smaller sample, and a smaller sample is exactly what turns a real\neffect into\
+        \ `not_enough_data`."
+      operationId: inspectionPatterns
+      parameters:
+      - in: query
+        name: from
+        required: true
+        schema:
+          format: date-time
+          title: From
+          type: string
+      - in: query
+        name: to
+        required: true
+        schema:
+          format: date-time
+          title: To
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PatternReport'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Inspection Patterns
   /inspection/stats:
     get:
-      description: "Counts over a closed window, with the gaps that make them incomplete.\n\n**The breakdown\
-        \ reads \xA73.4's score vector, not a scalar class.** It grouped by\n`inspection_results.defect_class`\
+      description: "Counts over a half-open window, with the gaps that make them incomplete.\n\n**The\
+        \ breakdown reads \xA73.4's score vector, not a scalar class.** It grouped by\n`inspection_results.defect_class`\
         \ until M2b Task 7, and by then nothing filled that\ncolumn: the plant sends `DefectClasses`,\
         \ the gateway's select clause named the old\nscalar, asyncua maps a select clause it cannot resolve\
         \ to `Variant(None)` rather than\nerroring, the writer resolves that to `DBNull`, and `defect_class\
         \ IS NOT NULL` then\nemptied the group-by. No exception and no 500 \u2014 `by_defect_class: []`\
         \ beside a correct\n`total` and `rejects`, which is a silently empty answer to \"which defects\
-        \ are we\nseeing\" and the exact failure \xA71 exists to prevent."
+        \ are we\nseeing\" and the exact failure \xA71 exists to prevent. The column is no longer in the\
+        \ read\nlayer at all, so the query that produced that answer can no longer be written.\n\n`group_by`\
+        \ is absent by default and `groups` is then null rather than empty: a caller\nthat asked for no\
+        \ grouping and a caller that asked for one over an empty window are not\nentitled to the same\
+        \ answer."
       operationId: inspectionStats
       parameters:
+      - in: query
+        name: group_by
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - time
+            - carrier
+            - lane
+            - defect_class
+            type: string
+          - type: 'null'
+          title: Group By
       - in: query
         name: from
         required: true
@@ -422,6 +1935,179 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Inspection Stats
+  /line/status:
+    get:
+      description: "Each station's last state and reason, the buffer levels, the standing alarms, the\n\
+        last part out \u2014 and how old all of that is.\n\n`live` is a comparison and nothing more: the\
+        \ newest row in the database against\n`live_within_seconds`, both of which are in the response\
+        \ so that the verdict can be\nchecked rather than believed.\n\nTwo edges worth knowing. A database\
+        \ with no rows at all reports a null staleness and\n`live` false \u2014 nothing has ever arrived,\
+        \ which is a different thing from nothing having\narrived lately and calls for a different action.\
+        \ And a *negative* staleness is possible\nand is reported as it is: all analysis reads `SourceTimestamp`,\
+        \ which is simulated time,\nand simulated time ahead of the wall clock is a fact about the plant's\
+        \ clock rather than\nsomething to clamp away."
+      operationId: lineStatus
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LineStatus'
+          description: Successful Response
+      summary: Line Status
+  /lots/{lot_code}/parts:
+    get:
+      description: "Which assemblies contain a component from this lot \u2014 \xA73.5 scenario 7's containment.\n\
+        \n404 when no lot carries the code, which is not the same as a lot that has gone into\nnothing\
+        \ yet. `lots` is a list because the code is unique per lane and not per line."
+      operationId: lotParts
+      parameters:
+      - in: path
+        name: lot_code
+        required: true
+        schema:
+          title: Lot Code
+          type: string
+      - in: query
+        name: from
+        required: false
+        schema:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: From
+      - in: query
+        name: to
+        required: false
+        schema:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: To
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LotParts'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Lot Parts
+  /parts/affected:
+    get:
+      description: "The containment scope: which parts a condition touched, and where each of them went.\n\
+        \nThe criteria conjoin and any of them may be omitted; a window on its own is \"every part\nmade\
+        \ in this window\", which is where a shift-wide containment starts.\n\n**`station` is answered\
+        \ from that station's own per-part record, or refused.** The head\nof the line records a creation\
+        \ instant, the inspection station a verdict instant and the\ntail a disposition instant \u2014\
+        \ and the press records two numbers against the serial and no\ntime at all. Asked for the press,\
+        \ this returns 422 rather than reaching for a\nneighbouring station's instant: a containment list\
+        \ built on \"the part was probably there\naround then\" is a list someone acts on, and \xA73.4a\
+        \ is explicit that the association is an\ninference the moment a buffer sits between the two stations.\n\
+        \n**`signal` with `below` and/or `above` is \xA75.3's worked example, answered.** *\"Which\nparts\
+        \ passed S2 while the joining force was out of tolerance?\"* cannot be asked as a\nwindow on S2,\
+        \ and it does not need to be: the force is recorded per part, at the instant\nof production, and\
+        \ a part whose own `PeakForce` is out of tolerance is out of tolerance\nwhatever the clock was\
+        \ doing. So the criterion is a value comparison against the part's\nown record, with no time range\
+        \ anywhere near it, and the window then bounds when those\nparts were *completed* rather than\
+        \ when they were pressed \u2014 which `window_selects` says\nin the response, because it is a\
+        \ difference a reader would otherwise assume away.\n\n404 for a station the line does not have,\
+        \ 422 for one that records no instant or for\nhalf a tolerance, and an empty scope for criteria\
+        \ that simply matched nothing. Three\ndifferent answers, because they call for three different\
+        \ next steps (\xA76.5)."
+      operationId: affectedParts
+      parameters:
+      - in: query
+        name: station
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Station
+      - in: query
+        name: carrier
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Carrier
+      - in: query
+        name: lot
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lot
+      - in: query
+        name: defect_class
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Defect Class
+      - in: query
+        name: signal
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Signal
+      - in: query
+        name: below
+        required: false
+        schema:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Below
+      - in: query
+        name: above
+        required: false
+        schema:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Above
+      - in: query
+        name: from
+        required: true
+        schema:
+          format: date-time
+          title: From
+          type: string
+      - in: query
+        name: to
+        required: true
+        schema:
+          format: date-time
+          title: To
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AffectedParts'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Affected Parts
   /parts/{serial}:
     get:
       description: "\xA714's trace: genealogy, what each station recorded, the verdict and the disposition.\n\
@@ -480,3 +2166,175 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Get Part Image
+  /signals/trend:
+    get:
+      description: "One historised signal over a window, raw or bucketed.\n\nBuckets are half-open and\
+        \ aligned to the clock in UTC, so the 09:00 bucket is the same\nhour whichever window asked for\
+        \ it and two trends can be read against each other.\n\nA station the line does not have is a 404;\
+        \ a station that published nothing under this\nname is an empty series. \xA76.5 needs those to\
+        \ be different answers \u2014 \"S2 has no signal\ncalled JoiningForce\" and \"S2's JoiningForce\
+        \ was silent for this hour\" lead to different\nnext steps, and an empty list for both would hide\
+        \ a typo as a measurement."
+      operationId: signalTrend
+      parameters:
+      - in: query
+        name: station
+        required: true
+        schema:
+          title: Station
+          type: string
+      - in: query
+        name: signal
+        required: true
+        schema:
+          title: Signal
+          type: string
+      - in: query
+        name: agg
+        required: false
+        schema:
+          default: raw
+          enum:
+          - raw
+          - minute
+          - hour
+          title: Agg
+          type: string
+      - in: query
+        name: from
+        required: true
+        schema:
+          format: date-time
+          title: From
+          type: string
+      - in: query
+        name: to
+        required: true
+        schema:
+          format: date-time
+          title: To
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignalTrend'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Signal Trend
+  /stops:
+    get:
+      description: "Every stop in the window, with a duration and a category for each.\n\nCoverage rides\
+        \ along because this endpoint's answer is a claim about *absence* \u2014 no part\nleft S4 \u2014\
+        \ and an ingest gap is an absence that looks exactly the same from here. Without\nit, a window\
+        \ in which the gateway was down reports the outage as the line's stop.\n\nThe state history is\
+        \ read once for the whole window and every stop's chain is derived\nfrom the same rows, rather\
+        \ than one read per stop: a shift with forty stops would\notherwise be forty passes over the same\
+        \ timeline."
+      operationId: listStops
+      parameters:
+      - in: query
+        name: from
+        required: true
+        schema:
+          format: date-time
+          title: From
+          type: string
+      - in: query
+        name: to
+        required: true
+        schema:
+          format: date-time
+          title: To
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StopList'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Stops
+  /stops/{identifier}:
+    get:
+      description: "One stop, the state timeline around it, and \xA75.4's chain as a visible derivation.\n\
+        \n**The stop is rebuilt from the database, not from a window.** The id names the instant\nthe\
+        \ line stopped producing; the stop is that instant to the next part out, and both ends\ncome from\
+        \ `part_dispositions`. So the same id resolves to the same stop whatever window\nit was first\
+        \ cited from \u2014 which is what \xA76.5 means by an id that verifies.\n\nAn id landing inside\
+        \ an interruption rather than at its start resolves to the whole\ninterruption, and the `id` in\
+        \ the response is the canonical one. That is not a\ncorrection of the caller: a stop that had\
+        \ already begun when a window opened is reported\nat the window's edge by `/stops`, and this is\
+        \ where its true beginning is found.\n\n404 when no interruption at that instant is long enough\
+        \ to be a stop, and 422 when the\nid is not an id. \xA76.5 needs those to be different answers,\
+        \ and neither is an empty\nresult."
+      operationId: getStop
+      parameters:
+      - in: path
+        name: identifier
+        required: true
+        schema:
+          title: Identifier
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StopDetail'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Stop
+  /time/resolve:
+    get:
+      description: 'Resolve a fixed time phrase to a concrete UTC window against the shift calendar.
+
+
+        **An expression this does not understand is a 422 carrying the list of ones it does,
+
+        never a guess.** A near-miss guessed wrong is the worst of the three possible outcomes:
+
+        the caller gets a window, believes it is the one it asked for, and every number computed
+
+        over it is an answer to a different question. The list is in the error so that the agent
+
+        can retry with something real instead of rephrasing at random.'
+      operationId: resolveTime
+      parameters:
+      - in: query
+        name: expression
+        required: true
+        schema:
+          title: Expression
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimeResolution'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Resolve Time

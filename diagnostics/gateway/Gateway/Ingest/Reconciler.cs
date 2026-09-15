@@ -61,7 +61,8 @@ public sealed class Reconciler
 {
     private readonly string _connectionString;
 
-    public Reconciler(string connectionString) => _connectionString = connectionString;
+    public Reconciler(string connectionString) =>
+        _connectionString = PostgresWriter.WithSearchPath(connectionString);
 
     public async Task<ReconciliationResult> CheckAsync(
         DateTime from, DateTime to, CancellationToken ct = default)
