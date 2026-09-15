@@ -118,16 +118,22 @@ SCENARIO_SCHEMA = "scenario_run"
 CLEAN_SCHEMA = "clean_run"
 """Two copies of §5.2's schema in one database, one run in each.
 
-Four of §3.5's eight make a claim with no meaning without a contrast group -- "carrier 7
-stands out **from what**", "exactly one part gained a gap **against what**" -- and the
+Five of §3.5's eight make a claim with no meaning without a contrast group -- "carrier 7
+stands out **from what**", "the verdicts did not move **compared to what**" -- and the
 contrast is the same run with the fault left out. Two schemas rather than two databases,
 so the comparison is a query across them rather than two connections and a join in Python.
 
 **The clean schema is a property of this proof and never of a deployment.** A real history
 holds one run, which is why scenario 3's `gap` consequence was dropped from the log rather
 than rewritten as a paired claim: that one needed a twin *and* had no separation without
-one. Each of the four below has its separation measured on its own run as well, and the
-twin is what calibrates the bar rather than what clears it.
+one. So each of the five has a form the run itself supports, and the twin either
+calibrates the bar (4, 5, 7) or turns a statistical statement into an exact one (6, 8).
+
+Scenario 8 is where that rule was stated and not kept: both halves of its difference read
+this schema and there was no single-run form at all until `_one_part_only` gained one --
+exactly one gapped part over the buffer-transit window a single press can reach. The twin
+now says *which* part and that a clean run's identical window holds none, which is worth
+having and is not what the claim rests on.
 """
 
 DEFECT_SCORE_THRESHOLD = 0.5
@@ -1199,79 +1205,164 @@ def _confidence_decays(conn: Connection[tuple[object, ...]], claim: Claim) -> st
     return f"all six to {statistics.fmean(ratios.values()):.3f} (factor {factor})"
 
 
+_DISPOSED = sql.SQL("SELECT assembly_serial, result FROM {schema}.inspection_results")
+
+
 def _scrap_rate_flat(conn: Connection[tuple[object, ...]], claim: Claim) -> str:
-    """The reject rate after the fouling is the rate before it.
+    """The fouled run and its clean twin dispose of **the same parts the same way**.
 
     What this asserts about the plant is that `OPTICS_FOULING` touches the **image and
     nothing else**: the verdict comes from what the part genuinely carries, so a fault
-    that also raised a defect propensity would move this rate and this would fail.
-    Two-proportion at three pooled standard errors, because "equal" over a few thousand
-    parts is a range and not a number.
+    that also raised a defect propensity would move a disposition and this would fail.
+
+    **Against the twin and not against a before-window, because the before-window cannot
+    fail.** This compared the 300 parts of the warmup with the 595 after the ramp at three
+    pooled standard errors, and the 300-part side is what sets the bar: 2.727 pp on a
+    2.000 % baseline, which no amount of extra depth on the other side narrows. Measured
+    by mutating `truth_by_lane` so the fouling also raised the defect propensity: at
+    1/clarity**2 the reject rate went **2.000 % -> 6.218 %, 2.79 standard errors, and the
+    old assertion passed**; at 1/clarity, 3.025 % and 0.90. The twin is a fixed draw
+    against a fixed draw, so the comparison here is exact rather than statistical -- one
+    part whose verdict moved is a failure, and those two mutations now move 43 and 19.
+
+    What this does **not** establish is the classifier's half -- that a fouled lens costs
+    certainty and not the verdict on a real image. That is
+    `plant/inspection/tests/test_inspection.py::test_a_fouled_lens_costs_certainty_and_not_the_verdict`,
+    on the real classifier, and it belongs there: the two workspaces may not import each
+    other (§10.7).
     """
-    ramp = timedelta(seconds=claim.params.get("ramp_seconds", 0.0))
+    factor = claim.params["factor"]
+    scenario_side = _DISPOSED.format(schema=sql.Identifier(SCENARIO_SCHEMA))
+    clean_side = _DISPOSED.format(schema=sql.Identifier(CLEAN_SCHEMA))
+    moved = conn.execute(
+        sql.SQL("({a} EXCEPT {b}) UNION ALL ({b} EXCEPT {a})").format(
+            a=scenario_side, b=clean_side
+        )
+    ).fetchall()
+
     measured: list[tuple[int, int]] = []
-    for lo, hi in ((claim.origin, claim.at), (claim.at + ramp, None)):
+    for schema in (SCENARIO_SCHEMA, CLEAN_SCHEMA):
         row = conn.execute(
             sql.SQL(
                 "SELECT count(*) FILTER (WHERE result = 'reject'), count(*)"
                 " FROM {}.inspection_results"
-                " WHERE source_ts >= %s AND (%s::timestamptz IS NULL OR source_ts < %s)"
-            ).format(sql.Identifier(SCENARIO_SCHEMA)),
-            (lo, hi, hi),
+            ).format(sql.Identifier(schema))
         ).fetchone()
-        assert row is not None and _int(row[1]) > 0
+        assert row is not None
         measured.append((_int(row[0]), _int(row[1])))
-    (before_hits, before_seen), (after_hits, after_seen) = measured
-    pooled = (before_hits + after_hits) / (before_seen + after_seen)
-    error = math.sqrt(pooled * (1 - pooled) * (1 / before_seen + 1 / after_seen))
-    assert error > 0, "no part was rejected at all, so a flat rate says nothing"
-    difference = abs(after_hits / after_seen - before_hits / before_seen)
-    assert difference < 3 * error, (
-        f"the reject rate moved {before_hits / before_seen:.3%} -> "
-        f"{after_hits / after_seen:.3%}, which is {difference / error:.1f} standard "
-        "errors: a fouled lens is not supposed to damage parts"
+    (hits, seen), (clean_hits, clean_seen) = measured
+    assert hits > 0, (
+        "no part was rejected at all, so 'the fouling moved no verdict' is a statement "
+        "about an empty set"
+    )
+    assert not moved, (
+        f"{len(moved) // 2} parts were disposed of differently with the lens fouled: "
+        f"{sorted({_text(row[0]) for row in moved})[:5]} -- a fouled lens is not "
+        "supposed to damage parts"
     )
     return (
-        f"{before_hits / before_seen:.3%} -> {after_hits / after_seen:.3%} "
-        f"({difference / error:.1f} se)"
+        f"{hits}/{seen} rejected against the clean twin's {clean_hits}/{clean_seen}, "
+        f"not one verdict moved (clarity {factor})"
     )
 
 
+_CARRIES = sql.SQL(
+    "EXISTS (SELECT 1 FROM unnest(r.defect_classes, r.confidences) AS scored(c, score)"
+    "        WHERE scored.c = ANY(%s) AND scored.score >= %s)"
+)
+"""Whether one `inspection_results` row `r` carries any of the named classes.
+
+One fragment rather than the same EXISTS written twice, because `_one_part_only` asks it
+of a whole schema and of a single window and the two answers have to be the same
+question. `%s` placeholders survive `sql.SQL.format`, which substitutes only `{}`.
+"""
+
 _CARRYING = sql.SQL(
-    "SELECT r.assembly_serial FROM {schema}.inspection_results r WHERE EXISTS ("
-    "  SELECT 1 FROM unnest(r.defect_classes, r.confidences) AS scored(c, score)"
-    "  WHERE scored.c = ANY(%s) AND scored.score >= %s)"
+    "SELECT r.assembly_serial FROM {schema}.inspection_results r WHERE {carries}"
+)
+
+_INSIDE = sql.SQL(
+    "SELECT count(*), count(*) FILTER (WHERE {carries})"
+    " FROM {schema}.inspection_results r WHERE r.source_ts >= %s AND r.source_ts < %s"
 )
 
 
 def _one_part_only(conn: Connection[tuple[object, ...]], claim: Claim) -> str:
-    """Exactly one part carries the named classes **because of this fault**, and none
-    stopped carrying them.
+    """Exactly one part carries the named classes over the stretch the fault could have
+    reached, and it is the only part in the run that the fault changed.
 
-    "Because of" is a counterfactual, which is why this is the claim that reads both
-    schemas: the serials carrying the class in the run, minus the serials carrying it in
-    the same run without the fault. The reverse difference is asserted empty too, and that
-    half is structural rather than lucky -- a fault raises a threshold against a fixed
-    draw, so a part the clean run marked cannot come back clean.
+    **The first half is the claim, and it is checkable on this run alone.** The fault is
+    on `PRESS_CONTACT`, which S2 reads at the press, and the window it runs in is narrower
+    than the fastest station's takt -- so at most one part is pressed inside it. That part
+    is inspected a buffer later, which is what the consequence's `within_seconds` is: one
+    `_buffer_transit_seconds`, doubled from the measured 35.1 s lag as the margin every
+    derived window here carries. So the window below is eleven parts wide at the shipped
+    settings, and exactly one of them is gapped. A clean run reaches that by chance at the
+    baseline `CLASS_RATE_RISES` measures for the same class -- 0.2706 % over 11,457 parts,
+    so 1 - (1 - 0.002706)^11, near three per cent over eleven.
+
+    **The twin difference is the calibration and not the claim**, which is the shape the
+    other paired rows have and the shape this one was missing: both halves of
+    `scenario_run EXCEPT clean_run` read the clean schema, so before the window assertion
+    above there was no form of this consequence that one run could support -- and a
+    consequence the evidence of a single run cannot reach is exactly what row 3's `gap`
+    was dropped for one commit earlier (b8a0815). What the twin adds is that the gained
+    part is *that* part and that the identical window on a clean run carries none. The
+    reverse difference is asserted empty too, and that half is structural rather than
+    lucky -- a fault raises a threshold against a fixed draw, so a part the clean run
+    marked cannot come back clean.
     """
-    scenario_side = _CARRYING.format(schema=sql.Identifier(SCENARIO_SCHEMA))
-    clean_side = _CARRYING.format(schema=sql.Identifier(CLEAN_SCHEMA))
-    arguments = (list(claim.subjects), DEFECT_SCORE_THRESHOLD) * 2
+    assert claim.until is not None and claim.within_seconds is not None, (
+        "scenario 8's fault has to end and its consequence has to say how long the part "
+        "may take to reach the camera, or the single-run half of this claim has no window"
+    )
+    window = (
+        claim.at,
+        claim.until + timedelta(seconds=claim.within_seconds),
+    )
+    inside = _INSIDE.format(schema=sql.Identifier(SCENARIO_SCHEMA), carries=_CARRIES)
+    twin = _INSIDE.format(schema=sql.Identifier(CLEAN_SCHEMA), carries=_CARRIES)
+    arguments = (list(claim.subjects), DEFECT_SCORE_THRESHOLD, *window)
+    seen, hits = conn.execute(inside, arguments).fetchone() or (0, 0)
+    clean_seen, clean_hits = conn.execute(twin, arguments).fetchone() or (0, 0)
+    assert _int(seen) > 0, (
+        f"no part was inspected between {window[0]} and {window[1]}, so the press that "
+        "took the defective component never reached the camera and nothing here is about "
+        "anything"
+    )
+    assert _int(hits) == 1, (
+        f"{_int(hits)} of the {_int(seen)} parts inspected between {window[0]} and "
+        f"{window[1]} carry {list(claim.subjects)}: one defective component is one part"
+    )
+    assert _int(clean_hits) == 0, (
+        f"the same window on a clean run already carries {_int(clean_hits)} of "
+        f"{list(claim.subjects)} over {_int(clean_seen)} parts, so 'exactly one' is "
+        "answered by a line with nothing wrong with it"
+    )
+
+    scenario_side = _CARRYING.format(
+        schema=sql.Identifier(SCENARIO_SCHEMA), carries=_CARRIES
+    )
+    clean_side = _CARRYING.format(schema=sql.Identifier(CLEAN_SCHEMA), carries=_CARRIES)
+    pair = (list(claim.subjects), DEFECT_SCORE_THRESHOLD) * 2
     gained = conn.execute(
-        sql.SQL("{a} EXCEPT {b}").format(a=scenario_side, b=clean_side), arguments
+        sql.SQL("{a} EXCEPT {b}").format(a=scenario_side, b=clean_side), pair
     ).fetchall()
     lost = conn.execute(
-        sql.SQL("{b} EXCEPT {a}").format(a=scenario_side, b=clean_side), arguments
+        sql.SQL("{b} EXCEPT {a}").format(a=scenario_side, b=clean_side), pair
     ).fetchall()
     assert len(gained) == 1, (
         f"{len(gained)} parts gained {list(claim.subjects)} from one defective "
-        f"component: {sorted(str(row[0]) for row in gained)}"
+        f"component: {sorted(_text(row[0]) for row in gained)}"
     )
     assert not lost, (
         f"{len(lost)} parts stopped carrying {list(claim.subjects)}, which no fault can "
         "do to a fixed draw"
     )
-    return f"one part, {gained[0][0]}"
+    return (
+        f"one of the {_int(seen)} parts in the window, {_text(gained[0][0])}, "
+        f"against none of the twin's {_int(clean_seen)}"
+    )
 
 
 CHECKERS: dict[str, Checker] = {
@@ -1457,6 +1548,13 @@ async def test_scenario_6_decays_all_six_scores_while_the_scrap_rate_holds(
     frames arrive clean and the scores do not fall. What it does not check is the
     classifier's own scaling -- that is the inspection package's suite, and is where it
     belongs, because the two workspaces may not import each other (§10.7).
+
+    **The twin is here for `SCRAP_RATE_FLAT` and nothing else**, and it is what makes that
+    half able to fail: "the rate did not move" measured against this run's own 300-part
+    warmup sits behind a 2.727 pp bar that a tripled reject rate walks under. The clean
+    run takes the cheap `truth_outcome` path -- it is the contrast group for the verdicts,
+    not a second run through the classifier, and rendering a PNG per part twice would buy
+    nothing `CONFIDENCE_DECAYS` does not already assert on the fouled side.
     """
     settings = Settings()
     at, _ = fault_window(scenario(6, settings))
@@ -1467,6 +1565,7 @@ async def test_scenario_6_decays_all_six_scores_while_the_scrap_rate_holds(
             6,
             seconds,
             tmp_path,
+            twin=True,
             transport=_stand_in_classifier(),
             produce_with=lambda log: lambda client: recording(log, client),
         )
@@ -1496,7 +1595,16 @@ async def test_scenario_8_is_one_bad_part_and_not_a_bad_lot(
     database: Connection[tuple[object, ...]], tmp_path: Path
 ) -> None:
     """§3.5 row 8, scenario 7's mirror, and the reason it is in the set: the same fault on
-    one component instead of five hundred must read as one bad part."""
+    one component instead of five hundred must read as one bad part.
+
+    **The window being narrower than a station takt is what makes this checkable on one
+    run**, and the assertion below is why that is a property of the scenario rather than
+    an observation about it: at most one part can be pressed while the fault runs. It
+    reaches the camera a buffer later -- measured at +2135.1 s against a window opening at
+    +2100.0 -- which is what the consequence's `within_seconds` covers, and
+    `_one_part_only` asserts exactly one gapped part over that stretch before it ever
+    looks at the twin.
+    """
     settings = Settings()
     at, until = fault_window(scenario(8, settings))
     assert until is not None and until - at < min(

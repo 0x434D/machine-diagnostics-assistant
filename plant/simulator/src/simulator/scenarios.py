@@ -100,8 +100,14 @@ pool's own spread rather than an `ORDER BY`."""
 CONFIDENCE_DECAYS: Final = "confidence_decays"
 """Every named class's score falls, together, while the verdicts do not change."""
 SCRAP_RATE_FLAT: Final = "scrap_rate_flat"
-"""The reject rate inside the window is the rate outside it. Scenario 6's other half,
-and what separates a fouled lens from anything that actually damages parts."""
+"""The fouling moves no part's verdict. Scenario 6's other half, and what separates a
+fouled lens from anything that actually damages parts.
+
+Stated as the dispositions and not as the rate, because the rate cannot carry it. Against
+this run's own before-window -- 300 warmup parts -- three pooled standard errors sit at
+2.727 pp on a 2.000 % baseline, so a fault that tripled the reject rate to 6.218 % passed
+that test when it was mutated in. Against the clean twin it is a fixed draw either side
+and the comparison is exact: one verdict that moved is a failure."""
 STREAM_STABLE: Final = "stream_stable"
 """The stream does not move across the window. **Scenario 7's load-bearing assertion**:
 its symptom is a rising `gap`, which is exactly what scenario 3's drifting clamp
@@ -110,7 +116,13 @@ STREAM_FALLS: Final = "stream_falls"
 """The stream's level inside the window is below its level before it."""
 ONE_PART_ONLY: Final = "one_part_only"
 """Exactly one part carries the named classes because of this fault. Scenario 8, and it
-exists to stop one bad component being reported as a bad lot."""
+exists to stop one bad component being reported as a bad lot.
+
+Checkable on one run because the fault's window is narrower than the fastest station's
+takt, so at most one part is pressed inside it: exactly one part is gapped over that
+window plus the buffer transit it takes to reach the camera, which `within_seconds`
+carries. A clean run answers that by chance at the 0.2706 % baseline `CLASS_RATE_RISES`
+measures above, over the eleven parts the window holds at the shipped settings."""
 ALARM_RAISED: Final = "alarm_raised"
 """The named station raises an alarm inside `within_seconds` of the injection.
 
@@ -261,23 +273,35 @@ def _seconds(value: float) -> timedelta:
     return timedelta(seconds=value)
 
 
+def _buffer_transit_seconds(settings: Settings) -> float:
+    """How long one full buffer takes to empty -- so, how far a condition at a station
+    lags behind the station above it, and how long a part waits between the two.
+
+    One buffer's worth of parts has to be consumed at the line's takt, which is 30 s at
+    the shipped values. Doubled as a **margin**, not as a second measurement: §3.5's
+    micro-stops add up to `micro_stop_max_seconds` to any cycle and a station can take
+    several, so a claim built on this has to hold on an unlucky run too. Measured at the
+    shipped settings: scenario 8's one defective component is pressed at S2 inside a
+    window opening at +2100.0 s and inspected at S3 at **+2135.1 s**, 35.1 s later,
+    against the 60 s this returns.
+
+    Derived from the line's own geometry because `buffer_capacity` is what §3.1 says sets
+    this delay -- a literal here would be a silent copy of two settings, and it would go
+    on claiming 60 s after the buffers were made twice as deep.
+    """
+    return 2.0 * settings.buffer_capacity * settings.takt_seconds
+
+
 def _propagation_seconds(settings: Settings) -> float:
     """How long a stoppage at one end of the line takes to reach the other.
 
-    One buffer's worth of parts has to be consumed before the station below it starves,
-    at the line's takt, and there are one fewer buffers than stations -- 90 s at the
-    shipped values. Doubled as a **margin**, not as a second measurement: §3.5's
-    micro-stops add up to `micro_stop_max_seconds` to any cycle and a station can take
-    several while a chain propagates, so the claim has to hold on an unlucky run too. The
-    chain measured at the shipped settings completes in 45.6 s against the 180 s this
-    returns, which is the size of the margin rather than a prediction of it.
-
-    Derived from the line's own geometry because `buffer_capacity` is what §3.1 says sets
-    this delay -- a hard 180 s here would be a second, silent copy of three settings, and
-    it would go on claiming 180 s after the buffers were made twice as deep.
+    One buffer at a time, and there are one fewer buffers than stations -- 180 s at the
+    shipped values, carrying `_buffer_transit_seconds`' margin with it. The chain measured
+    at the shipped settings completes in 45.6 s against the 180 s this returns, which is
+    the size of the margin rather than a prediction of it.
     """
     stations = len(settings.station_takt_seconds)
-    return 2.0 * (stations - 1) * settings.buffer_capacity * settings.takt_seconds
+    return (stations - 1) * _buffer_transit_seconds(settings)
 
 
 def _force_alarm_seconds(settings: Settings) -> float:
@@ -652,7 +676,18 @@ def _defective_component(settings: Settings) -> Scenario:
                     # happens inside it -- one component, which is the whole of row 8.
                     _seconds(start + min(settings.station_takt_seconds.values())),
                 ),
-                (Consequence(INSPECTION_RESULTS, ONE_PART_ONLY, (GAP,)),),
+                (
+                    Consequence(
+                        INSPECTION_RESULTS,
+                        ONE_PART_ONLY,
+                        (GAP,),
+                        # The press is at S2 and the verdict at S3, so the one part this
+                        # fault touches is inspected a buffer later. Without the window
+                        # the claim has no single-run form at all -- only the difference
+                        # against a twin, which no real history has.
+                        within_seconds=_buffer_transit_seconds(settings),
+                    ),
+                ),
             ),
         ),
         note=(

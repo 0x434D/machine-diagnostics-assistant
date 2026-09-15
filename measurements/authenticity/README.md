@@ -126,15 +126,25 @@ Postgres on the run the test performs.
 | 3 | `signals`, `alarms`, `state_changes` | `JoiningForcePeak` 4214.3 → 3791.9 N, **10.7 σ** of its own 39.4 N spread; A-207 raised +2902 s; `Aborted` 0.5 s *after* its own alarm |
 | 4 | `inspection_results` | carrier 7 at **d = +5.92** leave-one-out, against the best rival in the same run at +1.25 and the worst carrier of a clean twin at **+2.57** — and the clean twin's `ORDER BY rate DESC LIMIT 1` still answers carrier 10 |
 | 5 | `inspection_results` | the weakest named class **2.95×** the strongest unnamed one, against the clean twin's **0.84×** on the identical query |
-| 6 | `inspection_results` | all six class scores fall together to **0.554** of themselves, matching the fault's own 0.55 clarity factor; the reject rate moves 2.000 % → 1.513 %, **0.5** pooled standard errors |
+| 6 | `inspection_results` | all six class scores fall together to **0.554** of themselves, matching the fault's own 0.55 clarity factor; and **48 of 2,093 parts rejected against the clean twin's 48 of 2,093 — not one verdict moved**, serial by serial |
 | 7 | `inspection_results`, `signals` | 14 gaps in the lot's 500 parts against a 0.27 % baseline outside it — **10.9 σ**, where the clean twin's identical window reaches **2.3**; and the force moves **0.059 σ**, against scenario 3's 10.7 |
-| 8 | `inspection_results` | exactly one part, `A-00000355`, carries `gap` that the clean twin did not — and none stopped carrying it |
+| 8 | `inspection_results` | **exactly one** of the 11 parts inspected over the fault's window plus one buffer transit carries `gap`, against **none** of the clean twin's 11 over the same window; that part is `A-00000355`, and it is also the one part the twin difference names |
 
-Four of the eight load a **clean twin** of the same run into a second schema, because "carrier
-7 stands out from what" and "one part gained a gap against what" have no meaning without a
-contrast group. That twin is a property of the proof and never of a deployment: a real history
-holds one run, which is why §3.5 row 3's `gap` consequence was dropped from the ground-truth
-log in the round before this one rather than rewritten as a paired claim.
+Five of the eight load a **clean twin** of the same run into a second schema, because "carrier
+7 stands out from what" and "the verdicts did not move compared to what" have no meaning
+without a contrast group. That twin is a property of the proof and never of a deployment: a
+real history holds one run, which is why §3.5 row 3's `gap` consequence was dropped from the
+ground-truth log in the round before this one rather than rewritten as a paired claim. So each
+of the five has a form the run itself supports, and the twin either calibrates the bar (4, 5,
+7) or turns a statistical statement into an exact one (6, 8).
+
+Scenario 8 is where that rule was stated and not kept until this round: both halves of its
+difference read the clean schema, so a consequence recorded in the ground-truth log had no form
+a single history could check — the exact property row 3's `gap` was dropped for. It now claims
+**one gapped part over the stretch one press can reach**, which is eleven parts wide at the
+shipped settings and which a clean run answers by chance at the 0.2706 % baseline scenario 7
+measures: 1 − (1 − 0.002706)¹¹, near three per cent. The twin says *which* part, and is no
+longer what the claim rests on.
 
 **What was falsified, against what.** Each break below was applied to the shipped code and the
 proof it targets re-run — not the whole module, so "and no other failed" is not claimed here.
@@ -150,13 +160,30 @@ proof it targets re-run — not the whole module, so "and no other failed" is no
 | `carrier_wear_sigmas` 3.0 → 0.4 | 4 (`d=1.66: the answer is inside the noise`) |
 | `lane_contamination_factor` 6.0 → 1.0 | 5 (`0.84× the strongest unnamed one`) |
 | `clarity=` deleted from `InspectionClient.produce` — the fouling never reaches the frame | 6 (`gap did not fall at all (1.000)`) |
+| `truth_by_lane`'s propensity divided by `clarity²` — the fouled lens also damages parts | 6 (`43 parts were disposed of differently with the lens fouled`) |
+| the same mutation at `clarity` rather than `clarity²` | 6 (`19 parts were disposed of differently`) |
 | scenario 7 keeps its bad lot **and** drifts the clamp — it becomes scenario 3 | 7 (`moved 9.53 σ across the window`) |
 | a fault is never repaired (`until` ignored) — scenario 8 becomes a bad lot | 8 (`144 parts gained ['gap']`) |
+| `defective_component_mm` 2.0 → 0.6, scenario 7's lot magnitude — the one part is no longer certainly gapped | 8 (`0 of the 11 parts inspected … carry ['gap']`) |
 | one checker removed from the dispatch table | 8, and the coverage test |
 | `SCENARIO = "operator"` — every scripted injection stamped as an operator's | 1, and the `source` test |
 
-The last two are the ones this milestone kept re-learning. A consequence with no checker is
-written to the log, skipped by the dispatcher and reads as a scenario whose claims all held —
+**The two `truth_by_lane` rows are the ones this table was missing, and scenario 6's
+`SCRAP_RATE_FLAT` was the only one of the twelve consequences absent from it.** That was not a
+clerical gap: the assertion could not fail. Measured against the form it had — the 300-part
+warmup against the 595 parts after the ramp, two-proportion at three pooled standard errors —
+the bar sits at 2.727 pp on a 2.000 % baseline, and the 300-part side is what sets it, so
+running deeper does not narrow it. The `clarity²` mutation **tripled the reject rate to
+6.218 %, 2.79 standard errors, and passed**. Against the clean twin the comparison is a fixed
+draw either side and therefore exact, and both mutations now name the parts that moved.
+
+What the twin does **not** establish is the classifier's half — that a fouled lens costs
+certainty and not the verdict on a real image. That is
+`plant/inspection/tests/test_inspection.py::test_a_fouled_lens_costs_certainty_and_not_the_verdict`,
+on the real classifier, where it belongs: the two workspaces may not import each other (§10.7).
+
+The last two rows are the ones this milestone kept re-learning. A consequence with no checker
+is written to the log, skipped by the dispatcher and reads as a scenario whose claims all held —
 so the dispatcher raises on an expectation it does not know, and a separate test holds the
 table against §3.5's rows in **both** directions. And `source` is asserted as the literal
 `"scenario"`, not against the constant that produces it: the previous round's fix moved with
