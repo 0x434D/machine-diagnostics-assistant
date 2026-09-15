@@ -27,6 +27,7 @@ from analysis.db import reset_pool
 from analysis.dependencies import settings_dependency
 from fastapi.testclient import TestClient
 from psycopg import Connection, sql
+from psycopg.conninfo import conninfo_to_dict, make_conninfo
 from testcontainers.postgres import PostgresContainer
 
 MIGRATIONS = Path(__file__).resolve().parents[2] / "gateway" / "Gateway" / "Migrations"
@@ -154,12 +155,26 @@ def _scores(index: int, reject: bool) -> list[float]:
     return scores
 
 
+ANALYSIS_PASSWORD = "analysis-under-test"
+"""What the analysis role authenticates with here, and nowhere else.
+
+005 creates the role able to log in and with no password, so that a deployment that never
+provisions one cannot be reached at all. Whoever owns the database sets it: Compose through
+the gateway, and this fixture for the container it just started.
+"""
+
+
 @pytest.fixture(scope="session")
 def postgres_container() -> Iterator[PostgresContainer]:
     with PostgresContainer(POSTGRES_IMAGE, driver=None) as container:
         with psycopg.connect(container.get_connection_url()) as conn:
             for migration in sorted(MIGRATIONS.glob("*.sql")):
                 conn.execute(migration.read_text())
+            conn.execute(
+                sql.SQL("ALTER ROLE analysis PASSWORD {}").format(
+                    sql.Literal(ANALYSIS_PASSWORD)
+                )
+            )
             conn.commit()
         yield container
 
@@ -171,21 +186,38 @@ def postgres(postgres_container: PostgresContainer) -> str:
     return str(postgres_container.get_connection_url())
 
 
+@pytest.fixture(scope="session")
+def analysis_url(postgres: str) -> str:
+    """The same database, reached as the role the service actually deploys with.
+
+    Every test that goes through the service uses this rather than `postgres`. A test that
+    exercised the endpoints as the migration runner would pass over a read layer that
+    granted nothing, which is the state this milestone found and is exactly what the
+    boundary is meant to stop being possible.
+    """
+    return make_conninfo(postgres, user="analysis", password=ANALYSIS_PASSWORD)
+
+
 @pytest.fixture
 def database(postgres: str) -> Iterator[str]:
     with psycopg.connect(postgres) as conn:
         # Read from the catalogue rather than listed, for the same reason MIGRATIONS is:
         # a table added by a migration and forgotten here would carry one test's rows into
         # the next, and the failure would land on whichever test ran second.
+        #
+        # `ingest`, not `public`: 005 moved every table there. Left naming `public` this
+        # would have gone on returning an empty list -- truncating nothing, silently, with
+        # every test still passing until two of them collided.
         tables = [
             row[0]
             for row in conn.execute(
-                "SELECT tablename FROM pg_tables WHERE schemaname = 'public'"
+                "SELECT tablename FROM pg_tables WHERE schemaname = 'ingest'"
             ).fetchall()
         ]
+        assert tables, "nothing to truncate: the ingest schema holds no tables"
         conn.execute(
             sql.SQL("TRUNCATE {} RESTART IDENTITY CASCADE").format(
-                sql.SQL(", ").join(sql.Identifier(table) for table in tables)
+                sql.SQL(", ").join(sql.Identifier("ingest", table) for table in tables)
             )
         )
         conn.execute(
@@ -515,9 +547,18 @@ def seeded_db_with_gap(database: str) -> str:
 
 
 @pytest.fixture
-def client(database: str) -> Iterator[TestClient]:
+def client(database: str, analysis_url: str) -> Iterator[TestClient]:
+    """The service, connected the way it is deployed: as `analysis`, over `read.*`.
+
+    `database` is depended on for its truncation and its seeded stations rather than for
+    its URL, so the assertion below is what states the rest: the two name one database and
+    differ only in the role that reaches it.
+    """
+    assert (
+        conninfo_to_dict(database)["dbname"] == conninfo_to_dict(analysis_url)["dbname"]
+    )
     app.dependency_overrides[settings_dependency] = lambda: Settings(
-        database_url=database
+        database_url=analysis_url
     )
     yield TestClient(app)
     app.dependency_overrides.clear()

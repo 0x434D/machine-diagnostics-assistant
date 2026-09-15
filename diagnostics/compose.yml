@@ -61,6 +61,12 @@ services:
       # gateway that cannot find its policy refuses to start.
       GATEWAY_SIGNAL_POLICY: "/config/signals.json"
       GATEWAY_POSTGRES: "Host=postgres;Username=postgres;Password=${POSTGRES_PASSWORD:-diagnostics};Database=diagnostics"
+      # The credential for the reader role 005_m3_read_layer.sql creates. The migration
+      # creates that role without a password deliberately -- a literal in an embedded SQL
+      # resource is a credential compiled into the image -- and the gateway holds the only
+      # connection privileged enough to set one. Same shape and same override path as
+      # POSTGRES_PASSWORD above: a development default here, a real value through .env.
+      GATEWAY_ANALYSIS_PASSWORD: "${ANALYSIS_DB_PASSWORD:-analysis}"
     volumes:
       - ../pki:/pki:ro
       # §5.1's per-signal deadbands, mounted rather than built in: they are tuned against
@@ -86,7 +92,17 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      ANALYSIS_DATABASE_URL: "postgresql://postgres:${POSTGRES_PASSWORD:-diagnostics}@postgres:5432/diagnostics"
+      # `analysis`, never `postgres`: the role 005_m3_read_layer.sql creates holds USAGE on
+      # `read`, SELECT on its views and nothing else anywhere. Sharing the gateway's
+      # superuser here -- which is what this line said until M3 -- made §5.2's "reads views
+      # and cannot write" a claim about the SQL in this service rather than about the
+      # database, and left nothing to stop the next query written here from writing.
+      #
+      # The role exists once the gateway has applied the schema, so on a first boot this
+      # service's pool retries until then rather than answering. depends_on is deliberately
+      # not widened to the gateway: the analysis service must keep answering when the
+      # gateway is gone (§2.2), and a start-order edge would read as though it did not.
+      ANALYSIS_DATABASE_URL: "postgresql://analysis:${ANALYSIS_DB_PASSWORD:-analysis}@postgres:5432/diagnostics"
     ports:
       - "127.0.0.1:${ANALYSIS_PORT:-8000}:8000"
     # diag-net to reach Postgres, edge-net to be reachable from the host. It has never

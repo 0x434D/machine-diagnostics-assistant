@@ -40,7 +40,7 @@ def inspection_stats(
     with connection(settings) as conn, conn.cursor() as cur:
         cur.execute(
             "SELECT count(*), count(*) FILTER (WHERE result = 'reject') "
-            "FROM inspection_results WHERE source_ts >= %s AND source_ts < %s",
+            "FROM read.inspection_results WHERE source_ts >= %s AND source_ts < %s",
             (from_, to),
         )
         total, rejects = cur.fetchone() or (0, 0)
@@ -57,7 +57,7 @@ def inspection_stats(
         # rather than an assumption this query makes about them.
         cur.execute(
             "SELECT scored.defect_class, count(*) "
-            "FROM inspection_results r, "
+            "FROM read.inspection_results r, "
             "     unnest(r.defect_classes, r.confidences) AS scored(defect_class, score) "
             "WHERE r.source_ts >= %s AND r.source_ts < %s AND scored.score >= %s "
             "GROUP BY scored.defect_class "
@@ -82,7 +82,7 @@ def inspection_stats(
         # halves of one rule rather than two rules that can drift. A NULL vector unnests
         # to no rows at all, which is why it lands here.
         cur.execute(
-            "SELECT count(*) FROM inspection_results r "
+            "SELECT count(*) FROM read.inspection_results r "
             "WHERE r.source_ts >= %s AND r.source_ts < %s AND r.result = 'reject' "
             "  AND NOT EXISTS ("
             "    SELECT 1 FROM unnest(r.defect_classes, r.confidences) AS scored(c, score)"
@@ -92,7 +92,7 @@ def inspection_stats(
         unclassified = (cur.fetchone() or (0,))[0]
 
         cur.execute(
-            "SELECT assembly_serial FROM inspection_results "
+            "SELECT assembly_serial FROM read.inspection_results "
             "WHERE source_ts >= %s AND source_ts < %s AND result = 'reject' "
             "ORDER BY source_ts LIMIT %s",
             (from_, to, settings.sample_serial_limit),
@@ -102,7 +102,7 @@ def inspection_stats(
         # Overlap, not containment: a gap that starts before the window and ends inside it
         # still makes the window incomplete.
         cur.execute(
-            "SELECT from_ts, to_ts, reason FROM ingest_gaps "
+            "SELECT from_ts, to_ts, reason FROM read.ingest_gaps "
             "WHERE from_ts < %s AND to_ts > %s ORDER BY from_ts",
             (to, from_),
         )

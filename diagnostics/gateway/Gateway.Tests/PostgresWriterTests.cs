@@ -13,6 +13,11 @@ public sealed class PostgresWriterTests : IAsyncLifetime
     // asserts on the number, it just has to satisfy the NOT NULL column.
     private const short BufferCapacity = 5;
 
+    // This container's analysis role and nowhere else's. 005 creates the role without a
+    // password on purpose, so whoever owns the database supplies one -- Compose through the
+    // gateway, and this fixture for the container it just started.
+    private const string AnalysisPassword = "analysis-under-test";
+
     // Pinned by digest, not by tag (§10.7). scripts/pin-images.sh re-resolves it.
     private const string PostgresImage =
         "postgres:17-bookworm@sha256:051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0";
@@ -677,6 +682,47 @@ public sealed class PostgresWriterTests : IAsyncLifetime
         Assert.Equal(4, await CountAsync("stations"));
         Assert.Single(await QueryAsync("SELECT 1 FROM genealogy"));
         Assert.Single(await QueryAsync("SELECT defect_classes FROM inspection_results"));
+    }
+
+    [Fact]
+    public async Task TheAnalysisRoleReadsThroughViewsAndCannotWrite()
+    {
+        // §5.2 and CLAUDE.md both claim the database enforces this rather than convention.
+        // Asserted from this side as well as from analysis/tests/test_read_layer.py because
+        // this is where the migration that grants it lives: a table added here without a
+        // view, or a GRANT widened by accident, is a change to what the analysis service may
+        // do that nothing in the Python stack would be asked to review.
+        await SeedTopologyAsync();
+
+        await using var owner = new NpgsqlConnection(_postgres.GetConnectionString());
+        await owner.OpenAsync();
+        await using var shipped = new NpgsqlCommand(
+            "SELECT rolpassword IS NULL FROM pg_authid WHERE rolname = 'analysis'", owner);
+        Assert.True(
+            await shipped.ExecuteScalarAsync() as bool?,
+            "the migration ships a credential for the analysis role, so every deployment "
+            + "built from this binary shares it");
+
+        await PostgresWriter.SetAnalysisRolePasswordAsync(
+            _postgres.GetConnectionString(), AnalysisPassword);
+        var asAnalysis = new NpgsqlConnectionStringBuilder(_postgres.GetConnectionString())
+        {
+            Username = "analysis",
+            Password = AnalysisPassword,
+        }.ConnectionString;
+
+        await using var connection = new NpgsqlConnection(asAnalysis);
+        await connection.OpenAsync();
+
+        await using var read = new NpgsqlCommand(
+            "SELECT count(*) FROM read.stations", connection);
+        Assert.Equal(4, Convert.ToInt32(await read.ExecuteScalarAsync(), CultureInfo.InvariantCulture));
+
+        await using var write = new NpgsqlCommand(
+            "INSERT INTO ingest.stations (code, name) VALUES ('S9', 'Forged')", connection);
+        var refused = await Assert.ThrowsAsync<PostgresException>(
+            () => write.ExecuteNonQueryAsync());
+        Assert.Equal(PostgresErrorCodes.InsufficientPrivilege, refused.SqlState);
     }
 
     [Fact]

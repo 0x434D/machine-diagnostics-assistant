@@ -60,7 +60,36 @@ public sealed class PostgresWriter
     // commits.
     private readonly ConcurrentDictionary<LotKey, short> _lotIds = new();
 
-    public PostgresWriter(string connectionString) => _connectionString = connectionString;
+    /// <summary>
+    /// The schema §5.2's tables live in since <c>005_m3_read_layer.sql</c>, named on every
+    /// connection this gateway opens.
+    /// </summary>
+    /// <remarks>
+    /// <para>It is in the startup packet rather than in a <c>SET</c>, and rather than left
+    /// to the database-wide default 005 also writes, because Npgsql pools physical
+    /// connections: the one that ran the migration is handed straight back to the writer,
+    /// and <c>ALTER DATABASE ... SET</c> reaches only sessions opened after it. On a first
+    /// boot that leaves every write in the same process resolving to a schema that no longer
+    /// holds the tables — measured here as <c>relation "raw_events" does not exist</c> on 62
+    /// of 150 gateway tests.</para>
+    /// <para><c>public</c> is kept behind it so 001–004, which name their tables unqualified
+    /// and are re-applied on every boot, still create into <c>public</c> on a database that
+    /// has never seen 005 — which is the state 005 then moves.</para>
+    /// </remarks>
+    internal const string SearchPath = "ingest,public";
+
+    /// <summary>
+    /// The same connection string with <see cref="SearchPath"/> applied. Every entry point
+    /// into this gateway's storage goes through it, so that "the tables are in
+    /// <c>ingest</c>" is stated once rather than remembered per connection string — which is
+    /// the failure mode docs/ENGINEERING.md §8 rejects pgroll over.
+    /// </summary>
+    internal static string WithSearchPath(string connectionString) =>
+        new NpgsqlConnectionStringBuilder(connectionString) { SearchPath = SearchPath }
+            .ConnectionString;
+
+    public PostgresWriter(string connectionString) =>
+        _connectionString = WithSearchPath(connectionString);
 
     /// <summary>
     /// Every migration embedded in this assembly, in the order they must run — 002
@@ -97,13 +126,43 @@ public sealed class PostgresWriter
     public static async Task ApplySchemaAsync(
         string connectionString, CancellationToken ct = default)
     {
-        await using var connection = new NpgsqlConnection(connectionString);
+        await using var connection = new NpgsqlConnection(WithSearchPath(connectionString));
         await connection.OpenAsync(ct).ConfigureAwait(false);
         foreach (var resource in Migrations())
         {
             await using var command = new NpgsqlCommand(ReadMigration(resource), connection);
             await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// Gives the <c>analysis</c> role of <c>005_m3_read_layer.sql</c> the password this
+    /// deployment reaches it with. Nothing else about that role is set here — the schema it
+    /// can see and what it may do there are the migration's, and are not configuration.
+    /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// the database did not return the statement to run, which means the role does not
+    /// exist and the schema this was called after is not the one this binary embeds.
+    /// </exception>
+    public static async Task SetAnalysisRolePasswordAsync(
+        string connectionString, string password, CancellationToken ct = default)
+    {
+        await using var connection = new NpgsqlConnection(WithSearchPath(connectionString));
+        await connection.OpenAsync(ct).ConfigureAwait(false);
+
+        // ALTER ROLE takes no parameters, so the password has to reach the statement as a
+        // literal. Quoted by format(%L) in a round trip rather than by an escape written
+        // here: this text is executed with superuser rights, and a hand-rolled quote that
+        // is wrong once is an injection rather than a bug.
+        await using var quote = new NpgsqlCommand(
+            "SELECT format('ALTER ROLE analysis PASSWORD %L', $1)", connection);
+        quote.Parameters.AddWithValue(password);
+        var statement = await quote.ExecuteScalarAsync(ct).ConfigureAwait(false) as string
+            ?? throw new InvalidOperationException(
+                "the analysis role password statement could not be built");
+
+        await using var alter = new NpgsqlCommand(statement, connection);
+        await alter.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
     }
 
     /// <summary>
