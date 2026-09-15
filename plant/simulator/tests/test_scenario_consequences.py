@@ -114,16 +114,21 @@ POSTGRES_IMAGE = (
     "051f7b7b3abdd564d5d1bd1e8c4b9c1b6e77087d1dd22020ede611c096a272e0"
 )
 
-OWNERSHIP_MIGRATION = "005_m3_read_layer.sql"
-"""The one migration this fixture applies to neither schema.
+OWNERSHIP_MIGRATIONS = frozenset({"005_m3_read_layer.sql"})
+"""The migrations this fixture applies to neither schema.
 
 Every other file under `MIGRATIONS` defines §5.2's tables, which is what this fixture wants
 two copies of. 005 defines who *owns* them: it moves the tables into `ingest`, builds the
-analysis service's `read` views over that one schema, and creates a database role. All
-three are properties of the database rather than of a schema, so there is no such thing as
-two copies of them -- and there is no gateway here, no analysis service, and nothing to
-grant to. The two schemas below are this file's own scaffolding for a contrast group, not a
-deployment.
+analysis service's `read` views over that one schema, creates a database role and sets a
+database-wide search path. Those are properties of the *database* rather than of a schema,
+so there is no such thing as two copies of them -- and there is no gateway here, no analysis
+service, and nothing to grant to. The two schemas below are this file's own scaffolding for
+a contrast group, not a deployment.
+
+A set rather than one name, because that is the shape the rule has: a migration belongs here
+when it names a schema, a role or a database setting that only one deployment can own. M4's
+`agent` schema is the next one likely to qualify. Adding to it is a decision someone makes;
+leaving it at one name would have made the second such migration a surprise instead.
 """
 
 SCENARIO_SCHEMA = "scenario_run"
@@ -226,9 +231,9 @@ def postgres_url() -> Iterator[str]:
         # project keeps finding, and the shape this very path was first written with
         # (`parents[4]`, one directory above the repository).
         assert migrations, f"no migration found under {MIGRATIONS}"
-        # Named so a rename fails here rather than silently re-including it below.
-        assert OWNERSHIP_MIGRATION in {migration.name for migration in migrations}
-        migrations = [m for m in migrations if m.name != OWNERSHIP_MIGRATION]
+        # Named so a rename fails here rather than silently re-including one below.
+        assert OWNERSHIP_MIGRATIONS <= {migration.name for migration in migrations}
+        migrations = [m for m in migrations if m.name not in OWNERSHIP_MIGRATIONS]
         with psycopg.connect(url) as conn:
             for schema in (SCENARIO_SCHEMA, CLEAN_SCHEMA):
                 conn.execute(sql.SQL("CREATE SCHEMA {}").format(sql.Identifier(schema)))

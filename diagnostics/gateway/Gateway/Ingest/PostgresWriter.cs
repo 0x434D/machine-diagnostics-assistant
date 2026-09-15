@@ -84,6 +84,19 @@ public sealed class PostgresWriter
     /// <c>ingest</c>" is stated once rather than remembered per connection string — which is
     /// the failure mode docs/ENGINEERING.md §8 rejects pgroll over.
     /// </summary>
+    /// <remarks>
+    /// <para><b>Skipping this does not fail, and that is the thing to know before adding the
+    /// next entry point.</b> The 62 failures the constant above records were connections
+    /// pooled *with* the migration's own, which is the only way to get a stale search path.
+    /// A new entry point that passes the raw connection string gets a different pool key and
+    /// therefore its own pool, every connection in which opens after the migration and picks
+    /// up the database-wide default 005 writes — so it works, silently, and the claim that
+    /// this is stated in one place quietly stops being true.</para>
+    /// <para>What it costs is paid later and elsewhere: by whoever removes that database
+    /// default, or gives the gateway a role whose own <c>search_path</c> overrides it, or
+    /// runs the gateway against a database migrated by something other than this binary.
+    /// Route every connection string through here.</para>
+    /// </remarks>
     internal static string WithSearchPath(string connectionString) =>
         new NpgsqlConnectionStringBuilder(connectionString) { SearchPath = SearchPath }
             .ConnectionString;
@@ -154,6 +167,16 @@ public sealed class PostgresWriter
         // literal. Quoted by format(%L) in a round trip rather than by an escape written
         // here: this text is executed with superuser rights, and a hand-rolled quote that
         // is wrong once is an injection rather than a bug.
+        //
+        // The consequence, stated rather than left to be discovered: the password is in the
+        // statement text, so it reaches pg_stat_activity.query while this runs and any log
+        // the server keeps with log_statement on -- which this repository does turn on, at
+        // database scope, in analysis/tests/test_traceability.py. Accepted, because there is
+        // no parameterised form of ALTER ROLE and the alternatives (a password file the
+        // server reads, or provisioning the role outside the gateway) are a larger change
+        // than the exposure warrants for a credential this same process was handed in its
+        // own environment. Worth revisiting if the diagnostics database ever carries logs
+        // anyone but the developer running it can read.
         await using var quote = new NpgsqlCommand(
             "SELECT format('ALTER ROLE analysis PASSWORD %L', $1)", connection);
         quote.Parameters.AddWithValue(password);

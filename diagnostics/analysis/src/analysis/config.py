@@ -8,7 +8,16 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="ANALYSIS_")
 
-    database_url: str = "postgresql://postgres@localhost:5432/postgres"
+    # The `analysis` role and the diagnostics database, not `postgres` and `postgres` — which
+    # is what this said until M3 and is the one place the grant boundary could still be
+    # absent. A developer who runs the service with no environment set gets the role the
+    # deployment uses, so a query written by hand here meets the same refusals it will meet
+    # in Compose. As superuser every such query succeeded, which is exactly backwards: the
+    # boundary was missing where someone is most likely to write something new against it.
+    #
+    # No password, so a local run that has not been given one fails to authenticate rather
+    # than quietly reaching a database with different rights.
+    database_url: str = "postgresql://analysis@localhost:5432/diagnostics"
 
     # §5.3 returns a handful of reject serials so the agent has something concrete to cite
     # rather than a bare count.

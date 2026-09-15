@@ -56,6 +56,19 @@ ALTER VIEW  IF EXISTS public.state_changes_settled SET SCHEMA ingest;
 --
 -- Deliberately not `read`: the analysis service qualifies every relation it names, so an
 -- unqualified table in a query of its own fails loudly instead of resolving to something.
+--
+-- **READ THIS BEFORE ADDING A SECOND OWNER TO THIS DATABASE.** This is a database-level
+-- default and it applies to *every* role that connects, not only the gateway's. §8 of
+-- docs/ENGINEERING.md puts the agent's `agent.*` schema in this same instance in M4,
+-- migrated by Alembic — and an unqualified `CREATE TABLE` from Alembic would land in
+-- `ingest`, which is the gateway's schema and not its own. The symptom is agent tables
+-- owned by the wrong role and truncated by the gateway's test fixtures: exactly the silent
+-- cross-owner breach the ownership boundary exists to prevent, arriving through the one
+-- setting that is not per-owner.
+--
+-- Whoever creates the `agent` role therefore sets `ALTER ROLE agent SET search_path = agent`
+-- in the same migration that creates it. A role-level setting overrides this one, and that
+-- is the mechanism — not a convention for Alembic to remember.
 DO $set_search_path$
 BEGIN
   EXECUTE format(
@@ -155,13 +168,17 @@ CREATE OR REPLACE VIEW read.alarms AS
 SELECT id, station_id, code, text, severity, raised_at, acked_at, cleared_at
 FROM ingest.alarms;
 
--- Three of §5.2's tables get no view, each for its own reason:
+-- Four of §5.2's relations are reachable through no view, each for its own reason, and
+-- `test_read_layer.py`'s `WITHHELD` names all four so that adding one is a deliberate act:
 --
 --   * `raw_events` and `backfill_windows` are the gateway's own bookkeeping — the verbatim
 --     arrival log and R1's reconciliation ledger. An analysis reading them would be
 --     answering from what the gateway did rather than from what the plant produced.
 --   * `part_station_events` is empty by design: no event §4.1 publishes carries a station
 --     entry or exit instant, so every row it could ever return would be an inference.
+--   * `state_changes` itself, for the reason stated above `read.state_changes_settled`:
+--     unreachable is what makes the `to_state IS NOT NULL` filter impossible to forget
+--     rather than merely discouraged.
 
 -- --- the grants ----------------------------------------------------------------------------
 --
