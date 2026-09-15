@@ -152,6 +152,12 @@ async def test_every_station_can_raise_an_alarm(space: AddressSpace) -> None:
     for code, nodes in space.stations.items():
         assert ALARM.name in nodes.generators, code
         assert ALARM in event_types_for(code), code
+
+
+@pytest.mark.asyncio
+async def test_every_station_carries_packml_state_and_its_reason(
+    space: AddressSpace,
+) -> None:
     """§4.1 gives all four both. M1 omitted them deliberately, because a State node
     that never leaves Execute is a fake; the state machine arrived in Task 2, so they
     are real now."""

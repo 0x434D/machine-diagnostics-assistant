@@ -20,7 +20,7 @@ from simulator.address_space import BUFFERS
 from simulator.clock import SimulatedClock
 from simulator.config import Settings
 from simulator.faults import FaultKind, FaultSet, parameters_for
-from simulator.ground_truth import INJECTION, OPERATOR, Injector, open_log
+from simulator.ground_truth import INJECTION, Injector, open_log
 from simulator.hmi import (
     CATEGORIES,
     RecentParts,
@@ -168,9 +168,12 @@ async def test_the_screen_lists_the_alarms_a_station_is_shut_down_for() -> None:
     assert (shown["code"], shown["text"]) == ("A-207", "joining force out of tolerance")
     assert 1 <= shown["severity"] <= 1000
     assert datetime.fromisoformat(shown["raised_at"]).tzinfo is not None
-    # An unacknowledged alarm says so without the screen having to read a timestamp to
-    # find out -- the same reason a station's state travels beside its category.
-    assert shown["acknowledged"] is (shown["acked_at"] is not None)
+    # Every listed alarm is one nobody has reached yet, which is why the payload carries
+    # no acknowledgement state: `_intervene` acknowledges, restarts and clears in one
+    # call, and this list holds only what is still active. It carried `acknowledged` and
+    # `acked_at` until review pointed out that both were always the same value and the
+    # assertion about them could not fail.
+    assert all(alarm.acked_at is None for alarm in line.alarms.active)
 
 
 def test_every_packml_state_maps_to_exactly_one_category() -> None:
@@ -426,7 +429,9 @@ def test_every_injection_from_the_panel_reaches_the_ground_truth_log(
     # it carries no consequences, because nobody wrote down what should follow from one
     # chosen at a keyboard, and a claim invented here would be the log deciding what the
     # plant was going to do.
-    assert record["source"] == OPERATOR
+    # The literal, for the reason `test_ground_truth` spells out: this is the wire
+    # format, and an assertion written against the constant moves with it.
+    assert record["source"] == "operator"
     assert record["kind"] == "joining_force_drift"
     assert record["consequences"] == []
     assert record["params"] == {"newtons": -250.0, "ramp_seconds": 60.0}

@@ -28,8 +28,10 @@ from simulator.faults import NO_FAULTS
 from simulator.ground_truth import (
     INJECTION,
     NO_SCENARIO,
+    OPERATOR,
     PART,
     RUN,
+    SCENARIO,
     GroundTruthLog,
     open_log,
     recording,
@@ -175,6 +177,22 @@ async def test_every_injection_is_recorded_with_its_expected_consequences(
     injected = chosen.injections[0]
     assert recorded["kind"] == str(injected.fault.kind)
     assert recorded["params"] == dict(injected.fault.params)
+    # **The field Task 7 dispatches on, and the one that would fail silently.** A run can
+    # carry injections nobody scripted -- §3.7's panel writes one per press of the button
+    # -- and those carry no consequences, because nobody wrote down what should follow
+    # from a fault chosen at a keyboard. So Task 7 asserts consequences for `scenario`
+    # injections only, and a scripted one stamped `operator` would make all eight of its
+    # consequence assertions skip themselves: the milestone proof would pass having
+    # compared nothing.
+    #
+    # **The literal, not `ground_truth.SCENARIO`.** This is the wire format -- a value a
+    # later milestone reads out of a file -- and an assertion written against the constant
+    # moves with it: `SCENARIO = OPERATOR` passed every test in this repository, which is
+    # how the check was found to be one that could not fail. The constants are pinned to
+    # their own spellings below, and they have to be distinct for the field to carry
+    # anything at all.
+    assert recorded["source"] == "scenario"
+    assert (SCENARIO, OPERATOR) == ("scenario", "operator")
 
     consequences = recorded["consequences"]
     assert isinstance(consequences, list)

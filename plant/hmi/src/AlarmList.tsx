@@ -27,37 +27,22 @@ export function AlarmList({ alarms }: { alarms: AlarmView[] }) {
   return (
     <ol className="alarms">
       {alarms.map((alarm) => (
-        <li
-          key={alarm.sequence}
-          className={
-            alarm.acknowledged
-              ? "alarm alarm--acknowledged"
-              : "alarm alarm--new"
-          }
-          data-testid="alarm"
-        >
+        <li key={alarm.sequence} className="alarm" data-testid="alarm">
           <span className="alarm__code">{alarm.code}</span>
           <span className="alarm__text">{alarm.text}</span>
           <span className="alarm__station">{alarm.station_browse_name}</span>
           <span className="alarm__raised">{alarm.raised_at}</span>
-          {/* The acknowledgement as text and not only as a colour, for the reason every
-              station tile carries its state name (ISA-101). */}
-          <span className="alarm__ack">
-            {alarm.acknowledged ? "acknowledged" : "not acknowledged"}
-          </span>
-          {!alarm.acknowledged && (
-            <button
-              type="button"
-              onClick={() => {
-                setFailed("");
-                acknowledgeAlarm(alarm.sequence).catch((error: unknown) => {
-                  setFailed(String(error));
-                });
-              }}
-            >
-              acknowledge
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => {
+              setFailed("");
+              acknowledgeAlarm(alarm.sequence).catch((error: unknown) => {
+                setFailed(String(error));
+              });
+            }}
+          >
+            acknowledge
+          </button>
         </li>
       ))}
       {failed !== "" && <li className="alarm__failed">{failed}</li>}

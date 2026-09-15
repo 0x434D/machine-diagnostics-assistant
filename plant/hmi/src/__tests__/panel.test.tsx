@@ -1,5 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AlarmList } from "../AlarmList";
@@ -32,8 +31,6 @@ const ALARM: AlarmView = {
   text: "joining force out of tolerance",
   severity: 700,
   raised_at: "2026-09-13T06:09:12+00:00",
-  acknowledged: false,
-  acked_at: null,
 };
 
 interface Call {
@@ -108,8 +105,10 @@ describe("the injection panel", () => {
       expect(screen.getByLabelText(/newtons/)).toBeInTheDocument();
     });
 
-    await userEvent.type(screen.getByLabelText(/newtons/), "-420");
-    await userEvent.click(screen.getByRole("button", { name: "inject" }));
+    fireEvent.change(screen.getByLabelText(/newtons/), {
+      target: { value: "-420" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "inject" }));
 
     await waitFor(() => {
       expect(calls).toHaveLength(2);
@@ -147,7 +146,7 @@ describe("the injection panel", () => {
       expect(screen.getByLabelText(/newtons/)).toBeInTheDocument();
     });
 
-    await userEvent.click(screen.getByRole("button", { name: "inject" }));
+    fireEvent.click(screen.getByRole("button", { name: "inject" }));
 
     // The status carries the plant's text. Swallowing it would leave a button that does
     // nothing, which is the one outcome a demo console cannot have.
@@ -162,7 +161,7 @@ describe("the acknowledge button", () => {
     const calls = stubPlant({});
     render(<AlarmList alarms={[ALARM]} />);
 
-    await userEvent.click(screen.getByRole("button", { name: "acknowledge" }));
+    fireEvent.click(screen.getByRole("button", { name: "acknowledge" }));
 
     // The plant's sequence, not the row's index: §5.2's `alarms.id` is the gateway's and
     // this process never sees it, so two numbers for one alarm would be an
@@ -176,16 +175,5 @@ describe("the acknowledge button", () => {
         },
       ]);
     });
-  });
-
-  it("offers no button on an alarm someone has already been to", () => {
-    // An acknowledged alarm is still active and still listed -- the operator is on the
-    // way -- but pressing it again would answer 404 and change nothing.
-    render(
-      <AlarmList
-        alarms={[{ ...ALARM, acknowledged: true, acked_at: ALARM.raised_at }]}
-      />,
-    );
-    expect(screen.queryByRole("button")).toBeNull();
   });
 });

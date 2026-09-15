@@ -101,8 +101,6 @@ const HELD_S2: LineSnapshot = {
       text: "joining force out of tolerance",
       severity: 700,
       raised_at: "2026-09-13T06:09:12+00:00",
-      acknowledged: false,
-      acked_at: null,
     },
   ],
 };
@@ -217,10 +215,10 @@ describe("the line", () => {
     expect(alarm).toHaveTextContent("A-207");
     expect(alarm).toHaveTextContent("joining force out of tolerance");
     expect(alarm).toHaveTextContent("S2_Joining");
-    // Whether anyone has been to it is said in words, not only in the class — the same
-    // rule the station tiles follow (ISA-101).
-    expect(alarm).toHaveClass("alarm--new");
-    expect(alarm).toHaveTextContent("not acknowledged");
+    // Every listed alarm carries a button: the list holds only alarms that are still
+    // active, and the operator's visit acknowledges, restarts and clears in one step —
+    // so an alarm on this screen is always one nobody has reached yet.
+    expect(alarm.querySelector("button")?.textContent).toEqual("acknowledge");
   });
 
   it("says so rather than rendering nothing when no alarm is active", () => {

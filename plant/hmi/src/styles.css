@@ -159,14 +159,12 @@ ol {
 }
 
 .alarm__station,
-.alarm__raised,
-.alarm__ack {
+.alarm__raised {
   color: GrayText;
   font-size: 0.85em;
 }
 
-.alarm__raised,
-.alarm__ack {
+.alarm__raised {
   grid-column: 1 / -1;
 }
 

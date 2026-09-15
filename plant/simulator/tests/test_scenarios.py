@@ -206,6 +206,23 @@ async def _scenario_run(number: int, seconds: float, settings: Settings) -> Run:
     )
 
 
+def _consequence(item: Scenario, expect: str) -> Consequence:
+    """The one consequence of `item` that claims `expect`.
+
+    Raises AssertionError if the scenario claims it more than once or not at all, which
+    is what makes this a lookup rather than a search: a test written against a claim the
+    log no longer makes has to fail rather than quietly assert a neighbour.
+    """
+    found = [
+        consequence
+        for injection in item.injections
+        for consequence in injection.consequences
+        if consequence.expect == expect
+    ]
+    assert len(found) == 1, f"scenario {item.number} claims {expect} {len(found)} times"
+    return found[0]
+
+
 def _window(item: Scenario) -> tuple[float, float | None]:
     """The single injection's fault window, as `(at, until)` seconds.
 
@@ -245,6 +262,34 @@ def test_every_scenario_names_a_carrier_and_a_lane_the_line_actually_has() -> No
                     f"scenario {item.number} names lane {fault.params['lane']}, and "
                     f"§4.1 gives S1 lanes {LANES}"
                 )
+
+
+def test_a_band_the_drift_never_leaves_is_refused_when_the_scenario_is_built() -> None:
+    """Scenario 3 is *drifts down -> gap rises -> alarm -> S2 aborts*, and a tolerance
+    band wider than the drift is a plant where the last two cannot happen.
+
+    Refused at the instant the scenario is built rather than left to produce a run that
+    quietly never alarms: the ground-truth log would otherwise claim `alarm_raised` and
+    `station_aborts` within a window nothing in the run could satisfy, and the row would
+    be a fault that fires, is recorded, and has no consequence anywhere. The shipped
+    margin is 320 N against 420 N, which is not so large that a change to either could
+    not cross it.
+    """
+    settings = Settings()
+    assert settings.joining_force_tolerance_newtons < abs(
+        settings.joining_force_drift_newtons
+    ), "the shipped band already sits outside the drift"
+
+    # Through Settings rather than by constructing a Consequence by hand: what is being
+    # refused is a *configuration*, and the refusal has to happen where a deployment that
+    # turned one of these knobs would meet it.
+    too_wide = Settings(
+        joining_force_tolerance_sigmas=(
+            abs(settings.joining_force_drift_newtons) / settings.joining_force_sigma
+        )
+    )
+    with pytest.raises(ValueError, match="never reads out of tolerance"):
+        scenario(3, too_wide)
 
 
 def test_a_consequence_nothing_can_check_is_refused() -> None:
@@ -413,7 +458,7 @@ async def test_a_drifting_clamp_lowers_the_peak_and_gaps_parts_that_were_not() -
     changing the question rather than weakening it.** Row 3 ends with S2 aborting, so the
     drifted line presses 845 parts where the clean one presses 1498 -- and a comparison
     over every part would be measuring the stoppage, not the press: the clean run's last
-    650 parts include three it gapped that the drifted run never made. Restricted to the
+    653 parts include **four** it gapped that the drifted run never made. Restricted to the
     845 serials both runs inspected, the drifted run gaps `A-00000609` in addition to the
     two the clean run gapped there, and un-gaps none. **One part added, which is thin and
     is the plant's honest signal at `gap_work_exponent = 10`**: the gap-specific baseline
@@ -483,11 +528,11 @@ async def test_the_drift_ends_in_an_alarm_and_a_shutdown_at_s2() -> None:
     settings = Settings()
     item = scenario(3, settings)
     at, _ = _window(item)
-    raised, aborts = (
-        item.injections[0].consequences[2],
-        item.injections[0].consequences[3],
-    )
-    assert raised.expect == ALARM_RAISED and aborts.expect == STATION_ABORTS
+    # Found by what each claims rather than by position: the row's consequences have
+    # already been added to once and dropped from once, and an index would have gone on
+    # asserting whatever happened to sit at it.
+    raised = _consequence(item, ALARM_RAISED)
+    aborts = _consequence(item, STATION_ABORTS)
     assert raised.within_seconds is not None
     assert aborts.within_seconds is not None
 

@@ -166,9 +166,13 @@ class AlarmView(TypedDict):
     surrogate key and which this process never sees. Two numbers for one alarm would be
     an acknowledgement addressed to whichever of them the screen happened to hold.
 
-    `acknowledged` travels beside `acked_at` for the reason `state` travels beside
-    `category`: the screen has to be able to say "acknowledged, waiting on the operator"
-    without parsing a timestamp to find out, and an empty string is not a falsy instant.
+    **There is no acknowledgement state here, because this plant has none to show.**
+    §5.2's row carries `acked_at`, and it fills: the operator acknowledges, restarts the
+    station and clears the alarm, and `AlarmSystem._intervene` does all three in one call.
+    An alarm is on this list only while `cleared_at is None`, so every alarm the screen
+    ever draws is one nobody has reached yet. A field for it would be a column that is
+    always the same value pretending to be information, a branch in `AlarmList.tsx` that
+    never renders, and a test assertion that cannot fail -- which is what it was.
     """
 
     sequence: int
@@ -177,8 +181,6 @@ class AlarmView(TypedDict):
     text: str
     severity: int
     raised_at: str
-    acknowledged: bool
-    acked_at: str | None
 
 
 class LineSnapshot(TypedDict):
@@ -296,8 +298,6 @@ def alarm_views(alarms: AlarmSystem) -> list[AlarmView]:
             text=alarm.code.text,
             severity=alarm.code.severity,
             raised_at=alarm.raised_at.isoformat(),
-            acknowledged=alarm.acknowledged,
-            acked_at=None if alarm.acked_at is None else alarm.acked_at.isoformat(),
         )
         for alarm in alarms.active
     ]

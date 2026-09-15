@@ -9,6 +9,7 @@ and published nothing, fails here.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import statistics
 from datetime import UTC, datetime, timedelta
@@ -25,7 +26,7 @@ from simulator.clock import SimulatedClock
 from simulator.config import Settings
 from simulator.events import ALARM
 from simulator.faults import NO_FAULTS, FaultKind, FaultSet
-from simulator.ground_truth import INJECTION, OPERATOR, Injector, open_log
+from simulator.ground_truth import INJECTION, Injector, open_log
 from simulator.line import Line
 from simulator.packml import State
 from simulator.scenarios import scenario
@@ -433,7 +434,7 @@ async def test_a_panel_injection_reaches_the_line_and_the_log_together(
     ]
     injections = [record for record in records if record["record"] == INJECTION]
     assert len(injections) == 1
-    assert injections[0]["source"] == OPERATOR
+    assert injections[0]["source"] == "operator"
     assert injections[0]["kind"] == str(FaultKind.JOINING_FORCE_DRIFT)
     assert injections[0]["at"] == warmup.isoformat()
     assert injections[0]["until"] is None
@@ -456,8 +457,7 @@ def test_an_alarm_on_a_station_with_no_nodes_fails_loudly() -> None:
 
     assert len(alarms.alarms) == 1
     with pytest.raises(KeyError, match="S2_Joining"):
-        # The publish is the first thing `settle` does, so the line is never reached and
-        # nothing here has to be a Line.
-        import asyncio
-
+        # None rather than a Line: the publish is the first thing `settle` does, so the
+        # line is never reached, and building one here would need the four stations this
+        # test exists to have none of.
         asyncio.run(alarms.settle(None, T0))  # type: ignore[arg-type]

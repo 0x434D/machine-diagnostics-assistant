@@ -371,13 +371,37 @@ def _joining_force_drift(settings: Settings) -> Scenario:
                 ),
                 (
                     Consequence(JOINING_FORCE_PEAK, STREAM_FALLS),
-                    Consequence(INSPECTION_RESULTS, CLASS_RATE_RISES, (GAP,)),
-                    # §3.5's row 3 in full: *drifts down -> gap rises -> alarm -> S2
-                    # aborts*. The first two are above and the last two are these. Two
-                    # consequences rather than one "alarm then abort", because each names
-                    # the §5.2 table it is read back from -- which is what `observable`
-                    # is for -- and the order between them is the plant's own: an alarm
-                    # is what the abort is raised from, never the other way round.
+                    # **There is no `gap` consequence here, and that is a decision.**
+                    # §3.5's row 3 is *drifts down -> gap rises -> alarm -> S2 aborts*,
+                    # and the gap link is real -- `test_scenarios` measures it, and it
+                    # happens in the order the row states (the first added gap lands
+                    # 1041 s before the first alarm). What it is not is *checkable from
+                    # Postgres*. `CLASS_RATE_RISES` means "more frequent inside the window
+                    # than before it", and measured over 9000 s the drifted run gaps
+                    # 3/545 parts after the injection against 0/300 before -- while a
+                    # clean run on the same origin gaps 6/1198 against the same 0/300.
+                    # The claim is satisfied identically by a line with nothing wrong with
+                    # it, so a later milestone asserting it would be asserting the
+                    # baseline and reporting it as scenario 3 found.
+                    #
+                    # The paired test makes the stronger claim the log cannot: over the
+                    # parts *both* runs pressed, the drifted run's gapped set strictly
+                    # contains the clean run's. That rests on the two runs making the same
+                    # draws about the same parts, which is `faults`' identity property and
+                    # is not a query -- there is one run in the database, and no clean twin
+                    # to difference it against. Recording a consequence the evidence cannot
+                    # support would be worse than recording none: `Consequence` exists so
+                    # that a claim nothing can check is a failure rather than a silent pass,
+                    # and this file must not be the one that smuggles one in.
+                    #
+                    # Row 7 is unaffected: its bad lot gaps ten parts in five hundred, and
+                    # it keeps its `CLASS_RATE_RISES`.
+                    #
+                    # The last two words of the row. Two consequences rather than one
+                    # "alarm then abort", because each names the §5.2 table it is read back
+                    # from -- which is what `observable` is for -- and the order between
+                    # them is the plant's own: an alarm is what the abort is raised from,
+                    # never the other way round.
                     Consequence(
                         ALARMS,
                         ALARM_RAISED,
@@ -399,8 +423,12 @@ def _joining_force_drift(settings: Settings) -> Scenario:
             "has an operator acknowledge the alarm and restart the station, the press is "
             "still out of tolerance, and S2 aborts again a few parts later. The line "
             "produces in bursts from there, which is what a drifted relief valve does to "
-            "a shift and is why the force and the gap rate are still readable after the "
-            "first shutdown."
+            "a shift. **The row's `gap` half is deliberately not a consequence here**: it "
+            "happens, and in the order the row states, but over the parts the shutdown "
+            "leaves it is about one part wide and a clean line's own baseline satisfies "
+            "the same claim. It is demonstrated by the paired test, which differences two "
+            "runs that made identical draws -- something no query against one run's "
+            "history can do."
         ),
     )
 

@@ -63,6 +63,10 @@ export interface PartView {
  * `sequence` is the plant's own number for the alarm, not the diagnostics stack's
  * `alarms.id`: the simulator never sees that one, and the acknowledge button has to
  * address the alarm the simulator is holding.
+ *
+ * There is no acknowledgement state: the operator's visit acknowledges, restarts and
+ * clears in one step, and this list holds only alarms that are still active — so every
+ * alarm it ever carries is one nobody has reached yet.
  */
 export interface AlarmView {
   sequence: number;
@@ -77,9 +81,6 @@ export interface AlarmView {
   severity: number;
   /** Simulated time, like every other instant here (§4.2). */
   raised_at: string;
-  acknowledged: boolean;
-  /** `null` until an operator has been. A fact, not a missing value. */
-  acked_at: string | null;
 }
 
 /** The two verdicts `inspection.classifier` returns. The CSS class is derived from this
