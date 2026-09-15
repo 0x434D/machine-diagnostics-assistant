@@ -1,4 +1,5 @@
-"""What M2c proves: eight scenarios, eight consequences, read back out of §5.2's tables.
+"""What M2c proves: §3.5's eight scenarios, and the twelve consequences they claim between
+them, read back out of §5.2's tables.
 
 **Nothing here diagnoses anything, and that is the line this file exists not to cross.**
 Every assertion below is of the form "this is in the history": a chain of suspensions in
