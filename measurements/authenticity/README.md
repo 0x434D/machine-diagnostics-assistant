@@ -98,11 +98,75 @@ and takes seconds. What `verify` holds back is the proofs that stop and restart 
 The half this cannot make is the end-to-end one — that the rows it reads were put there by
 the real gateway from the real plant — and nothing in `make check` claims it.
 
+### M2c adds two, and the second is the one that keeps §1.5 honest
+
+| Claim | Proof | Runs as |
+|---|---|---|
+| Each of §3.5's eight scenarios records what it injected and what should follow, and **those consequences are in §5.2's tables** — eight scenarios, twelve consequences, and no assertion that anything diagnosed anything | `plant/simulator/tests/test_scenario_consequences.py` | `make check` |
+| The same seed and the same scenario reproduce the run **byte for byte** (§3.6) | `test_a_run_is_reproducible_byte_for_byte_from_its_seed`, `test_a_different_seed_writes_a_different_log` | `make check` |
+
+Both are in the gate rather than behind `make verify`, for the reason the propagation proof
+is: they run a `Line` in process against the Postgres container the gate already starts, and
+the whole module takes 66 s.
+
+**The consequence proofs assert the plant, not the transport.** The rows they query are the
+plant's own published output loaded into §5.2's schema — the gateway's own migration files,
+applied unchanged, so the columns and the constraints are the ones the analysis will read —
+but they did not travel over OPC UA and the gateway did not write them. §1.2 and §1.3 own
+that half. Saying so here is cheaper than a reader assuming otherwise, and it is the same
+boundary `read_rows == pg_rows` runs into from the other direction.
+
+**What each of the eight asserts, and what it measured.** Every number below came out of
+Postgres on the run the test performs.
+
+| # | Asserted out of | Measured |
+|---|---|---|
+| 1 | `state_changes` | S2 +19.5 s → S3 +41.9 → S4 +46.1, **strictly** in order, each on the buffer feeding it, inside the 180 s the log claims |
+| 2 | `state_changes` | S3 +30.0 s → S2 +37.0 → S1 +49.8, the same three buffers the other way |
+| 3 | `signals`, `alarms`, `state_changes` | `JoiningForcePeak` 4214.3 → 3791.9 N, **10.7 σ** of its own 39.4 N spread; A-207 raised +2902 s; `Aborted` 0.5 s *after* its own alarm |
+| 4 | `inspection_results` | carrier 7 at **d = +5.92** leave-one-out, against the best rival in the same run at +1.25 and the worst carrier of a clean twin at **+2.57** — and the clean twin's `ORDER BY rate DESC LIMIT 1` still answers carrier 10 |
+| 5 | `inspection_results` | the weakest named class **2.95×** the strongest unnamed one, against the clean twin's **0.84×** on the identical query |
+| 6 | `inspection_results` | all six class scores fall together to **0.554** of themselves, matching the fault's own 0.55 clarity factor; the reject rate moves 2.000 % → 1.513 %, **0.5** pooled standard errors |
+| 7 | `inspection_results`, `signals` | 14 gaps in the lot's 500 parts against a 0.27 % baseline outside it — **10.9 σ**, where the clean twin's identical window reaches **2.3**; and the force moves **0.059 σ**, against scenario 3's 10.7 |
+| 8 | `inspection_results` | exactly one part, `A-00000355`, carries `gap` that the clean twin did not — and none stopped carrying it |
+
+Four of the eight load a **clean twin** of the same run into a second schema, because "carrier
+7 stands out from what" and "one part gained a gap against what" have no meaning without a
+contrast group. That twin is a property of the proof and never of a deployment: a real history
+holds one run, which is why §3.5 row 3's `gap` consequence was dropped from the ground-truth
+log in the round before this one rather than rewritten as a paired claim.
+
+**What was falsified, against what.** Each break below was applied to the shipped code and the
+proof it targets re-run — not the whole module, so "and no other failed" is not claimed here.
+
+| Break | Proof that failed |
+|---|---|
+| S1's feeder gate returns `None` — scenario 1 injects and nothing starves | 1 (`S2_Joining ended the run Execute, not Suspended`) |
+| S4's outfeed gate returns `None` | 2 |
+| scenario 1 claims its chain in the reverse order | 1 (`the chain did not reach the stations in order`) |
+| scenario 2 claims its chain in the reverse order | 2 |
+| the clamp drift never reaches the press (the `JOINING_CLAMP_FORCE` modifier dropped) | 3 (`fell 1.1 against a 39.4 spread (0.0 σ)`) |
+| `alarm_consecutive_parts` raised to 10,000 — the drift runs and no alarm is raised | 3 |
+| `carrier_wear_sigmas` 3.0 → 0.4 | 4 (`d=1.66: the answer is inside the noise`) |
+| `lane_contamination_factor` 6.0 → 1.0 | 5 (`0.84× the strongest unnamed one`) |
+| `clarity=` deleted from `InspectionClient.produce` — the fouling never reaches the frame | 6 (`gap did not fall at all (1.000)`) |
+| scenario 7 keeps its bad lot **and** drifts the clamp — it becomes scenario 3 | 7 (`moved 9.53 σ across the window`) |
+| a fault is never repaired (`until` ignored) — scenario 8 becomes a bad lot | 8 (`144 parts gained ['gap']`) |
+| one checker removed from the dispatch table | 8, and the coverage test |
+| `SCENARIO = "operator"` — every scripted injection stamped as an operator's | 1, and the `source` test |
+
+The last two are the ones this milestone kept re-learning. A consequence with no checker is
+written to the log, skipped by the dispatcher and reads as a scenario whose claims all held —
+so the dispatcher raises on an expectation it does not know, and a separate test holds the
+table against §3.5's rows in **both** directions. And `source` is asserted as the literal
+`"scenario"`, not against the constant that produces it: the previous round's fix moved with
+the constant and survived the same mutation.
+
 ## Not provable yet
 
 | § | Link | Waits on | Why not yet |
 |---|---|---|---|
-| 1.5 | Analysis | M2c + M3 | the computed root cause has to match the simulator's ground truth. M2c is what produces a ground-truth log at all (§3.6); M3 is what does the matching. The plant runs a fixed nominal takt today with no injected faults, so there is no root cause to compute and nothing to compare against |
+| 1.5 | Analysis | M3 | **the ground truth it was waiting on exists.** M2c runs §3.5's eight scenarios, records every injection with the consequences the row claims, and proves those consequences are in §5.2's tables — so there is now a run with a known cause and a history carrying its effects. What is left is the computing: M3 is what infers a cause from that history, and only then is there something to compare |
 | 1.6 | Agent | M4 | the claim is behavioural — the agent says "I have no data for that window" rather than inventing. M1 tests the empty-window *response*, which is the endpoint's contract, not the agent's judgement. The scripted provider cannot be asked whether a model would resist inventing |
 | 1.7 | Tool layer | M4 | there is no MCP server. "The same tools, the same results" needs two callers to compare |
 | 1.8 | Identity | M5 | there is no identity layer, so every diagnostics endpoint answers unauthenticated requests. The README says so in those words, and that is the whole of the current posture |
