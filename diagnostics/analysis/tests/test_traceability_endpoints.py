@@ -347,3 +347,44 @@ def test_the_default_anchor_says_it_is_not_the_press_either(
 
     assert body["criteria"]["anchor"] == "created"
     assert "Not parts pressed inside it" in body["criteria"]["window_selects"]
+
+
+@pytest.mark.usefixtures("seeded_db")
+def test_the_unplaceable_count_is_taken_under_the_same_criteria(
+    client: TestClient,
+) -> None:
+    """**The number beside the answer has to be counted the same way the answer was.**
+
+    `A-HORIZON` is the one part no window can place — it was created before the gateway's
+    history horizon and has no creation instant. Its own recorded `PeakForce` is 100.003,
+    so it is *inside* a tolerance bound at 100.5 and *outside* one at 100.05, and the
+    unplaceable count has to move with the criterion accordingly.
+
+    It did not. The windowless selection was rebuilt criterion by criterion and the
+    tolerance was left off, so an out-of-tolerance containment answered "99 parts affected,
+    plus one we could not place" — where that one was not out of tolerance at all. At three
+    in the morning the second number is the one somebody escalates on.
+    """
+    outside_the_bound = client.get(
+        "/parts/affected", params={**WINDOW, "signal": "PeakForce", "above": 100.5}
+    ).json()
+    inside_the_bound = client.get(
+        "/parts/affected", params={**WINDOW, "signal": "PeakForce", "below": 100.05}
+    ).json()
+
+    assert outside_the_bound["unplaceable"] == 0
+    assert inside_the_bound["unplaceable"] == 1
+
+
+@pytest.mark.usefixtures("seeded_db")
+def test_every_criterion_narrows_the_unplaceable_count_too(
+    client: TestClient,
+) -> None:
+    """The same rule for the criteria that were never dropped, so the next one added has a
+    test that fails rather than a docstring that is quietly wrong."""
+    unfiltered = client.get("/parts/affected", params=WINDOW).json()
+    by_carrier = client.get("/parts/affected", params={**WINDOW, "carrier": 8}).json()
+
+    # A-HORIZON rode no carrier, so naming one leaves nothing that a window cannot place.
+    assert unfiltered["unplaceable"] == 1
+    assert by_carrier["unplaceable"] == 0

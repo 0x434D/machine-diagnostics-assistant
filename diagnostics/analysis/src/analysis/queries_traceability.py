@@ -17,7 +17,7 @@ containment list built on a guess, which is the one thing a containment list mus
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Literal
 
@@ -227,13 +227,13 @@ def count_unplaceable(
     window; it is a part the window cannot be applied to, and dropping it silently is what
     shortens a containment list at the moment one is wanted.
     """
-    windowless = PartSelection(
-        window=None,
-        anchor=selection.anchor,
-        carrier=selection.carrier,
-        lot_code=selection.lot_code,
-        defect_class=selection.defect_class,
-    )
+    # `replace`, never a field-by-field rebuild. A rebuild is a copy of the criteria that
+    # has to be edited every time a criterion is added, and the one time it was not, this
+    # count silently dropped the tolerance it was supposed to be counting under: an
+    # out-of-tolerance containment answered "99 parts affected, plus one we could not
+    # place", where that one was not out of tolerance at all. At three in the morning the
+    # second number is the one somebody escalates on.
+    windowless = replace(selection, window=None)
     source, where, params = _clauses(windowless, threshold)
     anchor = _ANCHOR_COLUMN[selection.anchor]
     with conn.cursor() as cur:
