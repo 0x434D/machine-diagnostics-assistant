@@ -138,6 +138,34 @@ def test_the_plants_history_volume_is_mounted_only_by_the_plant() -> None:
     assert mounted_by == {"line-simulator"}
 
 
+def test_the_ground_truth_volume_is_mounted_only_by_the_plants_simulator() -> None:
+    """**The volume `test_no_stack_mounts_a_volume_another_stack_owns` was written for.**
+
+    Its docstring names this case: ground truth becomes a stored artefact in M2, and the
+    moment a diagnostics service mounts it every evaluation number in the project is
+    worthless -- the analysis would be graded against a file it could have read.
+
+    This is the positive half, and it is the half that is checkable today. The negative
+    one only fails once someone actually writes the mount; this one fails the moment the
+    volume stops being declared, stops being mounted by the simulator, or starts being
+    mounted by anything else -- the inspection service above all, which already carries
+    the truth side channel and is the container a reader would reach for first.
+    """
+    plant = _load(PLANT_COMPOSE)
+    assert "plant-ground-truth" in cast(dict[str, object], plant.get("volumes") or {})
+
+    mounted_by = {
+        name
+        for path in COMPOSE_FILES
+        for name, service in _services(_load(path)).items()
+        if "plant-ground-truth" in _mount_sources(service)
+    }
+    assert mounted_by == {"line-simulator"}, (
+        f"plant-ground-truth is mounted by {mounted_by or 'nothing'}; §3.6 gives it to "
+        "the one container that writes it and to nothing else"
+    )
+
+
 def test_the_endpoint_is_one_name_and_one_port_everywhere() -> None:
     """The one-name boundary. Four independent mechanisms key off this single string --
     asyncua's bind address and discovery advertisement, the client's session

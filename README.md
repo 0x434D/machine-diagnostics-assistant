@@ -7,8 +7,9 @@ the line's own recorded history, and cites the evidence for every claim it makes
 parts hold up when nothing is faked — a real OPC UA boundary between two stacks, and an
 agent that cannot quietly invent an answer.
 
-Currently at M2a, *the line runs*: four stations, PackML, buffers and carriers, on top of M1's
-walking skeleton. Thin everywhere, faked nowhere.
+Currently at M2c, *the line misbehaves on purpose*: four stations, PackML, buffers, carriers
+and part identity, with §3.5's eight fault scenarios running over a measured noise floor and a
+ground-truth log the diagnostics stack cannot reach. Thin everywhere, faked nowhere.
 
 ## Shape
 
@@ -52,6 +53,16 @@ delay derived from the buffer level rather than asserted. It ends with M1's risk
 is still M1's: R1–R4 were measured against an M1 gateway over three streams and M2a has not
 re-measured them.
 
+```
+make m2c-demo
+```
+
+Runs one of §3.5's eight scenarios end to end — `PLANT_SCENARIO=7 make m2c-demo` picks another
+— and reads its consequences straight out of §5.2's tables: the alarm S2 raised, the
+suspensions in the order the buffers carried them, the class breakdown. It prints what the
+scenario *claimed* before the line had produced anything, and it checks that the gateway
+cannot see the ground-truth log. Nothing in it diagnoses anything; that is M3.
+
 `make m1-demo` is still there and still the outage demo: it takes Postgres away and gives it
 back, then takes the **plant** away and asks the same question again, which is the step the
 architecture exists for.
@@ -61,8 +72,9 @@ rejected in the last hour, and what were the defects?* and click the citation ch
 answer: it opens the part it names — serial, when it was created, the verdict with every
 class the model scored, and the inspection image.
 
-Every published port is read from the environment, so a host that already has something on
-8080 runs `GATEWAY_PORT=18080 make m2a-demo` and nothing else changes.
+Every published port in every demo is read from the environment, so a host that already has
+something on 8080 and 8000 runs `GATEWAY_PORT=18080 ANALYSIS_PORT=18000 make m2c-demo` and
+nothing else changes.
 
 | | |
 |---|---|
@@ -108,20 +120,29 @@ status field described the session rather than the pipeline. Only mutation found
 
 ## Known limits
 
-- **The plant has no faults in it yet.** Four stations, PackML, buffers and carriers are real
-  and the line propagates properly: stop one station and the next starves when the buffer
-  between them empties, not when it is told to. But M2a runs a fixed nominal takt with a
-  little jitter and injects nothing, so **every stop visible today is one you caused by
-  hand** — and the only way to cause one is from a test, because the HMI is read-only until
-  the fault-injection panel and the ground-truth log that has to record it arrive together.
-- **Every part has a serial and a history; nothing yet asks a question of them.** M2b gives
+- **The plant misbehaves on purpose now, and nothing reads the misbehaviour yet.** §3.5's
+  eight scenarios run — a starved feeder, a blocked outfeed, a drifting clamp that ends in an
+  alarm and a shutdown, a worn carrier, a contaminated lane, a fouled lens, a bad lot and one
+  bad component — over a measured noise floor, and §3.7's panel injects a ninth by hand. Every
+  injection is written to a ground-truth log on a volume no diagnostics container mounts, and
+  `test_scenario_consequences.py` proves each scenario's stated consequences are in §5.2's
+  tables. **What is missing is the reading**: no query walks a suspension chain back to a
+  cause, so the history now contains eight answerable questions and nothing that answers one.
+  That is M3.
+- **Every part has a serial and a history; the containment query is still M3's.** M2b gives
   each part its component serials in supplier lots, a force–distance curve recorded against
   the serial at the instant of production, the verdict with every class the model scored, and
   a disposition — and `GET /parts/{serial}` answers with all of it, keyed by the serial and
-  joined to no time range. What is missing is the asking: the eight scenarios, the alarms and
-  the noise floor are M2c, and the containment query that walks a lot back to the serials it
-  reached is M3. Without the noise floor there is no "within normal spread" for the analysis
-  to judge against — measured: S4 did not starve once in 40,000 steady-state steps.
+  joined to no time range. The query that walks a lot back to every serial it reached is M3's,
+  and scoring the answer against the ground-truth log is M7's.
+- **Two of §3.5's rows cannot be answered from part evidence alone, and the spec now says
+  so.** Scenario 5 contaminates one feeder lane, but every assembly draws one component from
+  *each* lane — so every part contains lane 2 and there is no contrast group. §3.5 row 5 asks
+  for "the incoming components on one feeder" rather than for the lane number; the lane itself
+  is in the plant's own ground-truth log, so the answer is scoreable even where it is not
+  derivable. Scenario 3's `gap` rise is real and happens in the order the row states, but at
+  the shipped magnitude a clean line's own baseline satisfies the same claim, so it is
+  demonstrated by a paired test and is deliberately **not** a recorded consequence.
 - **The agent knows one tool and no knowledge base.** One question shape, one citation kind,
   one analysis endpoint. Routing, SOPs and the composer that reads them are M4, and until
   then `basis: hypothesis` is refused structurally rather than discouraged in a prompt —
@@ -136,8 +157,12 @@ status field described the session rather than the pipeline. Only mutation found
   shape first becomes visible.
 - **Closed-window caching is not implemented.** It pays off under concurrency and M1 has one
   user.
-- **Scenario 6 is stipulated, not emergent** — the confidence decay is configured rather than
-  arising from a real model.
+- **Scenario 6's confidence decay is caused, and still not emergent.** A fouled lens now
+  renders a genuinely lower-contrast frame and the classifier reads its confidence off the
+  pixels — measured, a clean frame carries 66.36 grey levels of RMS contrast and a frame at
+  clarity 0.55 carries 36.75, and all six class scores fall to 0.554 of themselves together.
+  What that moves is the stipulation one layer down, from "confidence decays while a fault
+  runs" to "contrast → clarity → confidence", which is still a formula rather than a model.
 
 ## Security posture, plainly
 

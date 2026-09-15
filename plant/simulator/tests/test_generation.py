@@ -24,12 +24,15 @@ from asyncua import Server, ua
 from asyncua.server.history_sql import HistorySQLite
 from conftest import STATION_CODES, new_server
 from simulator.address_space import (
+    STATION_SIGNALS,
     AddressSpace,
     build_address_space,
     historised_streams,
 )
+from simulator.alarms import AlarmSystem
 from simulator.clock import SimulatedClock
 from simulator.config import ClockConfig, Settings
+from simulator.faults import NO_FAULTS, FaultSet
 from simulator.historian import (
     Ledger,
     LedgerWriter,
@@ -39,6 +42,7 @@ from simulator.historian import (
 from simulator.identity import LotSchedule
 from simulator.inspection_client import DEFECT_CLASSES
 from simulator.line import Line, run_catchup, run_live
+from simulator.scenarios import scenario
 from simulator.server import build_line
 from simulator.stations.base import PartOutcome, ProduceFn
 
@@ -55,7 +59,9 @@ def _stamp(stamp: datetime | None) -> datetime:
     return stamp
 
 
-async def _stub_produce(part_id: str, _ts: datetime) -> PartOutcome:
+async def _stub_produce(
+    part_id: str, _carrier_id: int, _joining_work: float, _ts: datetime
+) -> PartOutcome:
     reject = part_id.endswith("7")
     return PartOutcome(
         disposition="reject" if reject else "good",
@@ -84,6 +90,7 @@ async def _build_plant(
     clock: SimulatedClock,
     db: Path,
     produce: ProduceFn = _stub_produce,
+    faults: FaultSet = NO_FAULTS,
 ) -> Plant:
     """The plant `server.main` builds, minus the endpoint and the inspection service.
 
@@ -109,7 +116,16 @@ async def _build_plant(
     )
     writer = LedgerWriter(space, ledger)
     line = build_line(
-        writer, settings, produce, LotSchedule(settings, clock.history_start)
+        writer,
+        settings,
+        produce,
+        LotSchedule(settings, clock.history_start),
+        AlarmSystem(
+            settings,
+            settings.seed,
+            {code: writer.station(code) for code in STATION_SIGNALS},
+        ),
+        faults,
     )
     return Plant(server, space, line, writer, ledger, storage)
 
@@ -207,6 +223,51 @@ async def test_every_stream_reconciles_exactly(tmp_path: Path) -> None:
     # resumes within one takt of where the configured depth ends.
     horizon = clock.history_start + clock.history_depth
     assert 0 <= (history_end - horizon).total_seconds() < settings.takt_seconds
+
+
+@pytest.mark.asyncio
+async def test_an_alarm_is_historised_and_reconciles_like_every_other_event(
+    tmp_path: Path,
+) -> None:
+    """§4.2's alarm, through the real address space and the real historian.
+
+    **This is the wiring test, and without it the alarm is a modifier nothing consumes.**
+    `AlarmSystem` is handed station node sets by `server.build_line`; handed the wrong
+    ones, or declared on the type without a generator, it would raise alarms that never
+    reach a table -- and every unit test above would stay green, because they all read
+    the alarm system's own record. What is asserted here is the historian's row counts:
+    `historize_node_event` decides a table's columns from the GeneratesEvent references
+    that exist when it runs, so an alarm generator created after it produces a table with
+    no columns for it and no error anywhere (`address_space`'s ORDER MATTERS).
+
+    Two hours of history with §3.5's scenario 3 loaded, because that is what it takes for
+    the drift to put S2's press out of tolerance -- roughly 2900 s past the warmup.
+    """
+    settings = Settings(history_depth_hours=2.0)
+    clock = SimulatedClock(ClockConfig(timedelta(hours=2), settings.catchup_speed))
+    plant = await _build_plant(
+        settings,
+        clock,
+        tmp_path / "h.db",
+        faults=scenario(3, settings).fault_set(clock.history_start),
+    )
+
+    async with plant.server:
+        # Raises if the historian and the ledger disagree on any stream, the alarm's
+        # own event stream included.
+        await run_catchup(plant.line, plant.writer, clock, settings, plant.storage)
+        counts = await plant.writer.historian_row_counts(plant.storage)
+
+    alarms = plant.line.alarms.alarms
+    assert alarms, (
+        "the drift never raised an alarm in two hours, so nothing here was checked"
+    )
+    # One event per lifecycle transition (§4.2): the raise always, plus the
+    # acknowledgement and the clear once the operator has been.
+    published = sum(1 + (2 if alarm.cleared_at is not None else 0) for alarm in alarms)
+    parts = plant.ledger.rows[("S2_Joining", "PartCount")] - 1
+    assert plant.ledger.events["S2_Joining"] == parts + published
+    assert counts[("S2_Joining", "Events")] == parts + published
 
 
 @pytest.mark.asyncio
@@ -363,9 +424,11 @@ async def test_live_production_resumes_where_catch_up_stopped(tmp_path: Path) ->
 
     stamps: list[datetime] = []
 
-    async def _recording_produce(part_id: str, ts: datetime) -> PartOutcome:
+    async def _recording_produce(
+        part_id: str, carrier_id: int, joining_work: float, ts: datetime
+    ) -> PartOutcome:
         stamps.append(ts)
-        return await _stub_produce(part_id, ts)
+        return await _stub_produce(part_id, carrier_id, joining_work, ts)
 
     boot = datetime.now(UTC)
     wall = [boot]

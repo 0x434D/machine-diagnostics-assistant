@@ -5,7 +5,6 @@ it reaches asyncua."""
 from __future__ import annotations
 
 import ast
-import itertools
 import os
 import subprocess
 import sys
@@ -13,11 +12,13 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from conftest import RecordingNodes, build_running_line
+from pydantic import ValidationError
 from simulator.address_space import (
     PACKML_SIGNALS,
     STATION_LIVE_SIGNALS,
     STATION_SIGNALS,
 )
+from simulator.alarms import AlarmSystem
 from simulator.carriers import Carrier
 from simulator.config import Settings
 from simulator.curve import peak_of, work_of
@@ -57,14 +58,21 @@ _CODES: dict[type[Station], str] = {
 
 
 def loaded(carrier_id: int = 0, at: datetime = T0) -> PartState:
-    """A part as it leaves S1: the assembly created, nothing decided about it yet.
+    """A part as the station under test receives it.
 
-    Every station below S1 now refuses a part with no assembly, so this is what a real
-    cycle actually hands them -- and building it through `identity.load_carrier` rather
-    than by hand is what keeps it the same object S1 produces.
+    The assembly S1 created, and the joining work a nominal press would have left --
+    every station below S1 refuses a part with no assembly and S3 refuses one with no
+    press, so this is what a real cycle actually hands them. Building it through
+    `identity.load_carrier` rather than by hand is what keeps it the same object S1
+    produces, and S2 overwrites the work with what its own press did.
+
+    The nominal rather than nothing, because these tests drive one station at a time and
+    a part that reached S3 without passing S2 is an artefact of that, not a case. The
+    real guard has its own test below.
     """
     return PartState(
-        assembly=load_carrier(LotSchedule(Settings(), at), 0, carrier_id, at)
+        assembly=load_carrier(LotSchedule(Settings(), at), 0, carrier_id, at),
+        joining_work=Settings().press_nominal_work,
     )
 
 
@@ -80,9 +88,25 @@ def build_one(
             FeedingStation(nodes, settings, seed=1, schedule=LotSchedule(settings, T0)),
             nodes,
         )
+    if factory is JoiningStation:
+        # Its own alarm system, reachable nowhere: these tests drive one station and
+        # assert what it *records*, and what an alarm then does to a line is
+        # `test_alarms`'. The press still has to have one, because a press that could
+        # not report itself out of tolerance is not the press the plant runs.
+        return (
+            JoiningStation(
+                nodes,
+                settings,
+                seed=1,
+                alarms=AlarmSystem(settings, 1, {nodes.code: nodes}),
+            ),
+            nodes,
+        )
     if factory is InspectionStation:
 
-        async def produce(_serial: str, _at: datetime) -> PartOutcome:
+        async def produce(
+            _serial: str, _carrier_id: int, _joining_work: float, _at: datetime
+        ) -> PartOutcome:
             reject = bool(always_reject)
             return PartOutcome(
                 disposition="reject" if reject else "good",
@@ -381,17 +405,54 @@ async def test_a_state_change_is_written_with_its_reason() -> None:
 
 
 def test_each_station_takes_its_own_nominal_takt() -> None:
-    """§3.1: S3 paces the line and the stations above it run faster, so their buffers
-    fill. One shared takt would leave every buffer oscillating between empty and one,
-    and buffer capacity would bound nothing."""
+    """§3.1: S3 paces the line and every other station runs faster, so B1_2 and B2_3
+    fill and B3_4 drains. One shared takt would leave every buffer oscillating between
+    empty and one, and buffer capacity would bound nothing.
+
+    **S4 is strictly faster than S3, not equal to it.** Equal takts give B3_4 no
+    restoring force: it becomes a driftless random walk, and §3.5's micro-stops are what
+    walk it -- measured at 19.5 % of the time full, with the bottleneck blocked behind
+    it. S4 sits between S2 and S3, close enough to S3 that it is not starved on every
+    cycle and far enough that B3_4 comes back to empty.
+
+    Twenty thousand draws rather than five hundred: a micro-stop adds up to 25 s to one
+    takt, so a mean over a few hundred draws is decided by whether a jam happened to
+    land in the window rather than by the nominal takt this is about.
+    """
     means = {}
     for factory in (FeedingStation, JoiningStation, InspectionStation, OutfeedStation):
         station, _ = build_one(factory)
-        draws = [station.next_takt() for _ in range(500)]
+        draws = [station.next_takt() for _ in range(20_000)]
         means[station.code] = sum(draws) / len(draws)
 
-    assert means["S1_Feeding"] < means["S2_Joining"] < means["S3_Inspection"]
-    assert means["S3_Inspection"] == pytest.approx(means["S4_Outfeed"], abs=0.05)
+    assert (
+        means["S1_Feeding"]
+        < means["S2_Joining"]
+        < means["S4_Outfeed"]
+        < means["S3_Inspection"]
+    )
+
+
+def test_the_takt_stream_varies_and_a_sigma_that_flattens_it_is_refused() -> None:
+    """What D13 deleted along with the resample guard, restored where it belongs.
+
+    The guard raised on `takt_jitter_sigma=0` -- "the obvious way someone turns jitter
+    off", in its own words -- and its removal turned that loud failure into a silent
+    one: asyncua historises a stream only where it changes, so a zero sigma leaves
+    TaktTime at the station's nominal except on the ~0.1 % of cycles a micro-stop lands
+    on. Measured at 30 distinct values in 20,000 cycles and 59 historised rows, with
+    reconciliation still green, because `Ledger.record` drops exactly the same rows.
+    That is the quiet wrong answer, and it is not what D13 asked for.
+
+    Both halves: the stream is genuinely varied at the shipped sigma, and a sigma that
+    would flatten it is refused while the line is being built.
+    """
+    station, _ = build_one(InspectionStation)
+    draws = [station.next_takt() for _ in range(20_000)]
+    assert len(set(draws)) == len(draws)
+
+    with pytest.raises(ValidationError, match="TaktTime"):
+        Settings(takt_jitter_sigma=0.0)
 
 
 def test_a_station_the_settings_do_not_name_is_refused() -> None:
@@ -478,16 +539,6 @@ def test_the_same_seed_draws_the_same_takts_in_every_process() -> None:
     # the equality above no matter how the RNG were seeded.
     assert len(takts) == 5
     assert len(set(takts)) == 5
-
-
-def test_successive_takts_never_repeat() -> None:
-    """Not realism: asyncua's monitored-item filter drops a notification whenever the
-    written value is unchanged, so a repeated takt is a row that never reaches the
-    historian. D13 deletes this guard in M2c, once the noise floor makes takt vary
-    for real."""
-    station, _ = build_one(FeedingStation)
-    values = [station.next_takt() for _ in range(200)]
-    assert all(a != b for a, b in itertools.pairwise(values))
 
 
 # --- identity, from the station that creates it to the station that retires it -------
@@ -594,6 +645,24 @@ async def test_s2_records_the_curve_and_draws_the_distance_from_the_stop() -> No
 
 
 @pytest.mark.asyncio
+async def test_s3_refuses_a_part_s2_never_pressed() -> None:
+    """The sibling of S4's refusal below, and it guards a number two of §3.5's scenarios
+    turn on: the `gap` a part carries is scaled by the work its own press left in it
+    (`Settings.gap_work_exponent`).
+
+    Raising rather than substituting the nominal is the whole of it. A silent nominal
+    would score every unpressed part against a press that did not happen, and both
+    scenario 3 and scenario 7 would go on producing nothing on a line that looked fine --
+    which is exactly the shape of failure this milestone found twice already.
+    """
+    station, _ = build_one(InspectionStation)
+    unpressed = loaded()
+    unpressed.joining_work = None
+    with pytest.raises(ValueError, match="no joining work"):
+        await station.run_cycle(T0, Carrier(0), unpressed)
+
+
+@pytest.mark.asyncio
 async def test_s4_refuses_a_part_whose_serial_it_never_saw() -> None:
     """M2a's S4 refuses a part with no disposition. Identity is held to the same
     standard: sorting a part nobody can name is a quiet wrong answer, and §14's
@@ -641,9 +710,12 @@ async def test_a_part_carries_its_serial_from_s1_to_s4() -> None:
     for _ in range(200):
         await line.step()
 
+    # One station each: the four below are §4.1's per-station types, and the alarm --
+    # which every station declares -- carries no serial and is not one of them.
     serials = {
-        event.station: [
-            fields["AssemblySerial"] for fields in nodes[event.station].payloads(event)
+        event.stations[0]: [
+            fields["AssemblySerial"]
+            for fields in nodes[event.stations[0]].payloads(event)
         ]
         for event in (
             ASSEMBLY_CREATED,

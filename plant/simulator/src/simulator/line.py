@@ -20,7 +20,7 @@ import heapq
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import NamedTuple, Protocol
+from typing import TYPE_CHECKING, NamedTuple, Protocol
 
 from asyncua.server.history_sql import HistorySQLite
 
@@ -31,6 +31,12 @@ from simulator.config import Settings
 from simulator.historian import LedgerWriter
 from simulator.identity import Assembly
 from simulator.packml import Command, State, StateMachine, SuspendReason
+
+if TYPE_CHECKING:  # pragma: no cover - imported for annotations only
+    # `alarms` imports this module for real, because what an alarm does it does through
+    # `Line.abort`, `Line.restart` and `Line.reset_in_place`. The edge back is an
+    # annotation and nothing more, so it is not taken at runtime.
+    from simulator.alarms import AlarmSystem
 
 CARRIER_RETURN = "carrier-return"
 """What S1 names when it suspends for want of a free carrier.
@@ -46,12 +52,35 @@ when it does. Both conditions are real and both are reachable, which is why S1 n
 name for each rather than one name stretched over both.
 """
 
+FEEDER = "feeder"
+"""What S1 names when the feed upstream of the line has run dry -- §3.5's scenario 1.
+
+Not a buffer either, and for the same reason `CARRIER_RETURN` is not: §4.1 gives the
+line three buffers, all of them between two stations, and the feeder lanes are outside
+it. `buffers.suspend_reason_for` is passed `None` for S1's upstream side precisely
+because the line ends there, so it can never produce this and the Line has to.
+"""
+
+OUTFEED = "outfeed"
+"""What S4 names when the discharge below the line has stopped taking parts -- §3.5's
+scenario 2. The mirror of `FEEDER`, at the other end, for the same reason."""
+
 
 _BRING_UP: tuple[Command, ...] = (Command.CLEAR, Command.RESET, Command.START)
 """The commands that take a station from `Aborted` to `Execute`, in order.
 
 `StateMachine` is what decides the states each one passes through, so this names the
 path and not the result -- see `Line.bring_up`.
+"""
+
+_RESET_IN_PLACE: tuple[Command, ...] = (Command.STOP, Command.RESET, Command.START)
+"""The commands §3.5's "occasional unnecessary reset" takes a *running* station through.
+
+Not `_BRING_UP` with a different first command, even though it reads like one: §3.3 makes
+the recovery path from a fault shutdown `Clear` then `Reset`, and Stop is accepted only
+from the operating states. A station that is Aborted cannot be stopped, and one that is
+running cannot be cleared -- the two sequences are for two different situations and
+`StateMachine` refuses the wrong one.
 """
 
 BRING_UP_TRANSITIONS = len(_BRING_UP) * 2
@@ -81,6 +110,8 @@ class StationCycle(Protocol):
 
     def next_takt(self) -> float: ...
 
+    def external_reserve(self, _at: datetime, /) -> float | None: ...
+
 
 @dataclass
 class PartState:
@@ -89,18 +120,32 @@ class PartState:
     Keyed by carrier id on the Line rather than stored in the buffers, because that
     is what a real line does -- the carrier has a tag and the part is whatever is
     currently on it. S1 creates the assembly and puts it here; S2 presses against its
-    serial; S3 writes the disposition and the reason; S4 reads all three.
+    serial and leaves what the press did to it; S3 writes the disposition and the
+    reason; S4 reads the identity and the pair.
 
-    **Three fields, and each is one an event needs.** `assembly` is §3.1's identity
-    with its as-built components, and it is what makes S2's press and S4's sorting
-    record the serial they actually handled rather than the one a later time-join
-    would guess at -- §3.4a's rule. `disposition` and `reason` are §5.2's
-    `part_dispositions` row, carried from the station that decided them to the station
-    that publishes them. Nothing else belongs here: the process values are published
-    where they are measured, and the Line never reads any of this.
+    **Four fields, and each is one a later station cannot recompute.** `assembly` is
+    §3.1's identity with its as-built components, and it is what makes S2's press and
+    S4's sorting record the serial they actually handled rather than the one a later
+    time-join would guess at -- §3.4a's rule. `joining_work` is what S2's press left in
+    the joint. `disposition` and `reason` are §5.2's `part_dispositions` row, carried
+    from the station that decided them to the station that publishes them. Nothing else
+    belongs here: the process values are published where they are measured, and the Line
+    never reads any of this.
     """
 
     assembly: Assembly | None = None
+    # The area under this part's press trace, N.mm (`curve.work_of`), written by S2 and
+    # read by S3. A fourth field, and it earns its place the way `disposition` does: it
+    # is a fact one station establishes and another consumes, and time-joining the two
+    # streams to recover it is §3.4a's forbidden inference. It is here rather than
+    # published because §4.1's two S2 scalars are the press's own settings and this is
+    # not one of them -- the curve on `PartProcessedEvent` is the authoritative copy and
+    # `curve.work_of` is how anything downstream recomputes it.
+    #
+    # Why S3 needs it: §3.5 rows 3 and 7 both demand a rising `gap` rate, from a
+    # drifting clamp and from undersized components, and joining work is the one
+    # statistic that falls for both (see `Settings.gap_work_exponent`).
+    joining_work: float | None = None
     disposition: str | None = None
     # The classifier's named reason for a reject, empty for a good part. A plain str
     # rather than `str | None`, because "no reason" and "not inspected yet" are not the
@@ -189,6 +234,7 @@ class Line:
         buffers: Sequence[Buffer],
         carriers: CarrierPool,
         transition_interval: timedelta,
+        alarms: AlarmSystem,
     ) -> None:
         """`transition_interval` is how far apart two PackML states published for the
         same station are placed on the simulated timeline.
@@ -198,6 +244,14 @@ class Line:
         in Postgres and the second silently replaces the first: a bring-up would arrive
         as `Execute` alone and a hold as `Held` alone, with the transitions that led
         there gone. `Settings.state_transition_seconds` is the configured value.
+
+        `alarms` is §4.2's alarm system, and it has no default for the reason the
+        interval has none: a Line built without one is a line whose stations can raise an
+        alarm that shuts nothing down, and §3.5 row 3 is exactly that shutdown. It is
+        stepped from `step` rather than by a driver above, so that every caller that runs
+        a line -- the plant's own two loops and every test that steps one -- gets the
+        same line. The Line itself knows nothing about alarms beyond calling it: what it
+        does, it does through `abort`, `restart` and `reset_in_place` below.
         """
         if len(buffers) != len(stations) - 1:
             raise ValueError(
@@ -222,7 +276,14 @@ class Line:
         self._buffers = list(buffers)
         self._carriers = carriers
         self._transition = transition_interval
+        self._alarms = alarms
         self._queue = CycleQueue()
+        # The last instant a state was published for each station, which is what keeps
+        # two of them off one `(station_id, source_ts)` key. It matters from M2c: an
+        # alarm shuts a station down at the instant its own cycle measured the condition,
+        # and that cycle may already have published `Unsuspending` there -- the second
+        # write would replace the first in Postgres with nothing raised.
+        self._published_until: dict[str, datetime] = {}
         # Carrier id -> the part currently riding it. A carrier holds at most one
         # part, so the id is a sufficient key and no buffer has to carry a payload.
         self._parts: dict[int, PartState] = {}
@@ -237,6 +298,17 @@ class Line:
     @property
     def buffers(self) -> Sequence[Buffer]:
         return self._buffers
+
+    @property
+    def alarms(self) -> AlarmSystem:
+        """§4.2's alarm system, as this line was built with it.
+
+        Exposed for the same reason `buffers` is: §3.7's screen draws what the line is
+        doing, and what a station is shut down for is part of that. A second alarm system
+        handed to the screen separately would be a screen listing alarms no station was
+        ever aborted for.
+        """
+        return self._alarms
 
     @property
     def next_due(self) -> datetime | None:
@@ -297,11 +369,19 @@ class Line:
         station = self._station_for(code)
         machine = self._machines[code]
         machine.apply(command, reason)
+        # Never on top of a state this station already published. The caller's instant is
+        # the truthful one -- an alarm is raised when the measurement was taken -- and
+        # nudging it forward by one transition is a smaller lie than the row Postgres
+        # would silently drop if the two shared a key.
+        last = self._published_until.get(code)
+        if last is not None and at <= last:
+            at = last + self._transition
         await station.publish_state(at, machine.state, machine.reason)
         machine.settle()
         await station.publish_state(
             at + self._transition, machine.state, machine.reason
         )
+        self._published_until[code] = at + self._transition
         return at + 2 * self._transition
 
     def _station_for(self, code: str) -> StationCycle:
@@ -337,11 +417,59 @@ class Line:
         """
         last = first_at
         for code in self._machines:
-            at = first_at
-            for command in _BRING_UP:
-                at = await self._drive(code, at, command)
-            last = max(last, at)
+            last = max(last, await self.restart(code, first_at))
         return last
+
+    async def restart(self, code: str, at: datetime) -> datetime:
+        """Walk one `Aborted` station back to `Execute`, publishing all six transitions.
+        Returns the instant after the last one.
+
+        The same sequence `bring_up` runs for all four, and deliberately the same code:
+        §3.3's recovery from a fault shutdown is Clearing then Reset, which is exactly
+        what a station that has never been cleared needs, and two spellings of one
+        sequence would be two chances for the operator's restart to walk a path PackML
+        does not have.
+
+        Raises ValueError if the station is not `Aborted`, KeyError if `code` names no
+        station here.
+        """
+        for command in _BRING_UP:
+            at = await self._drive(code, at, command)
+        return at
+
+    async def abort(self, code: str, at: datetime) -> datetime:
+        """Shut a station down on its own fault: `Aborting` then `Aborted` (§3.3's cause
+        candidate, which needs Clearing then Reset to come back). Returns the instant
+        after the last transition.
+
+        **No reason, and that is not an omission.** §3.3's `StateReason` names a buffer
+        and a direction, and a fault shutdown has neither -- `packml._CARRIES_REASON`
+        leaves `Aborted` out for that reason. What names the cause is the alarm, in
+        §5.2's own table, which is why the two exist separately rather than one being a
+        string on the other.
+
+        Accepted from every state (ISA-TR88.00.02 makes only Abort universal), which is
+        what an unconditional fault shutdown has to be -- so unlike `hold` this has no
+        state a caller must establish first.
+        """
+        return await self._drive(code, at, Command.ABORT)
+
+    async def reset_in_place(self, code: str, at: datetime) -> datetime:
+        """§3.5's "occasional unnecessary reset": Stop, Reset, Start on a station that
+        was running. Returns the instant after the last transition.
+
+        It changes nothing. All six transitions are published between two cycles and the
+        station is back in `Execute` before any of them can be observed by `step`, so
+        what this leaves behind is six rows in `state_changes` and no lost part -- which
+        is what "an intervention that changed nothing" has to mean if it is to be the
+        noise §3.5 asks the floor for rather than a stoppage with no cause.
+
+        Raises ValueError if the station is not in an operating state, which is the only
+        place PackML accepts Stop from.
+        """
+        for command in _RESET_IN_PLACE:
+            at = await self._drive(code, at, command)
+        return at
 
     async def hold(self, code: str, at: datetime, reason: str) -> None:
         """Put a station into `Held` -- §3.3's cause candidate, which does not clear
@@ -374,19 +502,32 @@ class Line:
         return upstream, downstream
 
     async def step(self) -> CycleOutcome | None:
-        """Pop the earliest due cycle and run it. None when the queue is empty.
+        """Pop the earliest due cycle, run it, then let the alarm system act. None when
+        the queue is empty.
 
         Must not be called concurrently with itself: one sequential driver, one queue.
         That is D1's whole premise -- it is what makes a run a function of the seed
         rather than of the event loop -- and it is also what the `assert acquired is
-        not None` below rests on, since a station callback is awaited between the pool
-        check and the acquire.
+        not None` the cycle rests on, since a station callback is awaited between the
+        pool check and the acquire.
+
+        **The alarm system is settled on every step, not only on the ones that
+        produced.** A line whose stations are all starving behind an aborted S2 runs
+        nothing at all, and that is precisely when an operator is walking towards it --
+        an intervention that only ran after a successful cycle would never run.
         """
         due = self._queue.pop()
         if due is None:
             return None
         at, index = due
+        outcome = await self._cycle(at, index)
+        await self._alarms.settle(self, at)
+        return outcome
 
+    async def _cycle(self, at: datetime, index: int) -> CycleOutcome:
+        """One station's due cycle: the suspend rule, the movement and the station's own
+        work. Separated from `step` so that there is exactly one place the alarm system
+        is settled, whichever of the three ways this returns."""
         station = self._stations[index]
         machine = self._machines[station.code]
         upstream, downstream = self._source_and_sink(index)
@@ -402,7 +543,7 @@ class Line:
                 station.code, at, False, machine.state, machine.reason, next_at
             )
 
-        reason = self._suspend_reason(upstream, downstream)
+        reason = self._suspend_reason(station, upstream, downstream, at)
         if reason is not None:
             # The reason is latched at the moment of suspension and deliberately not
             # refreshed while the station stays Suspended -- which means a station can
@@ -476,16 +617,37 @@ class Line:
         )
 
     def _suspend_reason(
-        self, upstream: Buffer | None, downstream: Buffer | None
+        self,
+        station: StationCycle,
+        upstream: Buffer | None,
+        downstream: Buffer | None,
+        at: datetime,
     ) -> SuspendReason | None:
-        """§3.3's buffer rule, plus the one condition that is not a buffer.
+        """§3.3's buffer rule, plus the three conditions that are not buffers.
 
         `upstream is None` is what identifies the head of the line, so no station
         index is needed: the same fact that says S1 has no feeding buffer is the fact
-        that says the carrier pool is what feeds it.
+        that says the carrier pool and the feeder lanes are what feed it. `downstream is
+        None` says the same about the tail and its outfeed. That is also what turns the
+        one number `StationCycle.external_reserve` returns into a direction -- one rule,
+        "the outside cannot take one more part", read as `starved` at the head and
+        `blocked` at the tail.
+
+        **The feeder is checked before the carrier pool.** Both are `starved` at S1 and
+        the two can hold at once, but a starved feeder is a cause outside the line while
+        an empty pool is a consequence of something inside it; §5.4 categorises a chain
+        by direction, and naming the pool would point diagnosis back into a line whose
+        problem is upstream of it. In practice they rarely meet -- a station that stops
+        feeding stops consuming carriers, so the pool refills while the feeder is empty.
         """
-        if upstream is None and self._carriers.available == 0:
-            return SuspendReason("starved", CARRIER_RETURN)
+        reserve = station.external_reserve(at)
+        if upstream is None:
+            if reserve is not None and reserve < 1.0:
+                return SuspendReason("starved", FEEDER)
+            if self._carriers.available == 0:
+                return SuspendReason("starved", CARRIER_RETURN)
+        if downstream is None and reserve is not None and reserve < 1.0:
+            return SuspendReason("blocked", OUTFEED)
         return suspend_reason_for(upstream, downstream)
 
 

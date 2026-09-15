@@ -182,8 +182,12 @@ roughly 32,000 rows for an 18-hour history, which is nothing.
 Defaults, all configurable: **18 carriers · 6 s takt · buffer capacity 5**.
 
 **The stations do not share one takt — S3 paces the line.** Inspection is the slowest
-operation, so S1 and S2 run slightly faster than it and their buffers fill; S4 matches S3
-and its buffer runs near empty. The line's throughput is therefore S3's 6 s, which is the
+operation, so S1 and S2 run slightly faster than it and their buffers fill; S4 runs a shade
+faster again (5.90 s against 6.00) so its buffer runs near empty. S4 *matching* S3 was the
+original figure, and M2c measured it wrong: with equal takts B3_4 has no restoring force, so
+once micro-stops arrived it sat full 19.5 % of the time with the bottleneck blocked behind it
+— S3 blocking twenty-nine times in 400,000 cycles. At 5.90 the buffer holds zero or one
+83.5 % of the time and S3 blocks twice. The line's throughput is therefore S3's 6 s, which is the
 takt every other number here is quoted against.
 
 This is not decoration. On a perfectly balanced line every buffer oscillates between empty
@@ -292,9 +296,19 @@ A good part simply scores low on all six.
 
 This is forced by the scenarios rather than chosen. Scenario 6 is *"optics fouling →
 confidence decays across all classes"* — impossible under a softmax, where six values summing
-to 1 cannot all fall. Scenarios 4 and 5 need two classes on one part (`misalignment` +
+to 1 cannot all fall. Scenarios 4 and 5 need two classes raised together (`misalignment` +
 `scratch`, `missing_part` + `contamination`), and pattern DP-02 is keyed on a pair. Mutually
 exclusive classes cannot express any of that.
+
+**The pair is a property of the population, not of a part**, and M2c measured why it has to
+be. At the wear factor that makes carrier 7 findable — Cohen's *d* = +5.8 against a clean
+run's worst at +2.1 — a single part carrying *both* classes occurs about five times in a
+hundred thousand. Forcing ten such parts onto one carrier needs a factor of 38.8 instead of
+2.86, which puts that carrier at a 19 % scrap rate against the line's 1.5 %: the concentration
+would be visible by inspection and the significance test §3.5 exists to require would have
+nothing to do. So both classes rise together *on the carrier* (`misalignment` *d* = +3.75,
+`scratch` *d* = +4.98) and DP-02 keys on that, rather than on a per-part co-occurrence the
+line cannot produce without destroying the thing the scenario measures.
 
 The scalar `Confidence` on the event is confidence in the **OK/NOK verdict**, not in a class.
 A good part's verdict confidence is high while all six class scores are low; the earlier
@@ -344,8 +358,24 @@ for the part.
 
 A scenario is declarative: a list of `(offset, fault, params)`. Faults available: feeder
 starvation, outfeed blockage, joining-force drift, carrier wear, lane contamination,
-optics fouling. They fire from the scenario script during catch-up to build history, or by
-hand from the HMI while live. **Every injection writes to the ground-truth log.**
+optics fouling, undersized components. They fire from the scenario script during catch-up
+to build history, or by hand from the HMI while live. **Every injection writes to the
+ground-truth log.**
+
+*Amended in M2c: this list said six, and the table below needs seven.* Rows 7 and 8 are
+component faults rather than machine faults — the seventh moves the press's contact point
+(§3.4a's components' knob) and nothing else, and the two rows differ only in its magnitude
+and how long its window is. Lane contamination is the nearest of the six, and row 5 fixes
+its classes as `missing_part` + `contamination`, so reusing it for row 7 would make
+scenarios 5 and 7 the same injection and destroy the distinction the pair exists for.
+
+*Also amended in M2c:* rows 3 and 7 both produce a rising `gap`, and nothing in the
+original design connected the press to the defect state, so neither row could produce its
+own symptom. The plant now derives a part's `gap` propensity from the **joining work** its
+own press left in it (§3.4a's curve integrated) — which falls both when the clamp drifts
+down and when the components are undersized, while `JoiningForcePeak` moves for the first
+and not the second. That is what makes the two rows share a symptom and stay separable,
+which is the premise row 7 rests on.
 
 | # | Scenario | Expected diagnosis |
 |---|---|---|
@@ -353,7 +383,7 @@ hand from the HMI while live. **Every injection writes to the ground-truth log.*
 | 2 | outfeed blocked after S4 | external downstream; blockage propagates back to S1 |
 | 3 | joining force at S2 drifts down → `gap` rises → alarm → S2 aborts | internal, root S2 |
 | 4 | carrier 7 wears → `misalignment` + `scratch` concentrate on it | hypothesis: inspect/remove carrier 7, no stop |
-| 5 | feeder lane 2 contaminated → `missing_part` + `contamination` on lane 2 | hypothesis: clean lane 2 |
+| 5 | feeder lane 2 contaminated → `missing_part` + `contamination` rise together | hypothesis: the incoming components on one feeder — **naming the lane needs evidence the plant does not yet carry**, see below |
 | 6 | optics fouling → confidence decays across all classes, scrap rate flat | hypothesis: clean the optics |
 | 7 | lane 1 receives lot `L-4471` with undersized components → `gap` rises | hypothesis: bad component lot, **plus a containment list** |
 | 8 | one single defective component reaches the line | one bad part, explicitly *not* a lot problem |
@@ -368,6 +398,21 @@ drifting at S2" — but the joining force is perfectly stable. The only thing se
 them is that the defects correlate with the *lot*, not with the force trend, and that
 correlation is invisible without genealogy. So it tests whether the system can resist
 the obvious wrong answer when the data supports a better one.
+
+**Scenario 5 is only half winnable today, and M2c measured why.** Every assembly draws one
+component from *each* lane, so a contaminated lane touches every part and there is no contrast
+group: "these parts saw lane 2 and those did not" is a distinction the line cannot make. What
+*is* assertable is the shape — two classes rising together while the other four stay flat,
+which points at incoming components rather than at the press.
+
+Naming the lane needs the inspection event to say which **component** a defect came from, and
+that is a contract change. Until it exists, the expected diagnosis is the feeder generally,
+not lane 2 specifically — and the ground-truth log records the lane it drew against, so
+whoever adds that evidence has something to score against.
+
+The lot half is different and is fixed: the two lanes' lot boundaries are staggered, so a lot
+window belongs to one lane. That is what keeps scenario 7's *"the defects correlate with the
+lot"* answerable, which is the claim row 7 exists to test.
 
 **Scenario 8 is its mirror**, and it exists to stop the system over-generalising: a
 single defective component must be reported as a single bad part, not as a lot problem.
@@ -452,6 +497,15 @@ would arrive as a twenty-sixth stream. Three restate what an event already carri
 invites exactly the time-join §3.4a forbids. That leaves **25 historised streams and five
 event types**, against M1's two and one. The count is worth stating because all three of
 §12's truncation defects scale with it.
+
+*Amended in M2c:* **six event types, not five.** §4.2 makes an alarm a custom event type and
+this tree above does not draw it, which reads as an omission rather than as a decision. It is
+`AlarmEventType`, and **every station declares it** — §5.2 keys an alarm on `station_id` and
+§3.7's screen lists alarms per station, so a type declared only on the one station that has a
+condition today would make that column a constant the schema pretends is a variable. Every one
+of its fields is prefixed `Alarm`, because two event types on one station may not share a
+field name and because BaseEventType already carries `Severity`, `Message` and `Time`. The
+historised-stream count is unaffected: an event type is not a variable.
 
 Buffer nodes **carry** the stations they sit between, as `String` variables holding the
 station's browse name. The gateway reads them on connect and fills the `stations` and

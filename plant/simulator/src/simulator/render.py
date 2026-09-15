@@ -35,6 +35,13 @@ DEFECT_INK = {
 # DEFECT_INK above, rather than a physical or measured parameter.
 _NOISE_ALPHA = 0.06
 
+# What a fouled lens veils the scene with: the midpoint of BODY and BACKGROUND, so that
+# reducing clarity collapses the frame towards its own average brightness rather than
+# darkening or brightening it. That is what fouling does optically -- scattered light
+# adds a uniform veil and the contrast between part and background is what is lost, not
+# the exposure. A fixed rendering detail, like the three colours above.
+_VEIL = tuple((body + background) // 2 for body, background in zip(BODY, BACKGROUND))
+
 
 def render_part(
     part_id: str,
@@ -43,13 +50,30 @@ def render_part(
     height: int,
     seed: int,
     compress_level: int,
+    clarity: float = 1.0,
 ) -> bytes:
     """Render a PNG of the part at `part_id` with `defects` painted onto it.
 
-    Deterministic for a given (part_id, defects, width, height, seed) -- §3.6
+    `clarity` is how much of the camera's nominal contrast survives to the image, 1.0
+    for a clean lens. Below 1.0 the scene is veiled towards `_VEIL` before the sensor
+    noise is added, which is the order the optics impose: fouling is in front of the
+    lens and the sensor's own noise is behind it. **D8**: §3.5 calls scenario 6 the
+    weakest because the confidence decay is stipulated, and this is what makes the
+    degradation real -- `inspection.classifier.contrast_of` reads it back off the pixels.
+    At exactly 1.0 nothing is blended and the bytes are a clean render's, which is what
+    keeps a loaded-but-unfired scenario byte-identical to no scenario at all.
+
+    Deterministic for a given (part_id, defects, width, height, seed, clarity) -- §3.6
     requires the whole plant to be reproducible from a seed. Raises `KeyError` if
-    `defects` names a class outside `DEFECT_INK`.
+    `defects` names a class outside `DEFECT_INK`, and `ValueError` for a clarity outside
+    [0, 1]: above 1 is a lens that improves the scene, and below 0 is not a fraction.
     """
+    if not 0.0 <= clarity <= 1.0:
+        raise ValueError(
+            f"clarity is {clarity!r}: it is the fraction of the camera's nominal "
+            "contrast that survives to the image, so 1.0 is a clean lens and 0.0 is one "
+            "that passes no contrast at all"
+        )
     rng = random.Random(f"{seed}:{part_id}")
     img = Image.new("RGB", (width, height), BACKGROUND)
     draw = ImageDraw.Draw(img)
@@ -90,6 +114,9 @@ def render_part(
         else:
             r = rng.randint(6, 18)
             draw.ellipse([x - r, y - r, x + r, y + r], fill=ink)
+
+    if clarity < 1.0:
+        img = Image.blend(img, Image.new("RGB", (width, height), _VEIL), 1.0 - clarity)
 
     # Deterministic sensor noise -- image content this renderer owns (§3.4), not
     # §3.5's noise floor (M2 line behaviour on the *classifier's* verdict): a

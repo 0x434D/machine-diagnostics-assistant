@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import timedelta
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -77,12 +79,37 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     takt_seconds: float = 6.0
     seed: int = 20260912
     # Additive Gaussian jitter on the takt written to TaktTime, ~0.8 % of a 6 s takt.
-    # Not §3.5's noise model (that arrives in M2) -- this exists so TaktTime is
-    # historised at all: asyncua's monitored-item filter drops a notification
-    # whenever the written value is unchanged, and a bare constant takt (M1, with no
-    # noise model yet) means only the very first write is ever historised. See
-    # stations.base.Station.next_takt.
+    # One of §3.5's two sources of takt variation, the other being `noise`'s micro-stops
+    # (`stations.base.Station.next_takt` adds both).
+    #
+    # **It must be positive, and that is enforced below rather than assumed.** TaktTime
+    # is the one stream whose variation rests on a single knob: asyncua's monitored-item
+    # filter drops a notification whose value is unchanged, and with this at 0 the takt
+    # is the station's nominal except on the ~0.1 % of cycles a micro-stop lands on.
+    # Measured at sigma 0: **30 distinct values in 20,000 cycles, 59 historised rows
+    # instead of 20,000** -- and reconciliation still passes, because `Ledger.record`
+    # applies the same filter and drops the same rows. The other sigmas in this file do
+    # not have this property: a zero `lane_fill_sigma` still leaves the sawtooth, a zero
+    # `joining_force_sigma` still leaves `curve_noise_sigma` in the trace.
+    #
+    # D13 deleted the resample guard in `next_takt`, which also happened to raise on a
+    # sigma of 0 -- "the obvious way someone turns jitter off", in its own words. This
+    # restores that property without restoring the guard: the guard's reconciliation
+    # claim was redundant (`Ledger.record` already did it) and its loud failure was not.
     takt_jitter_sigma: float = 0.05
+
+    @field_validator("takt_jitter_sigma")
+    @classmethod
+    def _jitter_must_vary(cls, value: float) -> float:
+        if value <= 0.0:
+            raise ValueError(
+                f"takt_jitter_sigma={value!r} leaves TaktTime at the station's nominal "
+                "on all but the ~0.1 % of cycles a micro-stop lands on, and asyncua "
+                "historises a stream only where it changes: measured at 59 rows in "
+                "20,000 cycles, with the reconciliation still green because the ledger "
+                "drops the same rows. Turn the noise floor down, not off"
+            )
+        return value
 
     # §3.1's three line defaults. Buffer capacity is the one that matters: it sets how
     # long propagation takes to become visible, and Task 12's authenticity proof
@@ -119,8 +146,19 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
 
     # §3.1: the stations do NOT share one takt. S3 is the slowest and paces the line
     # at the 6 s every other number is quoted against; S1 and S2 run faster so their
-    # buffers fill, and S4 matches S3 so B3_4 stays near empty without S4 starving on
-    # every single cycle.
+    # buffers fill, and S4 runs slightly faster still so B3_4 drains back towards empty.
+    #
+    # **S4 was 6.00 -- exactly S3's -- and that is a restoring force of zero.** B3_4 was
+    # then a driftless random walk, kept near empty only by never being disturbed, and
+    # §3.5's micro-stops are a disturbance: a jam at S4 adds carriers to B3_4 and a jam
+    # at S3 removes them, with nothing to pull the level back either way. Measured over
+    # 36,000 steady-state steps with micro-stops on: B3_4 sat full 19.5 % of the time and
+    # S3 -- the bottleneck -- took `blocked:B3_4` 29 times. A bottleneck blocked a fifth
+    # of the time is not the line §3.1 describes, and it is a baseline scenario 2 would
+    # then have to be found against. At 5.90 the same run leaves B3_4 at 0 or 1 for
+    # 83.5 % of the time and S3 blocked twice, while S4 starves on 1.5 % of its cycles --
+    # the cost the old value was avoiding, and far from the "every single cycle" it read
+    # as. Over 400,000 steps: S3 blocked 28 times in ~98,000 cycles.
     #
     # A balanced line would make buffer capacity bound nothing -- every buffer would
     # oscillate between empty and one, because each station consumes exactly as fast
@@ -139,7 +177,7 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
         "S1_Feeding": 5.70,
         "S2_Joining": 5.85,
         "S3_Inspection": 6.00,
-        "S4_Outfeed": 6.00,
+        "S4_Outfeed": 5.90,
     }
 
     # §4.1's two S2 process signals, which are also the press's own two settings
@@ -162,6 +200,41 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # and that ratio has to be tunable to make the scenario provable either way.
     joining_force_sigma: float = 40.0  # newtons
     joining_distance_sigma: float = 0.02  # millimetres
+
+    # §4.2's alarm band at S2, and the first half of §3.5 row 3's shutdown. **In sigmas
+    # of the clamp's own part-to-part spread rather than in newtons**, for the reason
+    # `carrier_wear_sigmas` is one: the limit's whole job is to sit outside the noise it
+    # has to be seen through and inside the drift it has to catch, and a limit in newtons
+    # beside a spread in newtons is two numbers free to drift apart.
+    # `joining_force_tolerance_newtons` below is the product.
+    #
+    # **Bounded from both sides, and both bounds are §3.5's.** Eight sigma against the
+    # 40 N spread is a +/-320 N band, 7.6 % of the 4200 N clamp.
+    #
+    #   * From below by row 3's own order -- *drifts down -> gap rises -> alarm -> S2
+    #     aborts*. A narrow band fires early in the ramp, and the station then spends the
+    #     rest of the run shut down, so the gap rate rises after the alarm instead of
+    #     before it. Measured over 9000 s of paired runs: at 6 sigma the alarm lands 2132 s
+    #     into the 3600 s ramp and the line presses 726 parts; at 8 it lands at 2902 s and
+    #     presses 845; at 10 it lands at 3282 s and presses 987.
+    #   * From above by the drift itself -- `scenarios._force_alarm_seconds` refuses a
+    #     band the drift never leaves. Eight sigma leaves the drifted press 2.3 sigma
+    #     outside the band once the ramp has run; ten leaves it 0.25 sigma outside, which
+    #     is an alarm that depends on which side of its own noise a part lands on.
+    #
+    # The published peak is the largest sample of a noisy trace and so sits a little above
+    # the clamp -- 4214.3 N mean at sd 39.5, measured in test_scenarios -- which leaves
+    # the nearer edge 8.4 sigma away on a clean line. `test_alarms` runs one for four
+    # simulated hours and asserts it never reaches it.
+    joining_force_tolerance_sigmas: float = 8.0
+    # How many consecutive parts must read out of tolerance before the alarm is raised.
+    # **Not decoration.** One part is a draw: a limit with no debounce turns the tail of a
+    # Gaussian into a line stop, and the cost of that is not the frequency but the shape
+    # -- a single outlier would abort a station until an operator walked over, and every
+    # later milestone would be asked to explain a stoppage with no process behind it.
+    # Three consecutive makes the raise a statement about the press rather than about one
+    # part.
+    alarm_consecutive_parts: int = 3
 
     # §3.4a's force-distance curve. THREE knobs, and which fault moves which is the
     # whole of why the curve is stored:
@@ -225,6 +298,50 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     curve_fit_noise_margin_sigmas: float = 20.0
 
     @property
+    def carrier_wear_factor(self) -> float:
+        """Scenario 4's multiplier on a worn carrier's defect propensity.
+
+        Derived from `carrier_wear_sigmas` and the baseline spread rather than
+        configured beside them: the pair is a ratio, and a third field holding the
+        product would be the same number twice with nothing keeping the two equal --
+        which is exactly what would let a change to the spread leave the injected wear
+        where it was and silently make scenario 4 easier or unwinnable.
+        """
+        return math.exp(self.carrier_wear_sigmas * self.carrier_quality_log_sigma)
+
+    @property
+    def joining_force_tolerance_newtons(self) -> float:
+        """Half the width of S2's alarm band, in newtons.
+
+        Derived from the spread the limit has to sit outside of rather than configured
+        beside it, for the reason `carrier_wear_factor` is derived: the pair is a ratio,
+        and a second field holding the product could disagree with it -- which would let
+        a change to `joining_force_sigma` leave the limit where it was and silently make
+        the alarm either unreachable or something a clean line trips.
+        """
+        return self.joining_force_tolerance_sigmas * self.joining_force_sigma
+
+    @property
+    def press_nominal_work(self) -> float:
+        """Joining work, N.mm, for a part pressed at every nominal (`curve.work_of`).
+
+        Derived from the four knobs rather than configured, for the reason
+        `press_stiffness_nominal` is: it is the area under `min(clamp, max(0, k(x - c)))`
+        across the stroke -- a triangle of `clamp/2 x clamp/k` up to the knee and a
+        rectangle of `clamp` from there to the stop -- and a fifth field holding the
+        product would be a number that could disagree with the other four.
+
+        **This is the reference the gap propensity is measured against**
+        (`gap_work_exponent`), so a configuration change that moves the press moves the
+        reference with it instead of silently making every part look badly joined.
+        """
+        return self.joining_force_nominal * (
+            self.joining_distance_nominal
+            - self.press_contact_nominal_mm
+            - 0.5 * self.joining_force_nominal / self.press_stiffness_nominal
+        )
+
+    @property
     def press_stiffness_nominal(self) -> float:
         """Newtons per millimetre of compression.
 
@@ -249,6 +366,20 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     lot_size: int = 500
     lot_code_prefix: str = "L-"
     supplier_count: int = 3
+    # **How far into its first lot each lane beyond the first starts**, as a fraction of
+    # `lot_size` per lane index. Without it the two lanes roll their lots on the *same*
+    # part -- both draw one component per assembly, both hit `lot_size` together -- so
+    # lane 1's k-th lot and lane 2's k-th lot cover exactly the same parts, and "which
+    # lot" and "which lane" become one question with one answer. §3.5's scenario 7
+    # contaminates one lane's *lot* and scenario 5 contaminates one *lane*; coextensive
+    # windows collapse the pair, which is the same collapse `LotSchedule`'s shared code
+    # counter already exists to prevent one level up.
+    #
+    # 0.5 is the maximum separation for two lanes: lane 2 rolls over halfway through
+    # every one of lane 1's lots. The cost, and it is real: the lot a lane starts
+    # part-way through supplies fewer than `lot_size` components, which is what a lane
+    # that was already running when the line started genuinely looks like.
+    lot_stagger_fraction: float = 0.5
 
     # §4.1's three fill levels -- S1's two feeder lanes and S4's outfeed. Each is a
     # sawtooth: drawn down (or filled up) by production, reset when an operator
@@ -267,6 +398,162 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # Parts, not units: the outfeed holds whole parts and an operator clears it.
     outfeed_capacity: int = 50
     outfeed_fill_sigma: float = 0.3
+
+    # faults — §3.5's six, as the magnitudes a scenario injects them at (`simulator.
+    # faults`). Flat fields rather than one mapping keyed by fault name: `extra="ignore"`
+    # above means pydantic cannot tell a mistyped key from another consumer's, so a
+    # mis-keyed entry silently leaves every reader on the default -- which is exactly how
+    # `station_takt_seconds` once gave all four stations the line-wide takt. A field name
+    # is checked by mypy at every read.
+    #
+    # Each magnitude is an **end**, not a rate: `faults.Fault` ramps from nominal to it
+    # over the matching ramp and then holds. See the module docstring for why a rate is
+    # the wrong shape here.
+    #
+    # Starting values, in the same sense `station_takt_seconds` above carries them: the
+    # scenario tasks measure each against the noise floor it has to be visible through,
+    # and carrier wear is the one already expressed that way (`carrier_wear_sigmas`).
+    #
+    # Scenario 1. Zero, not a fraction: §3.5 calls this starvation, and a feeder running
+    # slow is a different fault with a different consequence chain.
+    feeder_starvation_factor: float = 0.0
+    # Scenario 2. Parts of backlog added to OutfeedFill. Above outfeed_capacity (50), so
+    # the level reaches the point a full outfeed is at rather than approaching it; over
+    # ten minutes, so the blockage builds the way a stopped discharge conveyor does
+    # instead of appearing between two cycles.
+    outfeed_blockage_parts: float = 70.0
+    outfeed_blockage_ramp_seconds: float = 600.0
+    # Scenario 3. -420 N is 10 % of the 4200 N clamp and 10.5 x joining_force_sigma, so
+    # the drifted mean sits well outside the part-to-part spread it has to be seen
+    # through. Over an hour, because §3.5 calls it a drift: a step would be a different
+    # failure, and scenario 7 -- where the same rising `gap` must NOT be explained by the
+    # force -- is only a test at all while this one is genuinely visible in the force.
+    joining_force_drift_newtons: float = -420.0
+    joining_force_drift_ramp_seconds: float = 3600.0
+    # Scenario 5. Six times the baseline propensity of the two classes §3.5 names for a
+    # contaminated lane, applied as a step: a lane is contaminated when someone tips the
+    # wrong tray into it, not over an hour.
+    lane_contamination_factor: float = 6.0
+    # Scenario 6. Fouling leaves 55 % of the camera's nominal contrast after two hours.
+    # D8 makes the confidence fall out of the image rather than out of a knob, so what
+    # this number has to be is set by the classifier's statistic and is measured where
+    # that change lands.
+    optics_fouling_factor: float = 0.55
+    optics_fouling_ramp_seconds: float = 7200.0
+    # Scenario 7: how much further the ram travels before it meets an undersized
+    # component, in millimetres. 0.6 mm is 12 x press_contact_sigma_mm, so the shifted
+    # contact point sits far outside the part-to-part spread it has to be seen through,
+    # and it leaves the knee at 10.6 mm of the 12.5 mm stroke -- comfortably short of
+    # the stop `curve.force_distance` refuses to reach without clamping. Measured
+    # consequence, in test_scenarios: the joining work falls 17.0 % while the mean
+    # JoiningForcePeak moves 2.32 N -- 0.06 of the stream's own part-to-part spread,
+    # against the 10.7 sigma scenario 3's drift moves it.
+    undersized_component_mm: float = 0.6
+    # Scenario 8: the same fault on one part instead of one lot, and far larger, because
+    # a single bad component has one part to be visible in rather than five hundred. At
+    # 2.0 mm the knee is at 12.0 mm, still inside the stroke, and the gap propensity
+    # below saturates -- so that one part is certainly gapped and its neighbours are not.
+    defective_component_mm: float = 2.0
+    # **How a badly joined part becomes a `gap`.** §3.5 rows 3 and 7 both demand a rising
+    # `gap` rate -- from a drifting clamp and from undersized components respectively --
+    # and the plant had no path at all from the press to the defect draw, so neither row
+    # could be produced. This is that path: the true `gap` propensity scales as
+    # `(nominal work / this part's joining work) ** exponent`, and the joining work is the
+    # one statistic that falls for both causes (`curve.work_of`). A lower clamp lowers the
+    # plateau; a later contact point shortens it. Neither moves `JoiningForcePeak` and
+    # `JoiningDistance` in the same way, which is exactly what keeps scenarios 3 and 7
+    # distinguishable while their symptom is identical.
+    #
+    # A power, not a linear term, because the exponent is what makes a ~7 % work deficit
+    # a visible defect rate rather than a 7 % one. 10 is a declared starting value in the
+    # sense station_takt_seconds' were; test_scenarios measures where it lands.
+    gap_work_exponent: float = 10.0
+
+    # scenarios — §3.5's eight (`simulator.scenarios`), as the offsets they fire at.
+    #
+    # **Which one this boot runs, or 0 for a clean line.** A run with no scenario is what
+    # every measurement of the noise floor is taken against, so it is the default: a
+    # plant that shipped misbehaving by default would make its own baseline unobtainable
+    # without an override. `simulator.scenarios.scenario` refuses anything outside 1-8.
+    scenario: int = 0
+    #
+    # Every scenario waits this long before it fires, so that every one of them has a
+    # clean baseline in front of it on the same run. 1800 s is ~300 parts at the line's
+    # takt, which is enough of a before for a rate to be compared against.
+    scenario_warmup_seconds: float = 1800.0
+    # Scenario 1's window. 900 s is thirty times the ~30 s a full buffer takes to drain,
+    # so the starvation chain completes several times over inside it and the line is
+    # genuinely idle rather than momentarily short.
+    feeder_starvation_seconds: float = 900.0
+    # Scenario 2's window, comfortably past its own 600 s ramp: the blockage has to
+    # build, propagate all the way back to S1 and still hold there for a while before an
+    # operator clears it.
+    outfeed_blockage_seconds: float = 2400.0
+    # **Which carrier scenario 4 wears and which lane scenario 5 contaminates.** §3.5
+    # names carrier 7 and lane 2 in its own table, and they are settings because
+    # `carrier_count` and `LANES` are what bound them -- a scenario naming carrier 25 of
+    # an 18-carrier pool, or lane 3 of two, injects a fault that fires, is logged and
+    # matches no part at all. test_scenarios asserts both are in range.
+    worn_carrier_id: int = 7
+    contaminated_lane: int = 2
+    # Scenario 7's lane, and which of that lane's lots the bad components arrive in.
+    # Lot 1 rather than lot 0, so the run has a whole clean lot in front of the bad one
+    # to compare against -- lot 0 starts at `history_start`, where there is no before.
+    bad_lot_lane: int = 1
+    bad_lot_index: int = 1
+    # Scenario 8's offset past the warmup, in seconds. **Measured, not chosen**: the
+    # window is one takt wide, so it has to land on a cycle S2 actually presses, and a
+    # window that fell on a suspended one would be a fault that fires, is logged and has
+    # no consequence anywhere. At the shipped settings S2 presses inside this window;
+    # test_scenarios is what re-measures it.
+    defective_component_offset: float = 300.0
+
+    # noise floor — §3.5's permanent background (`simulator.noise`), and the one ratio
+    # that decides whether this milestone's scenario 4 is findable at all.
+    #
+    # **Genuine carrier-to-carrier variation**, as the log-sigma of a lognormal
+    # multiplier on a carrier's defect propensity. Lognormal rather than Gaussian
+    # because the quantity is a positive scale; normalised to a mean of exactly 1, so it
+    # redistributes the line's scrap across carriers without moving the line's own rate
+    # off reject_rate.
+    #
+    # 0.35 is a ~36 % relative spread between carriers. It is large enough to be a
+    # *property of the carrier* rather than a rounding of the binomial sampling noise
+    # that any per-carrier count carries anyway -- the two are comparable at the
+    # shipped depth, which is measured in test_noise rather than asserted here.
+    carrier_quality_log_sigma: float = 0.35
+    # **Scenario 4's wear, in multiples of that spread.** Expressed as a ratio and not
+    # as a factor because the ratio is the number that decides the milestone: too tight
+    # and finding carrier 7 is a GROUP BY, too loose and it is impossible, and either
+    # way M3 inherits a scenario that proves nothing. `test_noise` measures where it
+    # actually lands and records the effect size; the target is that carrier 7 separates
+    # from the pack by clearly more than the pack's own worst member does, so that an
+    # agent taking the highest carrier is wrong on a clean run and right on this one.
+    carrier_wear_sigmas: float = 3.0
+
+    # **Micro-stops** — §3.5's brief jams every ~20 min, line-wide. The interval is for
+    # the line; `noise.NoiseFloor.micro_stop_seconds` divides it by the number of
+    # stations, so adding a fifth station does not make the line jam more often.
+    micro_stop_mean_interval_seconds: float = 1200.0
+    micro_stop_min_seconds: float = 4.0
+    # Below buffer_capacity x takt (5 x 6 s = 30 s), which is how long a *full* buffer
+    # takes to drain: a micro-stop can therefore never on its own produce the complete
+    # propagation chain Task 12's proof measures for a real stoppage. Whether it starves
+    # the station below at all depends on that buffer's level at the time, which is the
+    # behaviour §3.5 wants -- noise that sometimes looks like something and is not.
+    micro_stop_max_seconds: float = 25.0
+
+    # **Operator interventions.** Triangular: most alarms are acknowledged by someone
+    # already at the panel and a few wait for a shift change, which a uniform draw would
+    # make equally likely. Chosen as plausible, not measured -- nothing in this project
+    # has measured a real operator, and a number that sounds measured and is not is
+    # worse than one that says so.
+    operator_ack_min_seconds: float = 15.0
+    operator_ack_mode_seconds: float = 60.0
+    operator_ack_max_seconds: float = 600.0
+    # §3.5's "occasional unnecessary reset": roughly one intervention in twelve changed
+    # nothing. Also chosen rather than measured.
+    operator_unnecessary_reset_rate: float = 0.08
 
     # catch-up pacing -- asyncua's own per-monitored-item notification queue caps at
     # 10,000 and silently discards the oldest entry past that, so generate_history

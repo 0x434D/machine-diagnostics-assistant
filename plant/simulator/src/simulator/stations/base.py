@@ -22,8 +22,10 @@ from typing import ClassVar, Protocol
 from simulator.carriers import Carrier
 from simulator.config import Settings
 from simulator.events import EventType
+from simulator.faults import NO_FAULTS, FaultSet
 from simulator.identity import Assembly
 from simulator.line import PartState
+from simulator.noise import NoiseFloor
 from simulator.packml import State
 
 
@@ -57,7 +59,18 @@ class PartOutcome:
     model_version: str
 
 
-ProduceFn = Callable[[str, datetime], Awaitable[PartOutcome]]
+ProduceFn = Callable[[str, int, float, datetime], Awaitable[PartOutcome]]
+"""`(assembly serial, carrier id, joining work, simulated instant) -> the verdict`.
+
+The carrier is here because §3.5's scenario 4 wears one and the plant's *truth* about a
+part therefore depends on which carrier it rode -- so the id has to reach the draw, not
+only the event S3 publishes afterwards. M2b passed a placeholder and said so.
+
+The joining work is here for the same shape of reason one station on: §3.5's rows 3 and
+7 make a badly joined part a `gap`, and how well this part was joined is something only
+S2's press knows (`Settings.gap_work_exponent`). Without it the plant had no path at all
+from the press to the defect draw, and neither row could be produced.
+"""
 
 
 class StationNodes(Protocol):
@@ -101,6 +114,23 @@ def require_assembly(part: PartState, carrier: Carrier, station: str) -> Assembl
     return part.assembly
 
 
+def require_joining_work(part: PartState, carrier: Carrier, station: str) -> float:
+    """What S2's press left in the joint. Raises ValueError if there is none.
+
+    Raising rather than substituting the nominal, for the reason `require_assembly`
+    raises: a part whose press nobody recorded would be scored against a press that did
+    not happen, and §3.5's scenarios 3 and 7 both turn on exactly that number. Silently
+    nominal would make both of them produce nothing, on a line that looked fine.
+    """
+    if part.joining_work is None:
+        raise ValueError(
+            f"the part on carrier {carrier.carrier_id} reached {station} with no "
+            "joining work: S2 did not press it, and inspecting a part against a press "
+            "that never happened is a verdict drawn from a joint nobody made"
+        )
+    return part.joining_work
+
+
 def clamp_level(value: float) -> float:
     """A fill level and its sensor cannot read below empty.
 
@@ -110,14 +140,6 @@ def clamp_level(value: float) -> float:
     the reason is stated once.
     """
     return max(0.0, value)
-
-
-_MAX_TAKT_RESAMPLES = 100
-"""Bounds next_takt's resample loop. A well-formed positive sigma finds a distinct
-value on the first or second draw essentially always; this exists so a degenerate
-configuration -- takt_jitter_sigma=0, the obvious way someone turns jitter off --
-fails loudly instead of spinning forever inside a non-yielding while loop in an async
-function, wedging the event loop with no error, timeout, or log."""
 
 
 class Station(ABC):
@@ -139,12 +161,23 @@ class Station(ABC):
     accepts any name, which is exactly the shape of test that cannot see this.
     """
 
-    def __init__(self, nodes: StationNodes, settings: Settings, seed: int) -> None:
+    def __init__(
+        self,
+        nodes: StationNodes,
+        settings: Settings,
+        seed: int,
+        *,
+        faults: FaultSet = NO_FAULTS,
+    ) -> None:
         """Raises ValueError if `settings` names no takt for this station's code.
 
         Checked here rather than at the first cycle so that a misconfigured
         deployment fails while the line is being built -- which is boot -- instead of
         one takt into generation, with a run already in flight.
+
+        `faults` defaults to the empty set, so a station built without a scenario and a
+        station built with one that has not fired are the same station -- see
+        `faults.NO_FAULTS`.
         """
         if nodes.code not in settings.station_takt_seconds:
             raise ValueError(
@@ -164,12 +197,42 @@ class Station(ABC):
         # different run on every boot -- the exact guarantee §3.6 asks for, broken
         # invisibly. crc32 is stable across processes, platforms and releases.
         self._rng = random.Random(seed ^ zlib.crc32(nodes.code.encode()))
+        self._faults = faults
+        # §3.5's permanent background. Built here from the same (settings, seed) every
+        # station has rather than threaded in: every draw it makes is a pure function of
+        # the seed and its key, so two NoiseFloors built the same way are the same
+        # noise floor and there is nothing for a shared instance to buy.
+        self._noise = NoiseFloor(settings, seed)
         self._previous_takt: float | None = None
+        self._takt_draws = 0
         self._part_count = 0
 
     @property
     def code(self) -> str:
         return self._nodes.code
+
+    def external_reserve(self, _at: datetime, /) -> float | None:
+        """How many more parts the feed or discharge **outside the line** can handle,
+        or None for a station that has neither.
+
+        One number for both ends, because the rule the Line applies to it is one rule:
+        a station whose external side cannot take one more part cannot cycle. Which end
+        it is comes from the station's position -- the head of the line is fed from
+        outside and the tail discharges to outside -- so `Line._suspend_reason` derives
+        the direction the same way it already derives which buffer feeds a station, and
+        this never has to say whether it is a feed or a discharge.
+
+        **The true level, never the published one.** `LaneFill_n` and `OutfeedFill` are
+        measurements and carry the sensor noise that goes with that; whether the station
+        physically has material is not a measurement. Reading the published value here
+        would also draw from the station's RNG once per cycle rather than once per part,
+        which would move every subsequent draw on the line.
+
+        Returns None here, and two of the four stations leave it that way: S2 and S3 are
+        fed and discharged entirely by buffers, which `buffers.suspend_reason_for`
+        already owns.
+        """
+        return None
 
     def _nominal_takt(self) -> float:
         """Per station, not one line-wide number (§3.1).
@@ -192,37 +255,39 @@ class Station(ABC):
         return self._settings.station_takt_seconds[self.code]
 
     def next_takt(self) -> float:
-        """Additive Gaussian jitter, resampled until distinct from the previous value.
+        """This station's nominal takt, jittered, plus whatever a micro-stop adds.
 
-        Needed for TaktTime to be historised at all, not for realism: asyncua's
-        monitored-item filter (DataChangeTrigger.StatusValue, the default) drops a
-        notification whenever the written value is unchanged, regardless of
-        SourceTimestamp. A bare constant takt means only the very first write of a run
-        is ever historised. D13 deletes this in M2c, once the noise floor makes takt
-        genuinely variable -- at which point the guard is dead code pretending to be a
-        safety property.
+        **D13: the resample-until-distinct guard is gone.** It existed because M1's
+        takt was a constant and asyncua's monitored-item filter
+        (DataChangeTrigger.StatusValue, the default) drops a notification whose value is
+        unchanged regardless of SourceTimestamp -- so a constant takt was historised
+        exactly once per run. It then survived as a claim about reconciliation: it made
+        the historian's row count equal the ledger's *by construction* rather than by
+        the odds of two float64 draws colliding.
 
-        Resampling rather than accepting the odds is what makes the historian's row
-        count equal the ledger's *by construction*, instead of by the odds of two
-        float64 Gaussian draws colliding -- vanishingly small, but R1 asserts exact
-        equality, not "usually".
+        That claim was never the guard's to make. `historian.Ledger.record` applies
+        asyncua's own rule -- it counts a row only where the value changed -- so a
+        repeated takt is dropped on both sides and the two still agree exactly. The
+        guard bought the ledger nothing, and with §3.5's micro-stops added to a jittered
+        Gaussian on a Double node it was dead code pretending to be a safety property.
+        `test_every_stream_reconciles_exactly` is what says so, at the production depth.
 
-        Raises ValueError if _MAX_TAKT_RESAMPLES consecutive draws all equal the
-        previous takt -- see that constant for why this is a bound, not a
-        retry-forever.
+        The micro-stop is added here rather than driven through PackML because a jam
+        that needed an operator would be a `Held` and a §3.3 cause candidate -- see
+        `noise.NoiseFloor.micro_stop_seconds`. It lands in `TaktTime`, which is what a
+        brief jam looks like on the wire.
         """
-        nominal = self._nominal_takt()
-        sigma = self._settings.takt_jitter_sigma
-        for _ in range(_MAX_TAKT_RESAMPLES):
-            value = nominal + self._rng.gauss(0.0, sigma)
-            if value != self._previous_takt:
-                self._previous_takt = value
-                return value
-        raise ValueError(
-            f"takt_jitter_sigma={sigma!r} produced {_MAX_TAKT_RESAMPLES} consecutive "
-            f"draws equal to the previous takt ({self._previous_takt!r}); a sigma of 0 "
-            "makes every draw equal nominal, which can never satisfy the guard"
+        value = (
+            self._nominal_takt()
+            + self._rng.gauss(0.0, self._settings.takt_jitter_sigma)
+            + self._noise.micro_stop_seconds(self.code, self._takt_draws)
         )
+        # The micro-stop stream is keyed on this counter rather than on the part count,
+        # because a suspended station still takes a takt and can still jam; the two
+        # diverge by every cycle that produced nothing.
+        self._takt_draws += 1
+        self._previous_takt = value
+        return value
 
     async def publish_state(self, at: datetime, state: State, reason: str) -> None:
         """§4.1's State and StateReason. Written together and always in this order, so

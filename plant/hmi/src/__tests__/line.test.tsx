@@ -1,5 +1,5 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Line } from "../Line";
 import { StationTile } from "../StationTile";
@@ -93,10 +93,26 @@ const HELD_S2: LineSnapshot = {
       image_url: null,
     },
   ],
+  alarms: [
+    {
+      sequence: 4,
+      station_browse_name: "S2_Joining",
+      code: "A-207",
+      text: "joining force out of tolerance",
+      severity: 700,
+      raised_at: "2026-09-13T06:09:12+00:00",
+    },
+  ],
 };
 
 function tileFor(browseName: string): HTMLElement {
-  const tile = screen.getByText(browseName).closest("li");
+  // Scoped to `.station__name`, because a station's browse name appears twice on a
+  // screen with an active alarm on it — once on the tile and once on the alarm row that
+  // names the station it was raised at — and an unscoped lookup finds both.
+  const named = screen
+    .getAllByText(browseName)
+    .find((node) => node.classList.contains("station__name"));
+  const tile = named?.closest("li") ?? null;
   if (tile === null)
     throw new Error(`${browseName} rendered outside a station tile`);
   return tile;
@@ -112,6 +128,19 @@ function stationIn(category: Category): StationView {
 }
 
 describe("the line", () => {
+  // §3.7's injection panel fetches §3.5's fault vocabulary when it mounts, and `Line`
+  // draws it. Stubbed here so these tests stay a function of one frame and reach no
+  // socket; what the panel does with what it fetches is `panel.test.tsx`'.
+  beforeEach(() => {
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve(new Response("[]", { status: 200 })),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("shows the reason a station is waiting", () => {
     render(<Line snapshot={HELD_S2} />);
     // The whole diagnostic value of the screen: *which* buffer, and which direction.
@@ -176,6 +205,28 @@ describe("the line", () => {
       "5",
       "5",
     ]);
+  });
+
+  it("lists an active alarm with the code and text §5.2 keeps", () => {
+    render(<Line snapshot={HELD_S2} />);
+    const alarm = screen.getByTestId("alarm");
+    // The code is what M4's knowledge base is keyed on and the text is what an operator
+    // reads; neither stands in for the other.
+    expect(alarm).toHaveTextContent("A-207");
+    expect(alarm).toHaveTextContent("joining force out of tolerance");
+    expect(alarm).toHaveTextContent("S2_Joining");
+    // Every listed alarm carries a button: the list holds only alarms that are still
+    // active, and the operator's visit acknowledges, restarts and clears in one step —
+    // so an alarm on this screen is always one nobody has reached yet.
+    expect(alarm.querySelector("button")?.textContent).toEqual("acknowledge");
+  });
+
+  it("says so rather than rendering nothing when no alarm is active", () => {
+    // No active alarms is the normal state of a line, and a blank area reads as a panel
+    // that failed to load.
+    render(<Line snapshot={{ ...HELD_S2, alarms: [] }} />);
+    expect(screen.queryByTestId("alarm")).toBeNull();
+    expect(screen.getByText("no active alarms")).toBeInTheDocument();
   });
 
   it("labels simulated time as the clock the numbers belong to", () => {

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Collections.Concurrent;
 using System.Reflection;
 using System.Text.Json;
@@ -63,9 +64,9 @@ public sealed class PostgresWriter
 
     /// <summary>
     /// Every migration embedded in this assembly, in the order they must run — 002
-    /// references stations, which 001 creates, and 003 references carriers, which 002
-    /// creates. Ordinal on the three-digit prefix, which is what the naming convention is
-    /// for.
+    /// references stations, which 001 creates, 003 references carriers, which 002 creates,
+    /// and 004 references stations again. Ordinal on the three-digit prefix, which is what
+    /// the naming convention is for.
     /// </summary>
     /// <remarks>
     /// Read from the assembly rather than listed: a migration file that exists and is not
@@ -315,6 +316,12 @@ public sealed class PostgresWriter
                 .ConfigureAwait(false);
         }
 
+        if (eventType == PlantEvents.Alarm.TypeName)
+        {
+            return await UpsertAlarmAsync(connection, record, payload, stationId, ct)
+                .ConfigureAwait(false);
+        }
+
         throw new InvalidOperationException(
             $"event type '{eventType}' has no write path; §5.2 gives this gateway a table for "
             + $"{string.Join(", ", PlantEvents.All.Select(type => type.TypeName))}");
@@ -480,6 +487,115 @@ public sealed class PostgresWriter
         // empty string into an absent field rather than a nameless cause.
         command.Parameters.AddWithValue(Optional(payload, "Reason") ?? (object)DBNull.Value);
         return rows + await command.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// §5.2's <c>alarms</c> row, from any one of §4.2's three lifecycle events.
+    /// </summary>
+    /// <remarks>
+    /// <para><b>Whichever event arrives first creates the row</b>, which is 003_m2b.sql's
+    /// rule for genealogy applied to a lifecycle rather than to a foreign key. All three
+    /// events carry <c>AlarmRaisedAt</c>, and the row is keyed on
+    /// (station, code, raised instant), so an acknowledgement that arrives before its own
+    /// raise — a window halved and re-read, or a raise that fell before this gateway's
+    /// history horizon — fills the column it carries instead of being dropped against a row
+    /// that is not there yet.</para>
+    ///
+    /// <para><b>Which transition an event is comes from the two flags, not from which
+    /// columns happen to be filled.</b> That is the same distinction
+    /// <see cref="WriteEventAsync"/> makes about routing on the type: §4.2 declares an
+    /// active state and an acknowledgement state, and those two values <i>are</i> the
+    /// lifecycle position. Only the acknowledgement event writes <c>acked_at</c> and only
+    /// the clear writes <c>cleared_at</c>, each from its own <c>Time</c> — the clear also
+    /// reports the alarm as acknowledged, and taking <c>acked_at</c> from it would stamp
+    /// the acknowledgement with the instant the operator finished instead. A null
+    /// <c>acked_at</c> under a filled <c>cleared_at</c> is then a true statement: this
+    /// gateway never saw that alarm acknowledged.</para>
+    /// </remarks>
+    private static async Task<int> UpsertAlarmAsync(
+        NpgsqlConnection connection, IngestRecord record, JsonElement payload,
+        short stationId, CancellationToken ct)
+    {
+        var code = Required(payload, "AlarmCode").GetString()!;
+        var raisedAt = Required(payload, "AlarmRaisedAt").GetDateTime();
+        var active = Required(payload, "AlarmActive").GetBoolean();
+        var acknowledged = Required(payload, "AlarmAcknowledged").GetBoolean();
+
+        // INSERT ... SELECT ... WHERE NOT EXISTS, the shape topology discovery established
+        // and the only one used against a generated key here: alarms.id is an IDENTITY
+        // column, and both ON CONFLICT forms evaluate its sequence before the conflict is
+        // detected — the defect M1 measured at 55,956 records against a SMALLSERIAL. It is
+        // also what makes a page-boundary duplicate of any of the three events a no-op.
+        await using (var insert = new NpgsqlCommand(
+            """
+            INSERT INTO alarms (station_id, code, text, severity, raised_at)
+            SELECT $1, $2, $3, $4, $5
+            WHERE NOT EXISTS (
+              SELECT 1 FROM alarms
+              WHERE station_id = $1 AND code = $2 AND raised_at = $5)
+            """, connection))
+        {
+            insert.Parameters.AddWithValue(stationId);
+            insert.Parameters.AddWithValue(code);
+            insert.Parameters.AddWithValue(Required(payload, "AlarmText").GetString()!);
+            insert.Parameters.AddWithValue(Severity(payload));
+            insert.Parameters.AddWithValue(raisedAt);
+            await insert.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+        }
+
+        if (active && !acknowledged)
+        {
+            // The raise. Its own instant is already the key, so there is nothing further to
+            // fill — and returning 1 rather than the INSERT's own count would claim a row
+            // for a duplicate that wrote none.
+            return await CountAlarmAsync(connection, stationId, code, raisedAt, ct)
+                .ConfigureAwait(false);
+        }
+
+        var column = active ? "acked_at" : "cleared_at";
+        await using var update = new NpgsqlCommand(
+            $"""
+            UPDATE alarms SET {column} = COALESCE({column}, $4)
+            WHERE station_id = $1 AND code = $2 AND raised_at = $3
+            """, connection);
+        update.Parameters.AddWithValue(stationId);
+        update.Parameters.AddWithValue(code);
+        update.Parameters.AddWithValue(raisedAt);
+        update.Parameters.AddWithValue(record.SourceTs);
+        return await update.ExecuteNonQueryAsync(ct).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// One alarm row, counted so a raise reports the row it is responsible for whether or
+    /// not this particular delivery is the one that wrote it.
+    /// </summary>
+    private static async Task<int> CountAlarmAsync(
+        NpgsqlConnection connection, short stationId, string code, DateTime raisedAt,
+        CancellationToken ct)
+    {
+        await using var command = new NpgsqlCommand(
+            "SELECT count(*) FROM alarms WHERE station_id = $1 AND code = $2 AND raised_at = $3",
+            connection);
+        command.Parameters.AddWithValue(stationId);
+        command.Parameters.AddWithValue(code);
+        command.Parameters.AddWithValue(raisedAt);
+        return Convert.ToInt32(
+            await command.ExecuteScalarAsync(ct).ConfigureAwait(false),
+            CultureInfo.InvariantCulture);
+    }
+
+    /// <summary>
+    /// OPC UA's event severity, 1-1000, checked rather than cast. A value outside that band
+    /// is not a severity, and a plain narrowing cast would store a plausible number for one
+    /// — the same reason <see cref="CarrierCount"/> refuses a fractional buffer level.
+    /// </summary>
+    private static short Severity(JsonElement payload)
+    {
+        var value = Required(payload, "AlarmSeverity").GetDouble();
+        return double.IsInteger(value) && value is >= 1 and <= 1000
+            ? (short)value
+            : throw new InvalidOperationException(
+                $"alarm severity {value} is outside OPC UA's 1-1000 band");
     }
 
     /// <summary>

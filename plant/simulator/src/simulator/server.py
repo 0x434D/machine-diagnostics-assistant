@@ -19,17 +19,20 @@ from asyncua import Server, ua
 from asyncua.crypto.truststore import TrustStore
 from asyncua.crypto.validator import CertificateValidator, CertificateValidatorOptions
 
-from simulator import hmi, status
+from simulator import ground_truth, hmi, scenarios, status
 from simulator.address_space import (
     BUFFERS,
+    STATION_SIGNALS,
     AddressSpace,
     build_address_space,
     publish_clock,
 )
+from simulator.alarms import AlarmSystem
 from simulator.buffers import Buffer
 from simulator.carriers import CarrierPool
 from simulator.clock import SimulatedClock
 from simulator.config import ClockConfig, Settings
+from simulator.faults import NO_FAULTS, FaultSet
 from simulator.historian import Ledger, LedgerWriter, attach_historian
 from simulator.identity import LotSchedule
 from simulator.inspection_client import InspectionClient
@@ -49,6 +52,13 @@ NAMESPACE = "http://machine-agent/plant"
 # Settings field: nothing but this entry point ever names it, and the volume mount is
 # the contract, not a knob.
 HISTORY_DB = Path("/data/history.db")
+
+# The mount point of `plant-ground-truth`, and a different volume from the one above for
+# the reason §3.6 exists at all: history is what the diagnostics stack is meant to read
+# and this is what it must never reach. One volume carrying both would make the
+# separation a directory convention, which is not a boundary.
+# test_compose_invariants pins that nothing else mounts it.
+GROUND_TRUTH_LOG = Path("/gt/ground-truth.jsonl")
 
 log = logging.getLogger(__name__)
 
@@ -144,6 +154,8 @@ def build_line(
     settings: Settings,
     produce: ProduceFn,
     schedule: LotSchedule,
+    alarms: AlarmSystem,
+    faults: FaultSet = NO_FAULTS,
 ) -> Line:
     """§3.1's line: four stations in line order, the three buffers between them, and
     one circulating carrier pool.
@@ -162,14 +174,42 @@ def build_line(
 
     Every station is seeded from the same `settings.seed`; `Station.__init__` folds the
     station code in, so the four draw independently and reproducibly (§3.6).
+
+    `alarms` is §4.2's alarm system, handed to S2 -- the one station with a condition --
+    and to the Line, which is what applies the shutdown and the operator's restart. One
+    object for both, because an alarm S2 raised and a shutdown the Line performed have to
+    be the same alarm.
+
+    `faults` is the scenario this run carries (§3.5), handed to all four because a fault
+    modifies the number where it is computed and three of the four compute one. It
+    defaults to the empty set, which is what makes a line built without a scenario
+    indistinguishable from one whose scenario has not fired yet.
     """
     stations: list[Station] = [
-        FeedingStation(writer.station("S1_Feeding"), settings, settings.seed, schedule),
-        JoiningStation(writer.station("S2_Joining"), settings, settings.seed),
-        InspectionStation(
-            writer.station("S3_Inspection"), settings, settings.seed, produce
+        FeedingStation(
+            writer.station("S1_Feeding"),
+            settings,
+            settings.seed,
+            schedule,
+            faults=faults,
         ),
-        OutfeedStation(writer.station("S4_Outfeed"), settings, settings.seed),
+        JoiningStation(
+            writer.station("S2_Joining"),
+            settings,
+            settings.seed,
+            alarms,
+            faults=faults,
+        ),
+        InspectionStation(
+            writer.station("S3_Inspection"),
+            settings,
+            settings.seed,
+            produce,
+            faults=faults,
+        ),
+        OutfeedStation(
+            writer.station("S4_Outfeed"), settings, settings.seed, faults=faults
+        ),
     ]
     buffers = [
         Buffer(buffer_id, settings.buffer_capacity, upstream, downstream)
@@ -180,6 +220,7 @@ def build_line(
         buffers,
         CarrierPool(settings.carrier_count),
         timedelta(seconds=settings.state_transition_seconds),
+        alarms,
     )
 
 
@@ -219,6 +260,12 @@ async def main() -> None:
     # written_wall gives it away, and simulator.status prints the file without comment.
     # Absent is honest, stale is not.
     status.STATUS_FILE.unlink(missing_ok=True)
+    # And the same argument a third time, with more at stake: this boot's ground truth
+    # appended to a previous boot's would describe two overlapping simulated worlds under
+    # two run ids, and every part record in the older half would be scored against a line
+    # that is not the one running. The log is append-only *within* a run and replaced
+    # between them.
+    GROUND_TRUTH_LOG.unlink(missing_ok=True)
     storage = await attach_historian(
         server,
         space,
@@ -229,114 +276,171 @@ async def main() -> None:
     )
     writer = LedgerWriter(space, ledger)
 
-    async with (
-        server,
-        httpx.AsyncClient(timeout=settings.inspection_timeout_seconds) as http,
-    ):
-        # One client for both phases: its verdict for a part is a pure function of
-        # (seed, part_id), so catch-up and live cannot shift each other's draws
-        # however many parts precede them (§3.6, and test_defect_draw_does_not_depend
-        # _on_prior_calls). M1 built a second one with `seed ^ 1` because its two
-        # generators were separate runs; the queue makes them one.
-        # The first lot on each lane is loaded at the instant the line starts
-        # producing, not at boot: `history_start` is where S1's first draw lands, and
-        # `LotSchedule.lot_at` refuses an instant its windows do not cover -- so a
-        # schedule started later than the line would make every early component's lot
-        # unanswerable.
-        # §3.7's strip, wrapped around the inspection call rather than wired into S3.
-        # The verdict already carries every field the strip shows, including the reject's
-        # image, and wrapping here keeps the four stations free of a dependency on a
-        # screen -- which is also what lets them stay testable without one.
-        recent = hmi.RecentParts(settings.hmi_recent_parts)
-        line = build_line(
-            writer,
-            settings,
-            recent.watching(InspectionClient(settings, http).produce),
-            LotSchedule(settings, clock.history_start),
-        )
-        _log(
-            "catchup.start",
-            endpoint=settings.endpoint_url,
-            depth_hours=settings.history_depth_hours,
-            catchup_speed=settings.catchup_speed,
-        )
-        # The number R1 budgets at <=180 s, measured here rather than inferred from two
-        # log timestamps -- the lines carry none of their own, since the container
-        # runtime already stamps every one.
-        started = time.monotonic()
+    # §3.5's scenario for this boot, and §3.6's log of it. Both are built before the
+    # server is entered, because the log's header and its injections have to be on record
+    # before the line that produces their consequences exists.
+    #
+    # **One FaultSet, handed to the stations and to the inspection client**: the stations
+    # modify the numbers they compute and the client modifies the defect propensity, and
+    # two sets built separately would drift the instant either was built from a different
+    # origin -- a scenario that moved the press and left the defects alone, with nothing
+    # raised anywhere.
+    chosen = (
+        scenarios.scenario(settings.scenario, settings) if settings.scenario else None
+    )
+    # An empty FaultSet on this run's origin rather than the shared NO_FAULTS, because
+    # §3.7's panel injects into whatever this is: NO_FAULTS has no origin -- its offsets
+    # would name no instant -- and it is shared by every run that carries no scenario, so
+    # injecting into it would be injecting into all of them. A clean boot is the case the
+    # panel is most used on, so it cannot be the case it does not work on.
+    faults = (
+        chosen.fault_set(clock.history_start)
+        if chosen is not None
+        else FaultSet((), clock.history_start)
+    )
 
-        # A TaskGroup, not a bare create_task: a status writer that started failing would
-        # otherwise raise into a task nobody awaits, and asyncio would report it as
-        # "exception was never retrieved" while the plant carried on looking healthy.
-        #
-        # Opened before generation, not after it. Catch-up is the longest phase of a boot
-        # and the one the demo exists to watch, and simulator.status is the only way to
-        # see it without an OPC UA client at hand (Clock.Phase is on the wire per §4.1,
-        # but nothing at a shell prompt speaks OPC UA); started afterwards, the publisher
-        # left `python -m simulator.status` answering "does not exist -- is the simulator
-        # running?" for two and a half minutes while it was running.
-        async with asyncio.TaskGroup() as tasks:
-            tasks.create_task(
-                status.publish(status.STATUS_FILE, clock, settings, ledger, line)
+    with ground_truth.open_log(GROUND_TRUTH_LOG, settings, clock, chosen) as gt:
+        async with (
+            server,
+            httpx.AsyncClient(timeout=settings.inspection_timeout_seconds) as http,
+        ):
+            # One client for both phases: its verdict for a part is a pure function of
+            # (seed, part_id), so catch-up and live cannot shift each other's draws
+            # however many parts precede them (§3.6, and test_defect_draw_does_not_depend
+            # _on_prior_calls). M1 built a second one with `seed ^ 1` because its two
+            # generators were separate runs; the queue makes them one.
+            # The first lot on each lane is loaded at the instant the line starts
+            # producing, not at boot: `history_start` is where S1's first draw lands, and
+            # `LotSchedule.lot_at` refuses an instant its windows do not cover -- so a
+            # schedule started later than the line would make every early component's lot
+            # unanswerable.
+            # §3.7's strip, wrapped around the inspection call rather than wired into S3.
+            # The verdict already carries every field the strip shows, including the reject's
+            # image, and wrapping here keeps the four stations free of a dependency on a
+            # screen -- which is also what lets them stay testable without one.
+            recent = hmi.RecentParts(settings.hmi_recent_parts)
+            # §4.2's alarms, built on the same ledger station handles the line writes
+            # through, so an alarm event is counted and reconciled like every other event
+            # rather than being an un-ledgered row the historian holds and nothing
+            # expects. Every station gets a handle, because §4.1's tree declares the
+            # alarm type on all four (`events.ALARM`) and a station that could raise one
+            # it cannot publish is the failure `AlarmSystem._publish` raises on.
+            alarms = AlarmSystem(
+                settings,
+                settings.seed,
+                {code: writer.station(code) for code in STATION_SIGNALS},
             )
-            # Same cadence as the status writer above, started alongside it rather
-            # than on a second timer -- see address_space.publish_clock. This is
-            # what lets §4.3's handshake (watch State -> read Clock.Phase -> ...)
-            # actually see catch-up in progress rather than a stale first value.
-            tasks.create_task(
-                publish_clock(space, clock, settings.status_interval_seconds)
-            )
-            # §15's plant HMI, in this process rather than in a container of its own
-            # (D5). Started here, alongside the two above and before generation, for
-            # the same reason the status writer is: catch-up is the longest phase of a
-            # boot and the one worth watching, and a screen that only came up
-            # afterwards would show a blank page for the whole of it.
-            #
-            # Its own cadence is hmi_interval_seconds, not this one: the status file is
-            # read by a human at a shell prompt and the screen is drawn continuously,
-            # and one number cannot be right for both.
-            tasks.create_task(hmi.serve(line, clock, settings, recent))
-            history_end = await run_catchup(line, writer, clock, settings, storage)
-            catchup_wall = time.monotonic() - started
-            _log(
-                "catchup.done",
-                # Per stream, not a total: a total that is short says only that
-                # something was lost, and at 25 streams the next question is always
-                # which one. run_catchup has already refused to return if these
-                # disagree with the historian.
-                rows=ledger.rows_by_name(),
-                events=ledger.events,
-                images=ledger.images,
-                image_bytes=ledger.image_bytes,
-                history_end=history_end.isoformat(),
-                catchup_wall_seconds=round(catchup_wall, 1),
-                # Simulated seconds generated per wall second -- what catch-up actually
-                # achieved, against the catchup_speed the clock was configured with.
-                achieved_multiple=round(
-                    clock.history_depth.total_seconds() / catchup_wall, 1
+            line = build_line(
+                writer,
+                settings,
+                # Two wrappers around one call, in the order that makes each true:
+                # ground truth records what the plant decided about the part, and the
+                # strip remembers what the vision system made of it.
+                recent.watching(
+                    ground_truth.recording(
+                        gt, InspectionClient(settings, http, faults=faults)
+                    )
                 ),
+                LotSchedule(settings, clock.history_start),
+                alarms,
+                faults,
             )
-
-            # Generation finishes before the clock's own catch-up window closes, and
-            # run_live emits nothing until it does. Sleeping the exact remainder rather
-            # than polling the phase: the clock already knows when it flips, and the plan
-            # asks for booting -> catchup -> live to be legible in the log rather than a
-            # silence that reads the same as a hang.
-            remaining = (
-                clock.boot_wall + clock.catchup_duration - clock.wall
-            ).total_seconds()
-            if remaining > 0:
-                await asyncio.sleep(remaining)
             _log(
-                "live.start",
-                simulated_now=clock.now().isoformat(),
-                seam_seconds=round((clock.now() - history_end).total_seconds(), 1),
-                takt_seconds=settings.takt_seconds,
+                "catchup.start",
+                endpoint=settings.endpoint_url,
+                depth_hours=settings.history_depth_hours,
+                catchup_speed=settings.catchup_speed,
+                scenario=settings.scenario,
+                run_id=gt.run_id,
             )
+            # The number R1 budgets at <=180 s, measured here rather than inferred from two
+            # log timestamps -- the lines carry none of their own, since the container
+            # runtime already stamps every one.
+            started = time.monotonic()
 
-            # No start instant and no re-seeding: live continues the same queue, whose
-            # next due cycle is the `history_end` logged above (see run_live).
-            tasks.create_task(run_live(line, writer, clock, settings))
+            # A TaskGroup, not a bare create_task: a status writer that started failing would
+            # otherwise raise into a task nobody awaits, and asyncio would report it as
+            # "exception was never retrieved" while the plant carried on looking healthy.
+            #
+            # Opened before generation, not after it. Catch-up is the longest phase of a boot
+            # and the one the demo exists to watch, and simulator.status is the only way to
+            # see it without an OPC UA client at hand (Clock.Phase is on the wire per §4.1,
+            # but nothing at a shell prompt speaks OPC UA); started afterwards, the publisher
+            # left `python -m simulator.status` answering "does not exist -- is the simulator
+            # running?" for two and a half minutes while it was running.
+            async with asyncio.TaskGroup() as tasks:
+                tasks.create_task(
+                    status.publish(status.STATUS_FILE, clock, settings, ledger, line)
+                )
+                # Same cadence as the status writer above, started alongside it rather
+                # than on a second timer -- see address_space.publish_clock. This is
+                # what lets §4.3's handshake (watch State -> read Clock.Phase -> ...)
+                # actually see catch-up in progress rather than a stale first value.
+                tasks.create_task(
+                    publish_clock(space, clock, settings.status_interval_seconds)
+                )
+                # §15's plant HMI, in this process rather than in a container of its own
+                # (D5). Started here, alongside the two above and before generation, for
+                # the same reason the status writer is: catch-up is the longest phase of a
+                # boot and the one worth watching, and a screen that only came up
+                # afterwards would show a blank page for the whole of it.
+                #
+                # Its own cadence is hmi_interval_seconds, not this one: the status file is
+                # read by a human at a shell prompt and the screen is drawn continuously,
+                # and one number cannot be right for both.
+                # §3.7's panel reaches the line only through this: it writes the
+                # injection to the ground-truth log and then hands it to the FaultSet the
+                # four stations already hold, in that order, so there is no instant at
+                # which a fault is running and unrecorded. §3.5's rule is that **every**
+                # injection is written down, and the panel is the half of it that has
+                # nothing scripted behind it.
+                injector = ground_truth.Injector(faults, gt, clock.history_start)
+                tasks.create_task(
+                    hmi.serve(
+                        line, clock, settings, recent, injector, clock.history_start
+                    )
+                )
+                history_end = await run_catchup(line, writer, clock, settings, storage)
+                catchup_wall = time.monotonic() - started
+                _log(
+                    "catchup.done",
+                    # Per stream, not a total: a total that is short says only that
+                    # something was lost, and at 25 streams the next question is always
+                    # which one. run_catchup has already refused to return if these
+                    # disagree with the historian.
+                    rows=ledger.rows_by_name(),
+                    events=ledger.events,
+                    images=ledger.images,
+                    image_bytes=ledger.image_bytes,
+                    history_end=history_end.isoformat(),
+                    catchup_wall_seconds=round(catchup_wall, 1),
+                    # Simulated seconds generated per wall second -- what catch-up actually
+                    # achieved, against the catchup_speed the clock was configured with.
+                    achieved_multiple=round(
+                        clock.history_depth.total_seconds() / catchup_wall, 1
+                    ),
+                )
+
+                # Generation finishes before the clock's own catch-up window closes, and
+                # run_live emits nothing until it does. Sleeping the exact remainder rather
+                # than polling the phase: the clock already knows when it flips, and the plan
+                # asks for booting -> catchup -> live to be legible in the log rather than a
+                # silence that reads the same as a hang.
+                remaining = (
+                    clock.boot_wall + clock.catchup_duration - clock.wall
+                ).total_seconds()
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+                _log(
+                    "live.start",
+                    simulated_now=clock.now().isoformat(),
+                    seam_seconds=round((clock.now() - history_end).total_seconds(), 1),
+                    takt_seconds=settings.takt_seconds,
+                )
+
+                # No start instant and no re-seeding: live continues the same queue, whose
+                # next due cycle is the `history_end` logged above (see run_live).
+                tasks.create_task(run_live(line, writer, clock, settings))
 
 
 if __name__ == "__main__":

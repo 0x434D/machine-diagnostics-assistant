@@ -1,3 +1,4 @@
+import { plantUrl } from "./plantApi";
 import type { PartView } from "./snapshot";
 
 /** §3.7's strip of the last parts, newest first, with a thumbnail on every reject.
@@ -43,14 +44,4 @@ export function PartStrip({ parts }: { parts: PartView[] }) {
       ))}
     </ol>
   );
-}
-
-/** A path on the simulator's HMI server, as a URL on this origin.
- *
- * The same join `useLineSnapshot` makes for the socket, and made here rather than in the
- * payload for the same reason: `/api/plant` is what nginx and the Vite dev server
- * forward, and the simulator does not know it is behind either of them.
- */
-function plantUrl(path: string): string {
-  return new URL(`api/plant${path}`, window.location.href).toString();
 }

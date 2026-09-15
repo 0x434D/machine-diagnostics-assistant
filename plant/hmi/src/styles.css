@@ -124,6 +124,50 @@ ol {
   font-variant-numeric: tabular-nums;
 }
 
+/* §3.7's active alarms. No colour of its own: the two states an alarm is in are said in
+   words on the row, and this screen already spends its colour on §15's five categories
+   and on the strip's two dispositions. A third palette would make a viewer learn one
+   more. */
+.alarms {
+  display: grid;
+  gap: 0.25rem;
+}
+
+.alarms--empty {
+  color: GrayText;
+  margin: 1.5rem 0;
+}
+
+.alarm {
+  align-items: baseline;
+  border-inline-start: 6px solid var(--held-by-own-fault);
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: 5rem 1fr max-content max-content;
+  padding: 0.5rem 0.75rem;
+}
+
+/* An alarm someone has been to is still active and still on the list; it is quieter
+   because the thing to go and look at is the one nobody has reached yet. */
+.alarm--acknowledged {
+  border-color: var(--stopped);
+}
+
+.alarm__code {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.alarm__station,
+.alarm__raised {
+  color: GrayText;
+  font-size: 0.85em;
+}
+
+.alarm__raised {
+  grid-column: 1 / -1;
+}
+
 .parts {
   grid-auto-flow: column;
   grid-auto-columns: minmax(7rem, 1fr);
@@ -181,4 +225,48 @@ ol {
 .clock dd {
   font-variant-numeric: tabular-nums;
   margin: 0;
+}
+
+/* §3.7's fault-injection panel. The demo console, and the one thing on this screen that
+   talks back — so it is the last block and it is as plain as the rest (§15): a select, a
+   number per parameter the plant says the kind takes, and a button. */
+.inject {
+  align-items: end;
+  border-top: 1px solid GrayText;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+}
+
+.inject--empty {
+  border-top: 1px solid GrayText;
+  color: GrayText;
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+}
+
+.inject__field {
+  color: GrayText;
+  display: grid;
+  font-size: 0.85em;
+  gap: 0.1rem;
+}
+
+.inject__field input {
+  inline-size: 8rem;
+}
+
+/* What the plant answered — the instants it placed the fault at, or the reason it
+   refused. Full width, because a 400's text is a sentence and not a label. */
+.inject__message {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+/* The acknowledge button's own failure. Same reason: an unreachable simulator has to say
+   so somewhere, or the button reads as one that does nothing. */
+.alarm__failed {
+  color: var(--held-by-own-fault);
 }

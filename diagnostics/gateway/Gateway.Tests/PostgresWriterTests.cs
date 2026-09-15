@@ -1072,6 +1072,118 @@ public sealed class PostgresWriterTests : IAsyncLifetime
         Assert.Contains("70000", exception.Message, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task TheThreeAlarmEventsBecomeOneRowWithItsThreeInstants()
+    {
+        // §4.2's lifecycle, as §5.2's row. Which transition an event is comes from the two
+        // flags rather than from which columns are filled, so all three carry the same
+        // fields and differ only in what those flags say.
+        await SeedTopologyAsync();
+        var raised = Instant;
+        var acked = Instant.AddSeconds(150);
+        var cleared = Instant.AddSeconds(153);
+
+        await _writer.WriteBatchAsync(
+        [
+            AlarmEvent("S2", raised, raised, active: true, acknowledged: false),
+            AlarmEvent("S2", raised, acked, active: true, acknowledged: true),
+            AlarmEvent("S2", raised, cleared, active: false, acknowledged: true),
+        ]);
+
+        var rows = await QueryAsync(
+            """
+            SELECT s.code, a.code AS alarm, a.text, a.severity, a.raised_at, a.acked_at,
+                   a.cleared_at
+            FROM alarms a JOIN stations s ON s.id = a.station_id
+            """);
+        var row = Assert.Single(rows);
+        Assert.Equal("S2", row["code"]);
+        Assert.Equal("A-207", row["alarm"]);
+        Assert.Equal("joining force out of tolerance", row["text"]);
+        Assert.Equal((short)700, row["severity"]);
+        Assert.Equal(raised, row["raised_at"]);
+        Assert.Equal(acked, row["acked_at"]);
+        Assert.Equal(cleared, row["cleared_at"]);
+    }
+
+    [Fact]
+    public async Task AnAcknowledgementThatArrivesBeforeItsOwnRaiseStillLands()
+    {
+        // Not hypothetical: the history horizon cuts an alarm in half on any boot, and a
+        // truncated window is halved and re-read from its start. Every event carries
+        // AlarmRaisedAt so whichever arrives first creates the row -- 003_m2b.sql's rule for
+        // genealogy, applied to a lifecycle. An UPDATE against a row that is not there yet
+        // would drop the acknowledgement with nothing raised.
+        await SeedTopologyAsync();
+        var raised = Instant;
+
+        await _writer.WriteBatchAsync(
+            [AlarmEvent("S2", raised, Instant.AddSeconds(150), active: true, acknowledged: true)]);
+
+        var row = Assert.Single(await QueryAsync(
+            "SELECT raised_at, acked_at, cleared_at FROM alarms"));
+        Assert.Equal(raised, row["raised_at"]);
+        Assert.Equal(Instant.AddSeconds(150), row["acked_at"]);
+        Assert.Equal(DBNull.Value, row["cleared_at"]);
+    }
+
+    [Fact]
+    public async Task AClearDoesNotBackdateAnAcknowledgementItOnlyReports()
+    {
+        // The clear reports the alarm as acknowledged, because that is the state it is in --
+        // but its own Time is when the operator finished, not when they arrived. Taking
+        // acked_at from it would stamp the acknowledgement minutes late; leaving it null is
+        // the true statement that this gateway never saw it, exactly as a null created_at is
+        // for an assembly made before the horizon.
+        await SeedTopologyAsync();
+
+        await _writer.WriteBatchAsync(
+            [AlarmEvent("S2", Instant, Instant.AddSeconds(153), active: false, acknowledged: true)]);
+
+        var row = Assert.Single(await QueryAsync("SELECT acked_at, cleared_at FROM alarms"));
+        Assert.Equal(DBNull.Value, row["acked_at"]);
+        Assert.Equal(Instant.AddSeconds(153), row["cleared_at"]);
+    }
+
+    [Fact]
+    public async Task ARepeatedAlarmOnOneStationIsTwoRowsAndADuplicateIsOne()
+    {
+        // Both halves of the key. A press nothing repaired raises again after every restart,
+        // and those are separate alarms with separate instants -- keyed on (station, code)
+        // alone, the second would silently overwrite the first's lifecycle. A page boundary
+        // re-delivering the same raise is the other direction and must write nothing.
+        await SeedTopologyAsync();
+        var first = AlarmEvent("S2", Instant, Instant, active: true, acknowledged: false);
+
+        await _writer.WriteBatchAsync([first]);
+        await _writer.WriteBatchAsync([first]);
+        await _writer.WriteBatchAsync(
+        [
+            AlarmEvent("S2", Instant.AddSeconds(600), Instant.AddSeconds(600),
+                active: true, acknowledged: false),
+        ]);
+
+        Assert.Equal(2, await CountAsync("alarms"));
+        Assert.Equal(3, await CountAsync("raw_events"));   // raw is append-only and verbatim
+    }
+
+    [Fact]
+    public async Task ASeverityOutsideTheOpcUaBandIsRefusedRatherThanStored()
+    {
+        // SMALLINT would take 40,000 as -25,536 and the row would look like an alarm.
+        // §5.1: the write path fails loudly rather than storing a plausible wrong number.
+        await SeedTopologyAsync();
+
+        await Assert.ThrowsAnyAsync<Exception>(() => _writer.WriteBatchAsync(
+        [
+            AlarmEvent("S2", Instant, Instant, active: true, acknowledged: false,
+                severity: 40_000),
+        ]));
+
+        Assert.Equal(0, await CountAsync("alarms"));
+        Assert.Equal(0, await CountAsync("raw_events"));
+    }
+
     private static IngestRecord SampleDataChange(string signal, DateTime ts, double value) => new(
         Kind: "datachange", NodeId: "ns=2;i=7", SourceTs: ts, ServerTs: ts, StatusCode: 0,
         PayloadJson: $$"""{"Station":"S3","Signal":"{{signal}}","Value":{{value}}}""",
@@ -1149,6 +1261,22 @@ public sealed class PostgresWriterTests : IAsyncLifetime
         PayloadJson: $$"""
             {"Station":"S4","EventType":"PartCompletedEventType","AssemblySerial":"{{serial}}",
              "Disposition":"{{disposition}}"{{(reason is null ? "" : $",\"Reason\":\"{reason}\"")}}}
+            """,
+        ImageBytes: null);
+
+    /// <summary>
+    /// One of §4.2's three alarm lifecycle events. `at` is the instant of this transition;
+    /// `raisedAt` is the alarm's identity and rides all three.
+    /// </summary>
+    private static IngestRecord AlarmEvent(
+        string station, DateTime raisedAt, DateTime at, bool active, bool acknowledged,
+        string code = "A-207", int severity = 700) => new(
+        Kind: "event", NodeId: $"ns=2;s={station}", SourceTs: at, ServerTs: at, StatusCode: 0,
+        PayloadJson: $$"""
+            {"Station":"{{station}}","EventType":"AlarmEventType","AlarmCode":"{{code}}",
+             "AlarmText":"joining force out of tolerance","AlarmSeverity":{{severity}},
+             "AlarmRaisedAt":"{{raisedAt:O}}","AlarmActive":{{(active ? "true" : "false")}},
+             "AlarmAcknowledged":{{(acknowledged ? "true" : "false")}}}
             """,
         ImageBytes: null);
 

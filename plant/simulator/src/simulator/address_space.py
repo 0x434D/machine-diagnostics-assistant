@@ -59,9 +59,14 @@ value equals the previous one, so a stream is historised only where it actually
 changes. S4 writes `GoodCount` and `RejectCount` on every part but only one of them
 moves; `State` and `StateReason` repeat for as long as a station stays put; a buffer
 `Level` written every cycle repeats whenever the level does. A ledger that counts
-writes over-counts every one of those. `TaktTime` is the one exemption, and only
-because `Station.next_takt` resamples until the value differs. `historian.Ledger`
-applies that same rule, which is what makes its count comparable to the historian's.
+writes over-counts every one of those. `TaktTime` is the one exemption in practice --
+not by construction: D13 deleted `Station.next_takt`'s resample-until-distinct guard,
+and what keeps the stream distinct now is that a continuous Gaussian draw collides with
+its predecessor essentially never (0 in 600,000 draws, measured). It is a *stream that
+happens not to repeat*, not a stream that cannot, and `config.takt_jitter_sigma`'s
+validator is what stops a configuration flattening it. `historian.Ledger` applies
+asyncua's rule regardless, which is what makes its count comparable to the historian's
+whether or not a value repeats.
 """
 
 from __future__ import annotations
@@ -152,8 +157,9 @@ CURVE_STROKE_SIGNAL = "StrokeLength"
 
 INSPECTION_STATION = "S3_Inspection"
 """The station §4.1 gives the inspection event to, named because the historian and
-`AddressSpace.inspection` reach for it directly. The other four event types belong to
-other stations; `events.EVENT_TYPES` is what says which."""
+`AddressSpace.inspection` reach for it directly. The other four of §4.1's five belong to
+other stations, and §4.2's alarm belongs to all four; `events.EVENT_TYPES` is what says
+which."""
 
 BUFFER_LEVEL_SIGNAL = "Level"
 """The one historised variable a buffer has. Named because the ledger and the
@@ -464,7 +470,9 @@ async def build_address_space(
 
         generators: dict[str, EventGenerator] = {}
         for event in event_types_for(code):
-            # ORDER MATTERS, once per generator and now five times. get_event_generator
+            # ORDER MATTERS, once per generator and now nine times -- §4.1's five, one
+            # per station except S1's two, plus §4.2's alarm on every one of the four.
+            # get_event_generator
             # adds the GeneratesEvent reference from the emitting node to the event type
             # and sets its EventNotifier bit. historize_node_event() later reads exactly
             # those GeneratesEvent references to decide which event types to historise

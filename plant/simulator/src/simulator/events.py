@@ -1,4 +1,4 @@
-"""§4.1's five event types: what each carries, and in which order.
+"""§4.1's five event types and §4.2's alarm: what each carries, and in which order.
 
 Kept apart from address_space.py: these field tables are the wire format the gateway
 decodes, independent of how the address space wires an event type into the server.
@@ -28,7 +28,9 @@ station must therefore never declare the same field name -- `HistorySQLite`
 de-duplicates fields by node rather than by name, so two same-named property nodes
 become two identical columns and the CREATE TABLE that fails on them is swallowed by
 its own `except aiosqlite.Error`, leaving that station with no event history and no
-error. S1's two tables below share nothing but what BaseEventType gives them.
+error. S1's two tables below share nothing but what BaseEventType gives them, and
+`ALARM` -- which every station emits -- prefixes every one of its fields for exactly
+this reason.
 
 **The instant is `Time`, not a field of our own.** Every event carries BaseEventType's
 `Time`, which `StationNodeSet.trigger_event` sets to the simulated instant of the
@@ -52,16 +54,21 @@ from asyncua import ua
 
 
 class EventType(NamedTuple):
-    """One of §4.1's event types: its browse name, its emitting station, its fields.
+    """One of §4.1's event types: its browse name, the stations that emit it, its fields.
 
     `name` is the OPC UA *type* browse name (`...EventType`), which is also what
     `HistorySQLite` records in `_EventTypeName` and what a client reads back from the
     event's own `EventType` field -- the only thing telling two event types apart once
     they share a station's table.
+
+    `stations` is a tuple and not one name because §4.2's alarm is emitted by every
+    station: an alarm carries the station that raised it (§5.2's `alarms.station_id`),
+    and a type declared on one station makes that column a constant the schema pretends
+    is a variable. The other five are one station each, which is what §4.1 gives them.
     """
 
     name: str
-    station: str
+    stations: tuple[str, ...]
     fields: tuple[tuple[str, ua.VariantType], ...]
 
     @property
@@ -71,7 +78,7 @@ class EventType(NamedTuple):
 
 COMPONENT_READ: Final = EventType(
     "ComponentReadEventType",
-    "S1_Feeding",
+    ("S1_Feeding",),
     (
         ("ComponentSerial", ua.VariantType.String),
         ("Lane", ua.VariantType.UInt32),
@@ -94,7 +101,7 @@ the lot code, not a time-range join.
 
 ASSEMBLY_CREATED: Final = EventType(
     "AssemblyCreatedEventType",
-    "S1_Feeding",
+    ("S1_Feeding",),
     (
         ("AssemblySerial", ua.VariantType.String),
         ("ComponentSerials", ua.VariantType.String),
@@ -111,7 +118,7 @@ is what a containment query walks.
 
 PART_PROCESSED: Final = EventType(
     "PartProcessedEventType",
-    "S2_Joining",
+    ("S2_Joining",),
     (
         ("AssemblySerial", ua.VariantType.String),
         ("Curve", ua.VariantType.Double),
@@ -130,7 +137,7 @@ authoritative for the part and the time series is not (§3.4a).
 
 INSPECTION_RESULT: Final = EventType(
     "InspectionResultEventType",
-    "S3_Inspection",
+    ("S3_Inspection",),
     (
         ("AssemblySerial", ua.VariantType.String),
         ("CarrierId", ua.VariantType.UInt32),
@@ -178,7 +185,7 @@ setting (D4).
 
 PART_COMPLETED: Final = EventType(
     "PartCompletedEventType",
-    "S4_Outfeed",
+    ("S4_Outfeed",),
     (
         ("AssemblySerial", ua.VariantType.String),
         ("Disposition", ua.VariantType.String),
@@ -193,18 +200,63 @@ part S4 sorts is the part S3 inspected and joining the two streams on "when was 
 serial at S3" is the inference §3.4a forbids.
 """
 
+ALARM: Final = EventType(
+    "AlarmEventType",
+    ("S1_Feeding", "S2_Joining", "S3_Inspection", "S4_Outfeed"),
+    (
+        ("AlarmCode", ua.VariantType.String),
+        ("AlarmText", ua.VariantType.String),
+        ("AlarmSeverity", ua.VariantType.UInt32),
+        ("AlarmRaisedAt", ua.VariantType.DateTime),
+        ("AlarmActive", ua.VariantType.Boolean),
+        ("AlarmAcknowledged", ua.VariantType.Boolean),
+    ),
+)
+"""§4.2's alarm: a **simple custom event type**, not OPC UA Alarms & Conditions.
+
+The same decision PackML gets: correct semantics, no conformance claim. A&C is a large
+specification, and what the diagnosis needs out of it is the six fields below.
+
+**One event per lifecycle transition** -- raise, acknowledge, clear -- carrying the state
+the alarm is in after it. `AlarmActive` and `AlarmAcknowledged` are therefore what says
+which transition a row is: active and unacknowledged is the raise, active and
+acknowledged is the acknowledgement, and inactive is the clear. That is the flags' plain
+meaning and not an inference from which fields happen to be filled, which is the
+distinction `PostgresWriter.WriteEventAsync` makes for the other five types.
+
+**`AlarmRaisedAt` rides all three, and it is the alarm's identity rather than a second
+copy of `Time`.** `Time` is the instant of *this* transition; the row in §5.2's `alarms`
+is keyed on (station, code, raised instant), so an acknowledgement that arrives before
+its own raise -- a backfill window read out of order, or a raise that fell before the
+gateway's history horizon -- can still create the row it belongs to. That is the same
+rule M2b's `003_m2b.sql` states for genealogy: the referenced row is created by whichever
+event names it first.
+
+**Every field is prefixed `Alarm`**, and that is load-bearing twice. Every station emits
+this type beside its own, and two event types on one station may not share a field name
+(see this module's docstring); and BaseEventType already carries `Severity`, `Message`
+and `Time`, which an unprefixed `Severity` would collide with on the type itself.
+
+**Every station declares it**, though only S2 has a condition today (`alarms`' force
+tolerance). §5.2 keys an alarm on `station_id` and §3.7's screen lists alarms per
+station: a type declared on one station would make "which station raised it" a constant
+the schema pretends is a variable, and the station that gains the second condition would
+then be a change to the address space rather than a change to one file.
+"""
+
 EVENT_TYPES: Final[tuple[EventType, ...]] = (
     COMPONENT_READ,
     ASSEMBLY_CREATED,
     PART_PROCESSED,
     INSPECTION_RESULT,
     PART_COMPLETED,
+    ALARM,
 )
-"""All five, in line order. `build_address_space` creates them in this order and
-`attach_historian` historises the stations that emit them."""
+"""All six, in line order with the line-wide alarm last. `build_address_space` creates
+them in this order and `attach_historian` historises the stations that emit them."""
 
 
 def event_types_for(station: str) -> tuple[EventType, ...]:
     """Every event type `station` emits, in `EVENT_TYPES` order. Empty for a station
     §4.1 gives none -- which, from M2b, is no station at all."""
-    return tuple(event for event in EVENT_TYPES if event.station == station)
+    return tuple(event for event in EVENT_TYPES if station in event.stations)

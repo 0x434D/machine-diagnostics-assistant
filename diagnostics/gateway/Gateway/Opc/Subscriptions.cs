@@ -36,8 +36,9 @@ public sealed partial class Subscriptions
     /// station node itself — so this names the stream rather than a signal.
     ///
     /// <para>Plural, and no longer "InspectionResult": four stations publish events now and
-    /// five types ride the four streams, so naming any of them after one type would be wrong
-    /// about three of them. It also spells the stream the way the plant's own ledger does,
+    /// six types ride the four streams -- §4.1's five, one per station, plus §4.2's alarm on
+    /// every one of them -- so naming any of them after one type would be wrong about the
+    /// rest. It also spells the stream the way the plant's own ledger does,
     /// which is what lets the two counts be read side by side.</para>
     /// </summary>
     public const string EventStream = "Events";
