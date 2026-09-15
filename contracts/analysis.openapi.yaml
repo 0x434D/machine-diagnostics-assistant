@@ -334,6 +334,54 @@ components:
       - buffer_condition_since
       title: DerivationLink
       type: object
+    Dimension:
+      description: "The four \xA75.5 names. Each is one field of an `Observation`."
+      enum:
+      - carrier
+      - lane
+      - defect_class
+      - time_bucket
+      title: Dimension
+      type: string
+    DimensionPatterns:
+      description: "One dimension's findings, or the reason there can be none.\n\n`not_comparable` is\
+        \ the field this response exists to be able to set. \xA75.3 and \xA75.5\nboth list `lane` as a\
+        \ dimension, and \xA73.5 says in the same document that the line\ncannot distinguish it: every\
+        \ assembly draws one component from each feeder lane, so\n\"these parts saw lane 2 and those did\
+        \ not\" has no contrast group. Running the test\nanyway would return *not significant* over two\
+        \ groups holding the same parts, and \"we\nlooked and found nothing\" is a materially different\
+        \ \u2014 and here false \u2014 statement from\n\"there is nothing to look at\". The counts themselves\
+        \ stay available at\n`/inspection/stats?group_by=lane`, which is where a count with no comparison\
+        \ belongs.\n\n`unattributed` counts the observations that carry no value along this dimension\
+        \ \u2014 a\npart whose carrier the gateway never saw belongs to no carrier and can be compared\
+        \ to\nnone. Counted rather than quietly dropped."
+      properties:
+        comparable:
+          title: Comparable
+          type: boolean
+        dimension:
+          $ref: '#/components/schemas/Dimension'
+        not_comparable:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Not Comparable
+        patterns:
+          items:
+            $ref: '#/components/schemas/PatternValue'
+          title: Patterns
+          type: array
+        unattributed:
+          title: Unattributed
+          type: integer
+      required:
+      - dimension
+      - comparable
+      - not_comparable
+      - patterns
+      - unattributed
+      title: DimensionPatterns
+      type: object
     Disposition:
       description: How the part left the line, and why. Absent while the part is still on it.
       properties:
@@ -678,6 +726,105 @@ components:
       - inspection
       - disposition
       title: Part
+      type: object
+    PatternReport:
+      description: "\xA75.5 over every dimension, and the empty answer is the expected one.\n\n`/inspection/patterns`\
+        \ returning nothing significant is what a healthy line looks like,\nand it is the answer that\
+        \ stops the agent inventing a story out of the noise floor.\n`significant_count` is carried so\
+        \ that \"nothing\" is a number in the response rather\nthan an absence a reader has to notice."
+      properties:
+        alpha:
+          title: Alpha
+          type: number
+        correction:
+          title: Correction
+          type: string
+        coverage:
+          $ref: '#/components/schemas/Coverage'
+        defect_class_threshold:
+          title: Defect Class Threshold
+          type: number
+        dimensions:
+          items:
+            $ref: '#/components/schemas/DimensionPatterns'
+          title: Dimensions
+          type: array
+        minimum_sample:
+          title: Minimum Sample
+          type: integer
+        significant_count:
+          title: Significant Count
+          type: integer
+        window:
+          $ref: '#/components/schemas/Window'
+      required:
+      - window
+      - coverage
+      - alpha
+      - minimum_sample
+      - correction
+      - defect_class_threshold
+      - dimensions
+      - significant_count
+      title: PatternReport
+      type: object
+    PatternValue:
+      description: "\xA75.5's answer for one value of one dimension: everything a reader needs to disagree.\n\
+        \nObserved share, expected share, sample size, effect size and a verdict \u2014 and the raw\n\
+        p-value beside the corrected one, because the correction is the step a reader most\nneeds to check.\n\
+        \n`p_value` and `adjusted_p_value` are null exactly when the verdict is `not_enough_data`.\nA\
+        \ number there would be an invitation to compare it against \u03B1 somewhere downstream,\nwhich\
+        \ is the collapse the third verdict exists to prevent.\n\n`observed_share`, `expected_share` and\
+        \ `effect_size` are null when there was nothing to\ntake a share of. Null is \"not computed\"\
+        ; it is never a zero."
+      properties:
+        adjusted_p_value:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Adjusted P Value
+        effect_size:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Effect Size
+        expected_share:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Expected Share
+        observed:
+          title: Observed
+          type: integer
+        observed_share:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Observed Share
+        p_value:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: P Value
+        trials:
+          title: Trials
+          type: integer
+        value:
+          title: Value
+          type: string
+        verdict:
+          $ref: '#/components/schemas/Verdict'
+      required:
+      - value
+      - observed
+      - trials
+      - observed_share
+      - expected_share
+      - effect_size
+      - p_value
+      - adjusted_p_value
+      - verdict
+      title: PatternValue
       type: object
     ProcessCurve:
       description: "D6's force\u2013distance curve for this part, as the samples the press recorded.\n\
@@ -1166,6 +1313,17 @@ components:
       - type
       title: ValidationError
       type: object
+    Verdict:
+      description: "The three answers, and the third is not the second.\n\n`NOT_SIGNIFICANT` is \"we looked\
+        \ and found nothing\". `NOT_ENOUGH_DATA` is \"we could\nnot look\". \xA75.5 rests on the difference:\
+        \ the agent says different things about them,\nand a system that collapsed the second into the\
+        \ first would report a clean line\nwhere nobody had checked."
+      enum:
+      - significant
+      - not_significant
+      - not_enough_data
+      title: Verdict
+      type: string
     Window:
       properties:
         from_ts:
@@ -1262,6 +1420,48 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Coverage
+  /inspection/patterns:
+    get:
+      description: "Every \xA75.5 dimension over the window, each value against the rest of its pool.\n\
+        \nTwo observation sets, because two of the dimensions count different things. Carrier and\ntime\
+        \ bucket are one trial per part with \"was it rejected\" as the outcome. Defect class is\none\
+        \ trial per part *per class* with \"did it reach the threshold on this class\" as the\noutcome\
+        \ \u2014 \xA73.4's six scores are independent, a part can carry several, and dividing a\npart\
+        \ between the classes it carries would invent a constraint the classifier does not\nhave. Both\
+        \ use the part as the denominator, which is the same denominator\n`/inspection/stats?group_by=defect_class`\
+        \ counts against.\n\nCoverage rides along for the reason it rides along everywhere: a window the\
+        \ gateway was\ndown for produces a smaller sample, and a smaller sample is exactly what turns\
+        \ a real\neffect into `not_enough_data`."
+      operationId: inspectionPatterns
+      parameters:
+      - in: query
+        name: from
+        required: true
+        schema:
+          format: date-time
+          title: From
+          type: string
+      - in: query
+        name: to
+        required: true
+        schema:
+          format: date-time
+          title: To
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PatternReport'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Inspection Patterns
   /inspection/stats:
     get:
       description: "Counts over a half-open window, with the gaps that make them incomplete.\n\n**The\

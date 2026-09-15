@@ -48,6 +48,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/inspection/patterns": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Inspection Patterns
+         * @description Every §5.5 dimension over the window, each value against the rest of its pool.
+         *
+         *     Two observation sets, because two of the dimensions count different things. Carrier and
+         *     time bucket are one trial per part with "was it rejected" as the outcome. Defect class is
+         *     one trial per part *per class* with "did it reach the threshold on this class" as the
+         *     outcome — §3.4's six scores are independent, a part can carry several, and dividing a
+         *     part between the classes it carries would invent a constraint the classifier does not
+         *     have. Both use the part as the denominator, which is the same denominator
+         *     `/inspection/stats?group_by=defect_class` counts against.
+         *
+         *     Coverage rides along for the reason it rides along everywhere: a window the gateway was
+         *     down for produces a smaller sample, and a smaller sample is exactly what turns a real
+         *     effect into `not_enough_data`.
+         */
+        get: operations["inspectionPatterns"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/inspection/stats": {
         parameters: {
             query?: never;
@@ -491,6 +523,40 @@ export interface components {
             to_ts: string | null;
         };
         /**
+         * Dimension
+         * @description The four §5.5 names. Each is one field of an `Observation`.
+         * @enum {string}
+         */
+        Dimension: "carrier" | "lane" | "defect_class" | "time_bucket";
+        /**
+         * DimensionPatterns
+         * @description One dimension's findings, or the reason there can be none.
+         *
+         *     `not_comparable` is the field this response exists to be able to set. §5.3 and §5.5
+         *     both list `lane` as a dimension, and §3.5 says in the same document that the line
+         *     cannot distinguish it: every assembly draws one component from each feeder lane, so
+         *     "these parts saw lane 2 and those did not" has no contrast group. Running the test
+         *     anyway would return *not significant* over two groups holding the same parts, and "we
+         *     looked and found nothing" is a materially different — and here false — statement from
+         *     "there is nothing to look at". The counts themselves stay available at
+         *     `/inspection/stats?group_by=lane`, which is where a count with no comparison belongs.
+         *
+         *     `unattributed` counts the observations that carry no value along this dimension — a
+         *     part whose carrier the gateway never saw belongs to no carrier and can be compared to
+         *     none. Counted rather than quietly dropped.
+         */
+        DimensionPatterns: {
+            /** Comparable */
+            comparable: boolean;
+            dimension: components["schemas"]["Dimension"];
+            /** Not Comparable */
+            not_comparable: string | null;
+            /** Patterns */
+            patterns: components["schemas"]["PatternValue"][];
+            /** Unattributed */
+            unattributed: number;
+        };
+        /**
          * Disposition
          * @description How the part left the line, and why. Absent while the part is still on it.
          */
@@ -690,6 +756,65 @@ export interface components {
             process_curves: components["schemas"]["ProcessCurve"][];
             /** Process Values */
             process_values: components["schemas"]["ProcessValue"][];
+        };
+        /**
+         * PatternReport
+         * @description §5.5 over every dimension, and the empty answer is the expected one.
+         *
+         *     `/inspection/patterns` returning nothing significant is what a healthy line looks like,
+         *     and it is the answer that stops the agent inventing a story out of the noise floor.
+         *     `significant_count` is carried so that "nothing" is a number in the response rather
+         *     than an absence a reader has to notice.
+         */
+        PatternReport: {
+            /** Alpha */
+            alpha: number;
+            /** Correction */
+            correction: string;
+            coverage: components["schemas"]["Coverage"];
+            /** Defect Class Threshold */
+            defect_class_threshold: number;
+            /** Dimensions */
+            dimensions: components["schemas"]["DimensionPatterns"][];
+            /** Minimum Sample */
+            minimum_sample: number;
+            /** Significant Count */
+            significant_count: number;
+            window: components["schemas"]["Window"];
+        };
+        /**
+         * PatternValue
+         * @description §5.5's answer for one value of one dimension: everything a reader needs to disagree.
+         *
+         *     Observed share, expected share, sample size, effect size and a verdict — and the raw
+         *     p-value beside the corrected one, because the correction is the step a reader most
+         *     needs to check.
+         *
+         *     `p_value` and `adjusted_p_value` are null exactly when the verdict is `not_enough_data`.
+         *     A number there would be an invitation to compare it against α somewhere downstream,
+         *     which is the collapse the third verdict exists to prevent.
+         *
+         *     `observed_share`, `expected_share` and `effect_size` are null when there was nothing to
+         *     take a share of. Null is "not computed"; it is never a zero.
+         */
+        PatternValue: {
+            /** Adjusted P Value */
+            adjusted_p_value: number | null;
+            /** Effect Size */
+            effect_size: number | null;
+            /** Expected Share */
+            expected_share: number | null;
+            /** Observed */
+            observed: number;
+            /** Observed Share */
+            observed_share: number | null;
+            /** P Value */
+            p_value: number | null;
+            /** Trials */
+            trials: number;
+            /** Value */
+            value: string;
+            verdict: components["schemas"]["Verdict"];
         };
         /**
          * ProcessCurve
@@ -1009,6 +1134,17 @@ export interface components {
             /** Error Type */
             type: string;
         };
+        /**
+         * Verdict
+         * @description The three answers, and the third is not the second.
+         *
+         *     `NOT_SIGNIFICANT` is "we looked and found nothing". `NOT_ENOUGH_DATA` is "we could
+         *     not look". §5.5 rests on the difference: the agent says different things about them,
+         *     and a system that collapsed the second into the first would report a clean line
+         *     where nobody had checked.
+         * @enum {string}
+         */
+        Verdict: "significant" | "not_significant" | "not_enough_data";
         /** Window */
         Window: {
             /**
@@ -1083,6 +1219,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Coverage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    inspectionPatterns: {
+        parameters: {
+            query: {
+                from: string;
+                to: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PatternReport"];
                 };
             };
             /** @description Validation Error */

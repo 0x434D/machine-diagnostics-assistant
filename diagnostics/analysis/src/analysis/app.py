@@ -15,6 +15,7 @@ from analysis import (
     routes_inspection,
     routes_line,
     routes_parts,
+    routes_patterns,
     routes_signals,
     routes_stops,
     routes_time,
@@ -28,4 +29,5 @@ app.include_router(routes_alarms.router)
 app.include_router(routes_signals.router)
 app.include_router(routes_line.router)
 app.include_router(routes_inspection.router)
+app.include_router(routes_patterns.router)
 app.include_router(routes_parts.router)
