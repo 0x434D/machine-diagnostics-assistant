@@ -113,7 +113,8 @@ export interface paths {
          *     and time bucket are one trial per part with "was it rejected" as the outcome. Lot is one
          *     trial per part *per lot it was built from* — a part contains two, one per feeder lane —
          *     with the same outcome. Defect class is one trial per part *per class* with "did it reach
-         *     the threshold on this class" as the outcome — §3.4's six scores are independent, a part can carry several, and dividing a
+         *     the threshold on this class" as the outcome, and those same trials carry the carrier, so
+         *     the sixth section reads carrier within class off the set the fourth already built — §3.4's six scores are independent, a part can carry several, and dividing a
          *     part between the classes it carries would invent a constraint the classifier does not
          *     have. Both use the part as the denominator, which is the same denominator
          *     `/inspection/stats?group_by=defect_class` counts against.
@@ -780,6 +781,11 @@ export interface components {
          *     observations were built for a dimension nothing was computed over, and a zero there
          *     would be a measurement nobody made. That is the same distinction `PatternValue` keeps
          *     between a null share and a zero one, and this endpoint defends it everywhere else.
+         *
+         *     `within` is the dimension this section's comparisons were stratified by, and is part of
+         *     the section's identity rather than a note about it: `carrier` and `carrier` within
+         *     `defect_class` are two different questions, both are in this response, and they do not
+         *     have the same answer. §3.5 scenario 4 is the row where the difference decides.
          */
         DimensionPatterns: {
             /** Comparable */
@@ -791,6 +797,7 @@ export interface components {
             patterns: components["schemas"]["PatternValue"][];
             /** Unattributed */
             unattributed: number | null;
+            within: components["schemas"]["Dimension"] | null;
         };
         /**
          * Disposition
@@ -1103,6 +1110,11 @@ export interface components {
          *
          *     `observed_share`, `expected_share` and `effect_size` are null when there was nothing to
          *     take a share of. Null is "not computed"; it is never a zero.
+         *
+         *     `stratum` is the value of the dimension this comparison was made *inside*, and is null
+         *     unless the section was stratified — carrier 7 measured on `misalignment` alone rather
+         *     than on everything it scrapped. Read without it, a class-scoped finding would be taken
+         *     for a line-wide one, which is the opposite of what §3.5 scenario 4 claims.
          */
         PatternValue: {
             /** Adjusted P Value */
@@ -1117,6 +1129,8 @@ export interface components {
             observed_share: number | null;
             /** P Value */
             p_value: number | null;
+            /** Stratum */
+            stratum: string | null;
             /** Trials */
             trials: number;
             /** Value */

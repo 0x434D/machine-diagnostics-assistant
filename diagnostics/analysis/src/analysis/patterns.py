@@ -5,6 +5,14 @@ out — the leave-one-out shape M2c's own measurement uses, and the only honest 
 when the thing under test is part of the pool. A dimension with a single value therefore
 has no reference at all, and says so rather than dividing by zero.
 
+**A comparison can be stratified, and §3.5 scenario 4 is the row that requires it.** Asked
+`within` a second dimension, every value is compared against the rest of the pool inside one
+value of that second dimension — carrier 7's `misalignment` rate against the other carriers'
+`misalignment` rate, rather than carrier 7's whole reject rate against theirs. §5.5 lists
+four dimensions and none of them is a pair; §3.5 row 4 is a *class concentrated on a
+carrier*, and `find_patterns` carries the measurement of what testing the carrier alone
+costs.
+
 **Multiple comparisons: Benjamini-Hochberg, at the same α.** Twelve carriers tested at
 α=0.05 produce a finding on a line where nothing is wrong more often than not — measured
 here at 54 runs in 150 of twelve identical carriers, against the 4 the correction leaves.
@@ -139,12 +147,17 @@ class Pattern:
     `verdict` is never stronger than `comparison.verdict`.
 
     `adjusted_p_value` is None exactly when the value did not clear the sample gate.
+
+    `stratum` is the value of the dimension this comparison was made *inside*, and is None
+    unless the report was asked for `within` one — carrier 7 measured on `misalignment`
+    alone rather than on everything it scrapped.
     """
 
     value: str
     comparison: Comparison
     adjusted_p_value: float | None
     verdict: Verdict
+    stratum: str | None = None
 
 
 @dataclass(frozen=True)
@@ -154,13 +167,19 @@ class PatternReport:
     `patterns` carries every value, including the ones with nothing to report, because
     "carrier 7 is 4 % above average, n=38, not significant" is an answer §5.5 asks for
     and an empty list would not carry it. It is ordered by adjusted p-value, the values
-    that could not be tested last, ties by value — so it does not depend on the order the
-    observations arrived in, which SQL does not promise.
+    that could not be tested last, ties by value then stratum — so it does not depend on
+    the order the observations arrived in, which SQL does not promise.
+
+    `within` is the dimension the comparisons were stratified by, or None. It is part of
+    the report's identity and not a note about it: "carrier" and "carrier within defect
+    class" are two different questions with two different answers, and a reader handed the
+    second labelled as the first would read a class-scoped finding as a line-wide one.
     """
 
     dimension: Dimension
     patterns: tuple[Pattern, ...]
     unattributed: int
+    within: Dimension | None = None
 
     @property
     def significant(self) -> tuple[Pattern, ...]:
@@ -176,23 +195,106 @@ DEFAULT_PATTERNS = PatternSettings()
 """One shared instance of the defaults, frozen like everything it holds."""
 
 
+Key = tuple[str, str | None]
+"""One comparison's identity: the value tested, and the stratum it was tested inside."""
+
+
 def find_patterns(
     observations: Sequence[Observation],
     dimension: Dimension,
     settings: PatternSettings = DEFAULT_PATTERNS,
+    *,
+    within: Dimension | None = None,
 ) -> PatternReport:
     """Test every value of `dimension` against the rest of the pool.
 
     Returning a report in which nothing is significant is the ordinary outcome on a
     healthy line and is not an error.
+
+    **`within` stratifies the comparison, and §3.5 scenario 4 is why it exists.** That row
+    is a *class concentrated on a carrier* — `misalignment` and `scratch` on carrier 7 —
+    and the carrier dimension on its own tests each carrier's whole reject rate, which
+    dilutes two of six classes into all six. Measured on the shipped magnitudes, the
+    dilution is decisive: a worn carrier at the pool's median is invisible to the plain
+    dimension at every depth, and reachable within the strata at 1,200 parts per carrier
+    (`test_analysis_proof`, and the numbers are in `measurements/authenticity/README.md`).
+
+    So each value is compared against the rest of the pool **inside one value of `within`**:
+    carrier 7's `misalignment` rate against every other carrier's `misalignment` rate, never
+    against the pooled rate of six classes with different base rates.
+
+    **The multiplicity family is every stratum's comparisons together**, because "does any
+    carrier concentrate any class" is one question asked of 18 × 6 hypotheses. Correcting
+    each class separately would under-correct by the number of strata, which is the failure
+    this module's docstring measures for the uncorrected case.
+
+    An observation carrying no value along `dimension` *or* along `within` is unattributed:
+    it belongs to no comparison, and a part with no carrier cannot be compared to one
+    whichever class is being looked at.
+    """
+    strata: dict[str | None, list[Observation]] = {}
+    unattributed = 0
+    for observation in observations:
+        stratum = None if within is None else observation.value(within)
+        if observation.value(dimension) is None or (
+            within is not None and stratum is None
+        ):
+            unattributed += 1
+            continue
+        strata.setdefault(stratum, []).append(observation)
+
+    comparisons: dict[Key, Comparison] = {}
+    for stratum, members in strata.items():
+        for value, comparison in _compare(members, dimension, settings).items():
+            comparisons[(value, stratum)] = comparison
+
+    tested = {
+        key: comparison.p_value
+        for key, comparison in comparisons.items()
+        if comparison.p_value is not None
+    }
+    adjusted = _adjust(tested, settings.correction)
+
+    patterns = [
+        Pattern(
+            value=key[0],
+            stratum=key[1],
+            comparison=comparison,
+            adjusted_p_value=adjusted.get(key),
+            verdict=_verdict(comparison, adjusted.get(key), settings),
+        )
+        for key, comparison in comparisons.items()
+    ]
+    patterns.sort(
+        key=lambda pattern: (
+            pattern.adjusted_p_value is None,
+            pattern.adjusted_p_value or 0.0,
+            pattern.value,
+            pattern.stratum or "",
+        )
+    )
+    return PatternReport(
+        dimension=dimension,
+        patterns=tuple(patterns),
+        unattributed=unattributed,
+        within=within,
+    )
+
+
+def _compare(
+    observations: Sequence[Observation], dimension: Dimension, settings: PatternSettings
+) -> dict[str, Comparison]:
+    """Every value of `dimension` against the pool with that value taken out.
+
+    Leave-one-out, which is the only honest reference when the thing under test is part of
+    the pool — and the same statistic `test_noise` and `test_scenario_consequences` report
+    their *d* in, so the numbers on either side of the boundary compare.
     """
     successes: Counter[str] = Counter()
     trials: Counter[str] = Counter()
-    unattributed = 0
     for observation in observations:
         value = observation.value(dimension)
         if value is None:
-            unattributed += 1
             continue
         trials[value] += 1
         if observation.outcome:
@@ -200,7 +302,7 @@ def find_patterns(
 
     all_successes = sum(successes.values())
     all_trials = sum(trials.values())
-    comparisons = {
+    return {
         value: compare_proportions(
             Counts(successes[value], count),
             Counts(all_successes - successes[value], all_trials - count),
@@ -208,33 +310,6 @@ def find_patterns(
         )
         for value, count in trials.items()
     }
-
-    tested = {
-        value: comparison.p_value
-        for value, comparison in comparisons.items()
-        if comparison.p_value is not None
-    }
-    adjusted = _adjust(tested, settings.correction)
-
-    patterns = [
-        Pattern(
-            value=value,
-            comparison=comparison,
-            adjusted_p_value=adjusted.get(value),
-            verdict=_verdict(comparison, adjusted.get(value), settings),
-        )
-        for value, comparison in comparisons.items()
-    ]
-    patterns.sort(
-        key=lambda pattern: (
-            pattern.adjusted_p_value is None,
-            pattern.adjusted_p_value or 0.0,
-            pattern.value,
-        )
-    )
-    return PatternReport(
-        dimension=dimension, patterns=tuple(patterns), unattributed=unattributed
-    )
 
 
 def _verdict(
@@ -248,8 +323,8 @@ def _verdict(
 
 
 def _adjust(
-    p_values: dict[str, float], correction: Correction
-) -> dict[str, float | None]:
+    p_values: dict[Key, float], correction: Correction
+) -> dict[Key, float | None]:
     """The p-value each test must beat α with, once the others are accounted for.
 
     Adjusting the p-values rather than lowering α keeps one comparison against one α
@@ -258,22 +333,24 @@ def _adjust(
     comparisons = len(p_values)
     match correction:
         case Correction.NONE:
-            return {value: p for value, p in p_values.items()}
+            return {key: p for key, p in p_values.items()}
         case Correction.BONFERRONI:
-            return {value: min(1.0, p * comparisons) for value, p in p_values.items()}
+            return {key: min(1.0, p * comparisons) for key, p in p_values.items()}
         case Correction.BENJAMINI_HOCHBERG:
             return _benjamini_hochberg(p_values)
     assert_never(correction)
 
 
-def _benjamini_hochberg(p_values: dict[str, float]) -> dict[str, float | None]:
+def _benjamini_hochberg(p_values: dict[Key, float]) -> dict[Key, float | None]:
     """Step-up: p × m / rank, walked from the weakest test to the strongest and held
     monotone, so a test is never adjusted past one that was less convincing than it."""
-    ranked = sorted(p_values.items(), key=lambda item: (item[1], item[0]))
+    ranked = sorted(
+        p_values.items(), key=lambda item: (item[1], item[0][0], item[0][1] or "")
+    )
     comparisons = len(ranked)
-    adjusted: dict[str, float | None] = {}
+    adjusted: dict[Key, float | None] = {}
     running = 1.0
-    for rank, (value, p_value) in reversed(list(enumerate(ranked, start=1))):
+    for rank, (key, p_value) in reversed(list(enumerate(ranked, start=1))):
         running = min(running, p_value * comparisons / rank)
-        adjusted[value] = running
+        adjusted[key] = running
     return adjusted

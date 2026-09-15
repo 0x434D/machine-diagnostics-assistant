@@ -13,6 +13,14 @@ supplier lot. A part's lot membership is a per-part fact reached through the gen
 testing it is no different in kind from testing a carrier — it is only the dimension §5.5
 happened not to list.
 
+**The carrier is also tested inside each defect class, and §3.5 scenario 4 cannot be
+answered without that either.** Row 4 is a *class concentrated on a carrier* —
+`misalignment` and `scratch` on carrier 7 — and the carrier dimension on its own tests each
+carrier's whole reject rate, diluting two of six classes into all six. Measured: a worn
+carrier sitting at the pool's median is invisible to the plain dimension at every depth
+tried, and the stratified section finds it at 1,200 parts per carrier. Both sections are in
+the response because they answer different questions, and `within` is what says which.
+
 **The lane dimension is refused rather than tested, and that is the other interesting
 decision here.** §5.3 and §5.5 both list `lane`; §3.5 of the same specification says the line cannot
 distinguish it, because every assembly draws one component from *each* feeder lane and there
@@ -62,7 +70,8 @@ def inspection_patterns(window: WindowDep, settings: SettingsDep) -> PatternRepo
     and time bucket are one trial per part with "was it rejected" as the outcome. Lot is one
     trial per part *per lot it was built from* — a part contains two, one per feeder lane —
     with the same outcome. Defect class is one trial per part *per class* with "did it reach
-    the threshold on this class" as the outcome — §3.4's six scores are independent, a part can carry several, and dividing a
+    the threshold on this class" as the outcome, and those same trials carry the carrier, so
+    the sixth section reads carrier within class off the set the fourth already built — §3.4's six scores are independent, a part can carry several, and dividing a
     part between the classes it carries would invent a constraint the classifier does not
     have. Both use the part as the denominator, which is the same denominator
     `/inspection/stats?group_by=defect_class` counts against.
@@ -95,6 +104,7 @@ def inspection_patterns(window: WindowDep, settings: SettingsDep) -> PatternRepo
         ),
         DimensionPatterns(
             dimension=patterns.Dimension.LANE,
+            within=None,
             comparable=False,
             not_comparable=LANE_NOT_COMPARABLE,
             patterns=[],
@@ -104,6 +114,14 @@ def inspection_patterns(window: WindowDep, settings: SettingsDep) -> PatternRepo
         _tested(
             patterns.find_patterns(
                 classes, patterns.Dimension.DEFECT_CLASS, pattern_settings
+            )
+        ),
+        _tested(
+            patterns.find_patterns(
+                classes,
+                patterns.Dimension.CARRIER,
+                pattern_settings,
+                within=patterns.Dimension.DEFECT_CLASS,
             )
         ),
         _tested(
@@ -132,6 +150,7 @@ def _tested(report: patterns.PatternReport) -> DimensionPatterns:
     """One dimension's computed report in the shape the wire carries."""
     return DimensionPatterns(
         dimension=report.dimension,
+        within=report.within,
         comparable=True,
         not_comparable=None,
         patterns=[_value(pattern) for pattern in report.patterns],
@@ -143,6 +162,7 @@ def _value(pattern: patterns.Pattern) -> PatternValue:
     comparison = pattern.comparison
     return PatternValue(
         value=pattern.value,
+        stratum=pattern.stratum,
         observed=comparison.observed.successes,
         trials=comparison.observed.trials,
         observed_share=comparison.observed_share,

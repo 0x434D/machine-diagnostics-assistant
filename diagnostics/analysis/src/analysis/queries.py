@@ -774,7 +774,8 @@ def part_observations(
 def defect_class_observations(
     conn: Connection, window: Window, threshold: float
 ) -> list[Observation]:
-    """One trial per part **per class**: did this part reach the threshold on this class.
+    """One trial per part **per class**: did this part reach the threshold on this class,
+    and which carrier the part rode.
 
     This is the per-part denominator applied to a dimension that is not a partition of
     parts. A part is one trial for `gap` and one trial for `crack`, never half a trial for
@@ -784,17 +785,31 @@ def defect_class_observations(
     The comparison that follows is therefore "is this class called more often than the
     others are, over the same parts", which is the question §5.5 asks of a defect class and
     the one `/inspection/stats?group_by=defect_class` counts the two halves of.
+
+    **The carrier rides along on every row, and one query answers two dimensions.** §3.5
+    scenario 4 is a class concentrated on a carrier, which `find_patterns` answers by
+    stratifying the carrier comparison within the class — over exactly these trials. A
+    second query selecting the same rows with one more column is the copy CLAUDE.md names:
+    two SELECTs that agree today and disagree the first time either is retuned.
     """
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT scored.defect_class, scored.score >= %s "
+            "SELECT scored.defect_class, scored.score >= %s, r.carrier_id "
             "FROM read.inspection_results r, "
             "     unnest(r.defect_classes, r.confidences) AS scored(defect_class, score) "
             "WHERE r.source_ts >= %s AND r.source_ts < %s",
             (threshold, window.from_ts, window.to_ts),
         )
         return [
-            Observation(defect_class=row[0], outcome=row[1]) for row in cur.fetchall()
+            Observation(
+                defect_class=row[0],
+                outcome=row[1],
+                # The carrier id as text, for the reason `part_observations` spells out:
+                # §6.5 verifies every cited id against the database, and this is the number
+                # `/carriers/{id}/parts` and `/parts/affected?carrier=` take.
+                carrier=None if row[2] is None else str(row[2]),
+            )
+            for row in cur.fetchall()
         ]
 
 

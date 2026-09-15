@@ -548,7 +548,11 @@ components:
         \ to\nnone. Counted rather than quietly dropped, and **null when `comparable` is false**: no\n\
         observations were built for a dimension nothing was computed over, and a zero there\nwould be\
         \ a measurement nobody made. That is the same distinction `PatternValue` keeps\nbetween a null\
-        \ share and a zero one, and this endpoint defends it everywhere else."
+        \ share and a zero one, and this endpoint defends it everywhere else.\n\n`within` is the dimension\
+        \ this section's comparisons were stratified by, and is part of\nthe section's identity rather\
+        \ than a note about it: `carrier` and `carrier` within\n`defect_class` are two different questions,\
+        \ both are in this response, and they do not\nhave the same answer. \xA73.5 scenario 4 is the\
+        \ row where the difference decides."
       properties:
         comparable:
           title: Comparable
@@ -570,8 +574,13 @@ components:
           - type: integer
           - type: 'null'
           title: Unattributed
+        within:
+          anyOf:
+          - $ref: '#/components/schemas/Dimension'
+          - type: 'null'
       required:
       - dimension
+      - within
       - comparable
       - not_comparable
       - patterns
@@ -1083,7 +1092,10 @@ components:
         \ number there would be an invitation to compare it against \u03B1 somewhere downstream,\nwhich\
         \ is the collapse the third verdict exists to prevent.\n\n`observed_share`, `expected_share` and\
         \ `effect_size` are null when there was nothing to\ntake a share of. Null is \"not computed\"\
-        ; it is never a zero."
+        ; it is never a zero.\n\n`stratum` is the value of the dimension this comparison was made *inside*,\
+        \ and is null\nunless the section was stratified \u2014 carrier 7 measured on `misalignment` alone\
+        \ rather\nthan on everything it scrapped. Read without it, a class-scoped finding would be taken\n\
+        for a line-wide one, which is the opposite of what \xA73.5 scenario 4 claims."
       properties:
         adjusted_p_value:
           anyOf:
@@ -1113,6 +1125,11 @@ components:
           - type: number
           - type: 'null'
           title: P Value
+        stratum:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stratum
         trials:
           title: Trials
           type: integer
@@ -1123,6 +1140,7 @@ components:
           $ref: '#/components/schemas/Verdict'
       required:
       - value
+      - stratum
       - observed
       - trials
       - observed_share
@@ -1822,12 +1840,14 @@ paths:
         \ time bucket are one trial per part with \"was it rejected\" as the outcome. Lot is one\ntrial\
         \ per part *per lot it was built from* \u2014 a part contains two, one per feeder lane \u2014\n\
         with the same outcome. Defect class is one trial per part *per class* with \"did it reach\nthe\
-        \ threshold on this class\" as the outcome \u2014 \xA73.4's six scores are independent, a part\
-        \ can carry several, and dividing a\npart between the classes it carries would invent a constraint\
-        \ the classifier does not\nhave. Both use the part as the denominator, which is the same denominator\n\
-        `/inspection/stats?group_by=defect_class` counts against.\n\nCoverage rides along for the reason\
-        \ it rides along everywhere: a window the gateway was\ndown for produces a smaller sample, and\
-        \ a smaller sample is exactly what turns a real\neffect into `not_enough_data`."
+        \ threshold on this class\" as the outcome, and those same trials carry the carrier, so\nthe sixth\
+        \ section reads carrier within class off the set the fourth already built \u2014 \xA73.4's six\
+        \ scores are independent, a part can carry several, and dividing a\npart between the classes it\
+        \ carries would invent a constraint the classifier does not\nhave. Both use the part as the denominator,\
+        \ which is the same denominator\n`/inspection/stats?group_by=defect_class` counts against.\n\n\
+        Coverage rides along for the reason it rides along everywhere: a window the gateway was\ndown\
+        \ for produces a smaller sample, and a smaller sample is exactly what turns a real\neffect into\
+        \ `not_enough_data`."
       operationId: inspectionPatterns
       parameters:
       - in: query

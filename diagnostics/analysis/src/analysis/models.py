@@ -615,9 +615,15 @@ class PatternValue(BaseModel):
 
     `observed_share`, `expected_share` and `effect_size` are null when there was nothing to
     take a share of. Null is "not computed"; it is never a zero.
+
+    `stratum` is the value of the dimension this comparison was made *inside*, and is null
+    unless the section was stratified — carrier 7 measured on `misalignment` alone rather
+    than on everything it scrapped. Read without it, a class-scoped finding would be taken
+    for a line-wide one, which is the opposite of what §3.5 scenario 4 claims.
     """
 
     value: str
+    stratum: str | None
     observed: int
     trials: int
     observed_share: float | None
@@ -646,9 +652,15 @@ class DimensionPatterns(BaseModel):
     observations were built for a dimension nothing was computed over, and a zero there
     would be a measurement nobody made. That is the same distinction `PatternValue` keeps
     between a null share and a zero one, and this endpoint defends it everywhere else.
+
+    `within` is the dimension this section's comparisons were stratified by, and is part of
+    the section's identity rather than a note about it: `carrier` and `carrier` within
+    `defect_class` are two different questions, both are in this response, and they do not
+    have the same answer. §3.5 scenario 4 is the row where the difference decides.
     """
 
     dimension: Dimension
+    within: Dimension | None
     comparable: bool
     not_comparable: str | None
     patterns: list[PatternValue]

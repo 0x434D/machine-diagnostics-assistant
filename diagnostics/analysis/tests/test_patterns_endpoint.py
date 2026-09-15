@@ -20,11 +20,22 @@ from fastapi.testclient import TestClient
 WINDOW = {"from": "2026-09-12T01:00:00Z", "to": "2026-09-12T02:00:00Z"}
 
 
-def _dimension(body: dict[str, object], name: str) -> dict[str, object]:
+def _dimension(
+    body: dict[str, object], name: str, within: str | None = None
+) -> dict[str, object]:
+    """One section of the response, named by the pair that identifies it.
+
+    `carrier` appears twice — on its own, and stratified within the defect class — and the
+    two do not have the same answer, so a lookup by name alone would silently pick one.
+    """
     dimensions = body["dimensions"]
     assert isinstance(dimensions, list)
-    matching = [row for row in dimensions if row["dimension"] == name]
-    assert len(matching) == 1, f"expected one {name}, got {dimensions}"
+    matching = [
+        row
+        for row in dimensions
+        if row["dimension"] == name and row["within"] == within
+    ]
+    assert len(matching) == 1, f"expected one {name} within {within}, got {dimensions}"
     return dict(matching[0])
 
 
@@ -45,12 +56,16 @@ def test_every_dimension_section_five_five_names_is_reported(
 ) -> None:
     body = client.get("/inspection/patterns", params=WINDOW).json()
 
-    assert [row["dimension"] for row in body["dimensions"]] == [
-        "carrier",
-        "lane",
-        "lot",
-        "defect_class",
-        "time_bucket",
+    assert [(row["dimension"], row["within"]) for row in body["dimensions"]] == [
+        ("carrier", None),
+        ("lane", None),
+        ("lot", None),
+        ("defect_class", None),
+        # §5.5 names four dimensions and none of them is a pair. §3.5 scenario 4 is a class
+        # concentrated on a carrier, and `patterns.find_patterns` carries the measurement of
+        # what testing the carrier on its own costs.
+        ("carrier", "defect_class"),
+        ("time_bucket", None),
     ]
     assert body["alpha"] == 0.05
     assert body["correction"] == "benjamini_hochberg"
