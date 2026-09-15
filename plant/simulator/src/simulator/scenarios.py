@@ -50,8 +50,49 @@ assertion that merely counted them would pass on one."""
 BLOCKED_IN_ORDER: Final = "blocked_in_order"
 """The same, upstream: the blockage reaches each named station in turn."""
 CLASS_RATE_RISES: Final = "class_rate_rises"
-"""The named defect classes are more frequent inside the fault's window than before it,
-and the classes **not** named are not."""
+"""The named defect classes are **significantly** more frequent inside the fault's window
+than in the same run outside it.
+
+Three words of that are the claim and each was bought by a measurement.
+
+*Inside against **outside**, not inside against before.* §3.5's warmup puts every
+injection 1800 s in, which is 300 parts -- one or two defects of any given class. A
+before-window that small estimates nothing, and the rate it reports is whichever way its
+handful of draws fell.
+
+*Significantly.* Scenario 7's lot gaps 14 parts in 500 against a rate of 0.2706 % over
+the 11,457 parts outside it: 1.35 expected, so **10.9 sigma**. A **clean** run over the
+same window gaps 4, which is 2.3 sigma and is the ordinary baseline landing high. A bar
+of "more frequent" is cleared by both and says nothing; the separation between 10.9 and
+2.3 is the claim, and it is why scenario 3's own `gap` consequence was dropped rather
+than weakened (see below).
+
+Only a fault with an `until` can make this claim -- an unbounded one has no outside to
+compare against, which is what moved scenario 5 to `CLASS_MIX_SHIFTS`.
+"""
+CLASS_MIX_SHIFTS: Final = "class_mix_shifts"
+"""Every named class is more frequent than **every class the fault does not name**, by a
+measured margin. Scenario 5's, and the shape of claim a fault with no end can support.
+
+Lane contamination runs to the end of the run, so there is no outside window and
+`CLASS_RATE_RISES` has nothing to compare against -- and its before-window form is not
+merely weak here but **false**: measured over 33 h, the two named classes go from
+1.333 % across the 300 warmup parts to 1.864 % afterwards, a factor of 1.40, while the
+four classes the fault does not name go from 0.667 % to 1.102 %, a factor of 1.65. The
+unnamed classes rise *faster* than the named ones, because two events in 300 parts is
+what the before-window has to offer.
+
+What the run does support is the mix. Measured over 33 h after the injection:
+`missing_part` 0.9215 % and `contamination` 0.9472 % against the other four at 0.2523 %,
+0.2574 %, 0.2883 % and 0.2883 % -- so the smaller named class is **3.20x** the largest
+unnamed one, where a clean run puts it at **0.875x**. Six classes drawn at one baseline is
+what makes this checkable at all: the four the fault does not name are the contrast group,
+and they are in the same rows.
+
+The separation grows with the run, because it is two small counts against four: 2.12x at
+8 h, 2.39x at 12 h, 2.95x at 20 h and 3.20x at 33 h, against a clean run's 0.59x, 0.70x,
+0.84x and 0.875x. A proof of this claim has to say which depth it measured at.
+"""
 CLASS_CONCENTRATES: Final = "class_concentrates"
 """The named classes rise on the one carrier in `scope` and not line-wide -- which is the
 difference between scenario 4 and a drift, and needs a significance test against the
@@ -89,6 +130,7 @@ EXPECTATIONS: Final = frozenset(
         SUSPENDED_IN_ORDER,
         BLOCKED_IN_ORDER,
         CLASS_RATE_RISES,
+        CLASS_MIX_SHIFTS,
         CLASS_CONCENTRATES,
         CONFIDENCE_DECAYS,
         SCRAP_RATE_FLAT,
@@ -486,9 +528,19 @@ def _lane_contamination(settings: Settings) -> Scenario:
                     },
                 ),
                 (
+                    # **Not `CLASS_RATE_RISES`, and the difference is measured.** This
+                    # fault has no `until` -- a contaminated lane stays contaminated --
+                    # so the only window to compare against is the 1800 s warmup, 300
+                    # parts carrying two defects outside these classes. Measured over
+                    # 33 h, the before/after form is not weak here but *false*: the two
+                    # named classes rise by a factor of 1.40 and the four unnamed ones by
+                    # 1.65, so "the classes not named are not" fails on the shipped run.
+                    # `CLASS_MIX_SHIFTS` compares the named classes against the unnamed
+                    # ones in the same rows, where the separation is 3.20x against a
+                    # clean run's 0.875x.
                     Consequence(
                         INSPECTION_RESULTS,
-                        CLASS_RATE_RISES,
+                        CLASS_MIX_SHIFTS,
                         ("missing_part", "contamination"),
                     ),
                 ),
@@ -653,6 +705,7 @@ __all__ = [
     "ALARM_RAISED",
     "BLOCKED_IN_ORDER",
     "CLASS_CONCENTRATES",
+    "CLASS_MIX_SHIFTS",
     "CLASS_RATE_RISES",
     "CONFIDENCE_DECAYS",
     "INSPECTION_RESULTS",
