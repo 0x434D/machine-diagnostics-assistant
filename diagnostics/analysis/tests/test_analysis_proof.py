@@ -25,10 +25,13 @@ that read it would be scoring the analysis against an answer it had been handed.
 reproduced from the plant's *measurements* rather than imported — the two workspaces
 share no code (§2.1) — and each constant below cites where it was measured.
 
-Marked `authenticity` and so run by `make verify` rather than by `make check`: the suite
-needs no container of its own beyond the Postgres the analysis tests already start, and
-the whole of it is seconds rather than minutes. `measurements/authenticity/README.md`
-carries the argument for where it belongs.
+**In `make check`, not behind `make verify`, and deliberately not marked `authenticity`.**
+§1's other proofs are there because they stop and restart real containers and take minutes;
+this one starts no container of its own — it runs in process against the Postgres the
+analysis suite already uses — and the whole file is seconds. §8.4's argument for this suite
+is precisely that it is fast and free, and that it is *"the suite most easily forgotten"*: a
+proof that only runs when somebody deliberately looks is one nobody sees fail.
+`measurements/authenticity/README.md` records the decision and its reasons.
 """
 
 from __future__ import annotations
@@ -52,9 +55,6 @@ from tests.conftest import (
     _buffer_ids,
     _station_ids,
 )
-
-pytestmark = pytest.mark.authenticity
-
 
 # --- §3.5's plant, as the plant measured it ---------------------------------------------
 
@@ -97,18 +97,17 @@ one describes a pool the plant does not have and makes every carrier comparison 
 the real one.
 """
 
-WORN_CARRIER_BASELINE = 1.34
-"""Where carrier 7 sat in that pool *before* anything was injected.
+WORN_CARRIER_RANK = CARRIER_COUNT // 2
+"""Where carrier 7 sits in the pool before anything is injected: **at its median**.
 
-`test_noise` measures the worn carrier's `misalignment | scratch` rate at **2.18 %** against
-the pool's **0.571 %**, and the wear itself is `exp(3 × 0.35) = 2.86` — so the carrier the
-plant wears was already at 1.34 × the pool's baseline when the run started.
+The shipped seed happened to draw it high — `test_noise` measures its worn
+`misalignment | scratch` rate at 2.18 % against the pool's 0.571 %, and dividing out the
+2.86 × wear leaves it already at ~1.34 × the pool. An earlier round of this proof placed it
+there, and that made scenario 4 pass on the seed's luck rather than on the analysis: a
+capability that depends on where a draw put the worn carrier is not a capability.
 
-**Stated rather than left to a draw, because the scenario turns on it.** Placed at the
-pool's median instead, carrier 7's wear lifts its *reject* rate by 1.6 × inside a pool whose
-own qualities span 3 ×, and `/inspection/patterns` cannot separate it at any depth —
-measured, and recorded in `measurements/authenticity/README.md`. Which of the two §3.5 ships
-is a fact about the seed, and this is the one it shipped.
+So it is placed at the median instead, where the wear is the only thing separating it from
+an ordinary carrier, and the measurement is what the endpoints do with that.
 """
 
 WEAR_FACTOR = math.exp(3.0 * 0.35)
@@ -231,8 +230,7 @@ def _carrier_qualities() -> dict[int, float]:
 
     Taken at the lognormal's own quantiles rather than drawn, so the pool has exactly the
     spread `test_noise` measured and no seed's luck on top of it — and so that the one
-    carrier §3.5 wears can be placed where the shipped run placed it rather than wherever a
-    draw happened to put it.
+    carrier §3.5 wears can be placed deliberately rather than wherever a draw put it.
     """
     sigma = math.sqrt(math.log1p(POOL_RELATIVE_SPREAD**2))
     normal = statistics.NormalDist()
@@ -242,11 +240,10 @@ def _carrier_qualities() -> dict[int, float]:
     )
     mean = statistics.fmean(raw)
     ranked = [quality / mean for quality in raw]
-    worn_rank = min(
-        range(CARRIER_COUNT), key=lambda rank: abs(ranked[rank] - WORN_CARRIER_BASELINE)
+    others = (
+        quality for rank, quality in enumerate(ranked) if rank != WORN_CARRIER_RANK
     )
-    others = (quality for rank, quality in enumerate(ranked) if rank != worn_rank)
-    qualities = {WORN_CARRIER: ranked[worn_rank]}
+    qualities = {WORN_CARRIER: ranked[WORN_CARRIER_RANK]}
     for carrier in range(1, CARRIER_COUNT + 1):
         if carrier != WORN_CARRIER:
             qualities[carrier] = next(others)
@@ -878,14 +875,28 @@ def _rows(body: dict[str, object], key: str) -> list[dict[str, object]]:
     return [dict(row) for row in rows]
 
 
-def _dimension(body: dict[str, object], name: str) -> dict[str, object]:
-    matching = [row for row in _rows(body, "dimensions") if row["dimension"] == name]
-    assert len(matching) == 1, f"expected one {name} dimension"
+def _dimension(
+    body: dict[str, object], name: str, within: str | None = None
+) -> dict[str, object]:
+    """One section of the response, named by the pair that identifies it.
+
+    `carrier` appears twice — on its own and stratified within the defect class — and
+    scenario 4 is the row where the two do not agree, so a lookup by name alone would pick
+    one of them and not say which.
+    """
+    matching = [
+        row
+        for row in _rows(body, "dimensions")
+        if row["dimension"] == name and row["within"] == within
+    ]
+    assert len(matching) == 1, f"expected one {name} within {within}"
     return matching[0]
 
 
-def _significant(body: dict[str, object], name: str) -> list[dict[str, object]]:
-    section = _dimension(body, name)
+def _significant(
+    body: dict[str, object], name: str, within: str | None = None
+) -> list[dict[str, object]]:
+    section = _dimension(body, name, within)
     return [
         value
         for value in _rows(section, "patterns")
@@ -1047,28 +1058,48 @@ def _assert_no_stop(client: TestClient, seeded: Seeded) -> None:
     assert body["micro_stops"] == 0
 
 
-def test_scenario_4_finds_carrier_7_only_at_the_plants_own_history_depth(
+def test_scenario_4_needs_the_carrier_tested_inside_the_class(
     scenario_4: Seeded, client: TestClient
 ) -> None:
-    """§3.5 row 4: the worn carrier, and the pool's own worst carrier beside it.
+    """§3.5 row 4: a *class* concentrated on a carrier, and the two answers to it.
 
-    Two findings rather than one, and the second is not a defect: carrier 18 is the top of
-    §3.5's own quality spread and genuinely scraps more than the rest, so reporting it is
-    what §5.5's correction promises — Benjamini-Hochberg bounds the share of the findings
-    that are false, and this one is not false. What would be a defect is carrier 7 missing,
-    and what would be a different defect is a report of half the pool.
+    The fixture places the worn carrier at the pool's **median**, so nothing but the wear
+    separates it from an ordinary carrier, and seeds §3.5's own 33 h history depth — 1,100
+    parts per carrier.
+
+    **The stratified section answers it and the plain carrier section does not.** Testing a
+    carrier's whole reject rate dilutes two of six raised classes into all six; testing it
+    inside `misalignment` does not. What the two sections say at this depth is the whole
+    finding: the cross reports carrier 7 on `misalignment` and nothing else anywhere,
+    while the plain section reports carrier **18** — the top of §3.5's own quality spread,
+    a carrier nothing was injected into and which genuinely scraps more than the rest.
+
+    Carrier 18 is not a false finding: Benjamini-Hochberg bounds the share of reported
+    findings that are false, and a carrier that really is worse than the pool is not one of
+    them. It is the *wrong* finding, which is a different complaint and the one §3.5 row 4
+    exists to make.
+
+    **The plain section's verdict on carrier 7 moves with the draw and the stratified one
+    does not**, which is the claim rather than the particular miss below. Measured over this
+    generator at the median placement: the plain section names carrier 7 at 600, 800, 900
+    and 1,000 parts per carrier, loses it at 1,100, and at 2,000 names five carriers as the
+    noise floor becomes detectable in its own right. The cross names carrier 7 ×
+    `misalignment`, alone, at every depth from 800 upward.
     """
     _assert_no_stop(client, scenario_4)
 
     body = _body(client, "/inspection/patterns", scenario_4.window)
-    found = _significant(body, "carrier")
-    assert str(WORN_CARRIER) in {value["value"] for value in found}
-    assert len(found) <= 2, f"the noise floor is being reported as findings: {found}"
 
-    worn = next(value for value in found if value["value"] == str(WORN_CARRIER))
-    observed, expected = worn["observed_share"], worn["expected_share"]
+    crossed = _significant(body, "carrier", within="defect_class")
+    assert [(value["value"], value["stratum"]) for value in crossed] == [
+        (str(WORN_CARRIER), "misalignment")
+    ]
+    observed, expected = crossed[0]["observed_share"], crossed[0]["expected_share"]
     assert isinstance(observed, float) and isinstance(expected, float)
     assert observed > expected
+
+    plain = {value["value"] for value in _significant(body, "carrier")}
+    assert plain and str(WORN_CARRIER) not in plain
 
 
 def test_scenario_5_shifts_the_class_mix_and_refuses_to_name_the_lane(
