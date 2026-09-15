@@ -242,9 +242,18 @@ export interface paths {
          *     around then" is a list someone acts on, and §3.4a is explicit that the association is an
          *     inference the moment a buffer sits between the two stations.
          *
-         *     404 for a station the line does not have, 422 for one that records no instant, and an
-         *     empty scope for criteria that simply matched nothing. Three different answers, because
-         *     they call for three different next steps (§6.5).
+         *     **`signal` with `below` and/or `above` is §5.3's worked example, answered.** *"Which
+         *     parts passed S2 while the joining force was out of tolerance?"* cannot be asked as a
+         *     window on S2, and it does not need to be: the force is recorded per part, at the instant
+         *     of production, and a part whose own `PeakForce` is out of tolerance is out of tolerance
+         *     whatever the clock was doing. So the criterion is a value comparison against the part's
+         *     own record, with no time range anywhere near it, and the window then bounds when those
+         *     parts were *completed* rather than when they were pressed — which `window_selects` says
+         *     in the response, because it is a difference a reader would otherwise assume away.
+         *
+         *     404 for a station the line does not have, 422 for one that records no instant or for
+         *     half a tolerance, and an empty scope for criteria that simply matched nothing. Three
+         *     different answers, because they call for three different next steps (§6.5).
          */
         get: operations["affectedParts"];
         put?: never;
@@ -498,29 +507,47 @@ export interface components {
         };
         /**
          * AppliedCriteria
-         * @description What `/parts/affected` was actually asked, echoed back.
+         * @description What `/parts/affected` was actually asked, echoed back — and what the window meant.
          *
-         *     `anchor` is the one a reader must see: the window is applied to a *per-part* instant,
-         *     and which instant that is depends on the criteria. With a station it is that station's
-         *     own record for the part; without one it is `assemblies.created_at`, the instant the
-         *     part entered the line. §3.4a forbids reconstructing either by joining the time series,
-         *     so a station whose record carries no instant cannot be asked for at all rather than
-         *     being answered with a neighbouring station's.
+         *     `anchor` is the field a reader must see and `window_selects` is the sentence that says
+         *     what it cost. The window is applied to a *per-part* instant, and which instant that is
+         *     depends on the criteria: with a station it is that station's own record for the part,
+         *     without one it is `assemblies.created_at`. §3.4a forbids reconstructing either by
+         *     joining the time series, so a station whose record carries no instant cannot be asked
+         *     for at all rather than being answered with a neighbouring station's.
+         *
+         *     **That matters most exactly where §5.3's own worked example lands.** *"Which parts
+         *     passed S2 while the joining force was out of tolerance?"* is answerable — but not as a
+         *     window on S2, because the press records its two numbers against the serial and no time
+         *     beside them. It is answerable as a *value* question: `signal` with `below` and `above`
+         *     selects the parts whose own recorded force is out of tolerance, which is precisely the
+         *     per-part record §3.4a says exists for this. The window then bounds when those parts were
+         *     *completed*, not when they were pressed, and `window_selects` says so in as many words —
+         *     the two differ by the S2→S3 transit, and pretending they do not would be the same
+         *     approximation §3.4a rejects.
          */
         AppliedCriteria: {
+            /** Above */
+            above: number | null;
             /**
              * Anchor
              * @enum {string}
              */
             anchor: "created" | "inspected" | "left";
+            /** Below */
+            below: number | null;
             /** Carrier */
             carrier: number | null;
             /** Defect Class */
             defect_class: string | null;
             /** Lot Code */
             lot_code: string | null;
+            /** Signal */
+            signal: string | null;
             /** Station */
             station: string | null;
+            /** Window Selects */
+            window_selects: string;
         };
         /**
          * BufferLevelPoint
@@ -1700,6 +1727,9 @@ export interface operations {
                 carrier?: number | null;
                 lot?: string | null;
                 defect_class?: string | null;
+                signal?: string | null;
+                below?: number | null;
+                above?: number | null;
                 from: string;
                 to: string;
             };

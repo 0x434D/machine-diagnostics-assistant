@@ -33,9 +33,34 @@ from analysis.models import (
     PartsByOutcome,
     Window,
 )
-from analysis.queries_traceability import PartSelection
+from analysis.queries_traceability import Anchor, PartSelection
 
 router = APIRouter()
+
+_WINDOW_SELECTS: dict[Anchor, str] = {
+    "created": (
+        "parts whose assembly was created at the head of the line inside the window. Not "
+        "parts pressed inside it: the press records its numbers against the serial and no "
+        "instant beside them, and the two differ by however long the part sat in B1_2"
+    ),
+    "inspected": (
+        "parts inspected inside the window. Not parts pressed inside it \u2014 the two differ "
+        "by the S2\u2192S3 transit, which buffers and takt jitter make variable, and treating "
+        "them as the same instant is the approximation \u00a73.4a rejects"
+    ),
+    "left": (
+        "parts dispositioned at the tail of the line inside the window. Not parts pressed "
+        "inside it \u2014 the two differ by the S2\u2192S4 transit, which spans two buffers"
+    ),
+}
+"""What the window selected, said in words, one sentence per anchor.
+
+In the response rather than only in a docstring, because the distinction it carries is the
+one a reader assumes away: asked *\u201cwhich parts passed S2 while the force was out of
+tolerance\u201d* and handed a list, nobody checks which instant the window was applied to. The
+value criterion is exact and the window is not the press's; saying so is what keeps the
+answer from being read as more than it is.
+"""
 
 
 @router.get("/parts/affected", operation_id="affectedParts")
@@ -46,6 +71,9 @@ def affected_parts(
     carrier: Annotated[int | None, Query()] = None,
     lot: Annotated[str | None, Query()] = None,
     defect_class: Annotated[str | None, Query()] = None,
+    signal: Annotated[str | None, Query()] = None,
+    below: Annotated[float | None, Query()] = None,
+    above: Annotated[float | None, Query()] = None,
 ) -> AffectedParts:
     """The containment scope: which parts a condition touched, and where each of them went.
 
@@ -60,10 +88,30 @@ def affected_parts(
     around then" is a list someone acts on, and §3.4a is explicit that the association is an
     inference the moment a buffer sits between the two stations.
 
-    404 for a station the line does not have, 422 for one that records no instant, and an
-    empty scope for criteria that simply matched nothing. Three different answers, because
-    they call for three different next steps (§6.5).
+    **`signal` with `below` and/or `above` is §5.3's worked example, answered.** *"Which
+    parts passed S2 while the joining force was out of tolerance?"* cannot be asked as a
+    window on S2, and it does not need to be: the force is recorded per part, at the instant
+    of production, and a part whose own `PeakForce` is out of tolerance is out of tolerance
+    whatever the clock was doing. So the criterion is a value comparison against the part's
+    own record, with no time range anywhere near it, and the window then bounds when those
+    parts were *completed* rather than when they were pressed — which `window_selects` says
+    in the response, because it is a difference a reader would otherwise assume away.
+
+    404 for a station the line does not have, 422 for one that records no instant or for
+    half a tolerance, and an empty scope for criteria that simply matched nothing. Three
+    different answers, because they call for three different next steps (§6.5).
     """
+    if (signal is None) != (below is None and above is None):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "signal and a tolerance bound must be given together: a signal with no "
+                "bound selects every part that has one, and a bound with no signal has "
+                "nothing to compare. Either half alone would return a scope that looks "
+                f"like an answer; got signal={signal!r}, below={below!r}, above={above!r}"
+            ),
+        )
+
     with connection(settings) as conn:
         anchor: queries_traceability.Anchor = "created"
         if station is not None:
@@ -88,6 +136,9 @@ def affected_parts(
             carrier=carrier,
             lot_code=lot,
             defect_class=defect_class,
+            signal=signal,
+            below=below,
+            above=above,
         )
         containment = _contain(conn, selection, settings)
         unplaceable = queries_traceability.count_unplaceable(
@@ -101,7 +152,11 @@ def affected_parts(
             carrier=carrier,
             lot_code=lot,
             defect_class=defect_class,
+            signal=signal,
+            below=below,
+            above=above,
             anchor=anchor,
+            window_selects=_WINDOW_SELECTS[anchor],
         ),
         parts=_by_outcome(containment),
         unplaceable=unplaceable,

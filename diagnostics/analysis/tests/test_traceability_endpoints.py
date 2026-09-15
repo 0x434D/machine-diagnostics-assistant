@@ -12,6 +12,8 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
+from tests.conftest import DECOY_FORCE
+
 TRACED = "A-00000123"
 """The same ordinary part `test_traceability.py` traces, reached here from its component."""
 
@@ -224,3 +226,124 @@ def test_half_a_window_is_refused_rather_than_completed_for_the_caller(
     response = client.get("/carriers/8/parts", params={"from": WINDOW["from"]})
 
     assert response.status_code == 422
+
+
+# --- §5.3's worked example, answered as a value question --------------------------------
+
+
+@pytest.mark.usefixtures("seeded_db")
+def test_a_tolerance_criterion_reads_the_parts_own_recorded_value(
+    client: TestClient,
+) -> None:
+    """**§5.3's flagship example, and the only way it can be answered.**
+
+    *"Which parts passed S2 while the joining force was out of tolerance?"* is not a window
+    on S2 — the press writes two numbers against the serial and no instant beside them — and
+    it does not need to be. The force is recorded per part at the instant of production, so
+    a part whose own `PeakForce` is out of tolerance is out of tolerance whatever the clock
+    was doing. The fixture's press records run 100.000 to 100.599, one thousandth per part,
+    so a bound at 100.5 selects the last ninety-nine of them exactly.
+    """
+    body = client.get(
+        "/parts/affected", params={**WINDOW, "signal": "PeakForce", "above": 100.5}
+    ).json()
+
+    assert body["parts"]["total"] == 99
+    assert body["parts"]["rejected"]["count"] == 5
+    assert body["parts"]["shipped"]["count"] == 94
+    assert body["criteria"]["signal"] == "PeakForce"
+    assert body["criteria"]["above"] == 100.5
+
+
+@pytest.mark.usefixtures("seeded_db")
+def test_the_tolerance_does_not_read_the_historised_stream(client: TestClient) -> None:
+    """**The falsifier.**
+
+    S2 publishes a historised `PeakForce` across the whole window in the 900s, and every
+    per-part record sits in the low 100s — deliberately disjoint. A read path that reached
+    for "what was S2 publishing while this part went through" would answer 600 to the first
+    query below and a few hundred to the second. It answers 0 and 99, which only the
+    per-part record produces.
+    """
+    decoy_range = client.get(
+        "/parts/affected",
+        params={**WINDOW, "signal": "PeakForce", "above": DECOY_FORCE + 5},
+    ).json()
+    per_part_range = client.get(
+        "/parts/affected", params={**WINDOW, "signal": "PeakForce", "above": 100.5}
+    ).json()
+
+    assert decoy_range["parts"]["total"] == 0
+    assert per_part_range["parts"]["total"] == 99
+
+
+@pytest.mark.usefixtures("seeded_db")
+def test_two_bounds_are_the_out_of_tolerance_reading_and_not_a_band(
+    client: TestClient,
+) -> None:
+    """A containment scope asks which parts are *suspect*, so both bounds together select
+    what falls outside them — the union of the two one-sided answers, never their
+    intersection, which would be empty and would look like a clean line."""
+    low = client.get(
+        "/parts/affected", params={**WINDOW, "signal": "PeakForce", "below": 100.05}
+    ).json()
+    high = client.get(
+        "/parts/affected", params={**WINDOW, "signal": "PeakForce", "above": 100.5}
+    ).json()
+    both = client.get(
+        "/parts/affected",
+        params={**WINDOW, "signal": "PeakForce", "below": 100.05, "above": 100.5},
+    ).json()
+
+    assert both["parts"]["total"] == low["parts"]["total"] + high["parts"]["total"]
+
+
+@pytest.mark.usefixtures("seeded_db")
+def test_half_a_tolerance_is_refused_rather_than_answered(client: TestClient) -> None:
+    """A signal with no bound selects every part that has one, and a bound with no signal
+    has nothing to compare. Either half alone returns a scope that looks like an answer."""
+    assert (
+        client.get(
+            "/parts/affected", params={**WINDOW, "signal": "PeakForce"}
+        ).status_code
+        == 422
+    )
+    assert (
+        client.get("/parts/affected", params={**WINDOW, "above": 100.5}).status_code
+        == 422
+    )
+
+
+@pytest.mark.usefixtures("seeded_db")
+def test_the_response_says_what_the_window_actually_selected(
+    client: TestClient,
+) -> None:
+    """**The honest label.**
+
+    The value criterion is exact; the window is not the press's. Asked *"which parts passed
+    S2 while the force was out of tolerance"* and handed a list, nobody checks which instant
+    the window was applied to — so the answer says it. `inspected` here means parts
+    *completed* in the window, and the two differ by the S2→S3 transit, which buffers and
+    takt jitter make variable.
+    """
+    body = client.get(
+        "/parts/affected",
+        params={**WINDOW, "station": "S3", "signal": "PeakForce", "above": 100.5},
+    ).json()
+
+    assert body["criteria"]["anchor"] == "inspected"
+    assert "Not parts pressed inside it" in body["criteria"]["window_selects"]
+
+
+@pytest.mark.usefixtures("seeded_db")
+def test_the_default_anchor_says_it_is_not_the_press_either(
+    client: TestClient,
+) -> None:
+    """Creation is a per-part instant too, and it is still not when the part was pressed —
+    the two differ by however long it sat in B1_2."""
+    body = client.get(
+        "/parts/affected", params={**WINDOW, "signal": "PeakForce", "above": 100.5}
+    ).json()
+
+    assert body["criteria"]["anchor"] == "created"
+    assert "Not parts pressed inside it" in body["criteria"]["window_selects"]

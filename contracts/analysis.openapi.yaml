@@ -120,13 +120,27 @@ components:
       title: AlarmList
       type: object
     AppliedCriteria:
-      description: "What `/parts/affected` was actually asked, echoed back.\n\n`anchor` is the one a reader\
-        \ must see: the window is applied to a *per-part* instant,\nand which instant that is depends\
-        \ on the criteria. With a station it is that station's\nown record for the part; without one it\
-        \ is `assemblies.created_at`, the instant the\npart entered the line. \xA73.4a forbids reconstructing\
-        \ either by joining the time series,\nso a station whose record carries no instant cannot be asked\
-        \ for at all rather than\nbeing answered with a neighbouring station's."
+      description: "What `/parts/affected` was actually asked, echoed back \u2014 and what the window\
+        \ meant.\n\n`anchor` is the field a reader must see and `window_selects` is the sentence that\
+        \ says\nwhat it cost. The window is applied to a *per-part* instant, and which instant that is\n\
+        depends on the criteria: with a station it is that station's own record for the part,\nwithout\
+        \ one it is `assemblies.created_at`. \xA73.4a forbids reconstructing either by\njoining the time\
+        \ series, so a station whose record carries no instant cannot be asked\nfor at all rather than\
+        \ being answered with a neighbouring station's.\n\n**That matters most exactly where \xA75.3's\
+        \ own worked example lands.** *\"Which parts\npassed S2 while the joining force was out of tolerance?\"\
+        * is answerable \u2014 but not as a\nwindow on S2, because the press records its two numbers against\
+        \ the serial and no time\nbeside them. It is answerable as a *value* question: `signal` with `below`\
+        \ and `above`\nselects the parts whose own recorded force is out of tolerance, which is precisely\
+        \ the\nper-part record \xA73.4a says exists for this. The window then bounds when those parts\
+        \ were\n*completed*, not when they were pressed, and `window_selects` says so in as many words\
+        \ \u2014\nthe two differ by the S2\u2192S3 transit, and pretending they do not would be the same\n\
+        approximation \xA73.4a rejects."
       properties:
+        above:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Above
         anchor:
           enum:
           - created
@@ -134,6 +148,11 @@ components:
           - left
           title: Anchor
           type: string
+        below:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Below
         carrier:
           anyOf:
           - type: integer
@@ -149,17 +168,29 @@ components:
           - type: string
           - type: 'null'
           title: Lot Code
+        signal:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Signal
         station:
           anyOf:
           - type: string
           - type: 'null'
           title: Station
+        window_selects:
+          title: Window Selects
+          type: string
       required:
       - station
       - carrier
       - lot_code
       - defect_class
+      - signal
+      - below
+      - above
       - anchor
+      - window_selects
       title: AppliedCriteria
       type: object
     BufferLevelPoint:
@@ -1941,9 +1972,17 @@ paths:
         \ this returns 422 rather than reaching for a\nneighbouring station's instant: a containment list\
         \ built on \"the part was probably there\naround then\" is a list someone acts on, and \xA73.4a\
         \ is explicit that the association is an\ninference the moment a buffer sits between the two stations.\n\
-        \n404 for a station the line does not have, 422 for one that records no instant, and an\nempty\
-        \ scope for criteria that simply matched nothing. Three different answers, because\nthey call\
-        \ for three different next steps (\xA76.5)."
+        \n**`signal` with `below` and/or `above` is \xA75.3's worked example, answered.** *\"Which\nparts\
+        \ passed S2 while the joining force was out of tolerance?\"* cannot be asked as a\nwindow on S2,\
+        \ and it does not need to be: the force is recorded per part, at the instant\nof production, and\
+        \ a part whose own `PeakForce` is out of tolerance is out of tolerance\nwhatever the clock was\
+        \ doing. So the criterion is a value comparison against the part's\nown record, with no time range\
+        \ anywhere near it, and the window then bounds when those\nparts were *completed* rather than\
+        \ when they were pressed \u2014 which `window_selects` says\nin the response, because it is a\
+        \ difference a reader would otherwise assume away.\n\n404 for a station the line does not have,\
+        \ 422 for one that records no instant or for\nhalf a tolerance, and an empty scope for criteria\
+        \ that simply matched nothing. Three\ndifferent answers, because they call for three different\
+        \ next steps (\xA76.5)."
       operationId: affectedParts
       parameters:
       - in: query
@@ -1978,6 +2017,30 @@ paths:
           - type: string
           - type: 'null'
           title: Defect Class
+      - in: query
+        name: signal
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Signal
+      - in: query
+        name: below
+        required: false
+        schema:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Below
+      - in: query
+        name: above
+        required: false
+        schema:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Above
       - in: query
         name: from
         required: true

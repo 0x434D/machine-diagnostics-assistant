@@ -51,6 +51,24 @@ class PartSelection:
     carrier: int | None = None
     lot_code: str | None = None
     defect_class: str | None = None
+    signal: str | None = None
+    below: float | None = None
+    above: float | None = None
+
+    def __post_init__(self) -> None:
+        """A tolerance needs a signal and a signal needs a tolerance.
+
+        Neither half means anything alone: a signal with no bound selects every part that
+        has one, and a bound with no signal has nothing to compare. Both are caller bugs
+        rather than empty scopes, and a scope that came back empty because half a criterion
+        was dropped is exactly the containment answer nobody would question.
+        """
+        has_bound = self.below is not None or self.above is not None
+        if (self.signal is None) != (not has_bound):
+            raise ValueError(
+                "signal and a tolerance bound must be given together; got "
+                f"signal={self.signal!r}, below={self.below!r}, above={self.above!r}"
+            )
 
 
 def station_anchor(conn: Connection, station: str) -> Anchor | None:
@@ -148,6 +166,30 @@ def _clauses(
         )
         params["defect_class"] = selection.defect_class
         params["threshold"] = threshold
+    if selection.signal is not None:
+        # **§5.3's worked example, answered the only way it can be.** "Which parts passed S2
+        # while the joining force was out of tolerance" is not a window on S2 — the press
+        # writes two numbers against the serial and no instant beside them — it is a
+        # question about the value the press recorded *for this part*, which §3.4a says is
+        # written at the instant of production and is authoritative. So the predicate reads
+        # `part_process_values` by serial, and no time range touches it.
+        #
+        # The bound is built from whichever of the two was given rather than from a NULL
+        # comparison, so a one-sided tolerance is a one-sided test and not a silently empty
+        # scope.
+        bounds: list[str] = []
+        if selection.below is not None:
+            bounds.append("v.value < %(below)s")
+            params["below"] = selection.below
+        if selection.above is not None:
+            bounds.append("v.value > %(above)s")
+            params["above"] = selection.above
+        conditions.append(
+            "EXISTS (SELECT 1 FROM read.part_process_values v "
+            "        WHERE v.assembly_serial = a.serial AND v.signal = %(signal)s "
+            f"          AND ({' OR '.join(bounds)}))"
+        )
+        params["signal"] = selection.signal
 
     where = " AND ".join(conditions) if conditions else "true"
     return source, where, params

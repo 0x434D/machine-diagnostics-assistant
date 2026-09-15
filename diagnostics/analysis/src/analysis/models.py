@@ -688,21 +688,45 @@ class PartsByOutcome(BaseModel):
 
 
 class AppliedCriteria(BaseModel):
-    """What `/parts/affected` was actually asked, echoed back.
+    """What `/parts/affected` was actually asked, echoed back — and what the window meant.
 
-    `anchor` is the one a reader must see: the window is applied to a *per-part* instant,
-    and which instant that is depends on the criteria. With a station it is that station's
-    own record for the part; without one it is `assemblies.created_at`, the instant the
-    part entered the line. §3.4a forbids reconstructing either by joining the time series,
-    so a station whose record carries no instant cannot be asked for at all rather than
-    being answered with a neighbouring station's.
+    `anchor` is the field a reader must see and `window_selects` is the sentence that says
+    what it cost. The window is applied to a *per-part* instant, and which instant that is
+    depends on the criteria: with a station it is that station's own record for the part,
+    without one it is `assemblies.created_at`. §3.4a forbids reconstructing either by
+    joining the time series, so a station whose record carries no instant cannot be asked
+    for at all rather than being answered with a neighbouring station's.
+
+    **That matters most exactly where §5.3's own worked example lands.** *"Which parts
+    passed S2 while the joining force was out of tolerance?"* is answerable — but not as a
+    window on S2, because the press records its two numbers against the serial and no time
+    beside them. It is answerable as a *value* question: `signal` with `below` and `above`
+    selects the parts whose own recorded force is out of tolerance, which is precisely the
+    per-part record §3.4a says exists for this. The window then bounds when those parts were
+    *completed*, not when they were pressed, and `window_selects` says so in as many words —
+    the two differ by the S2→S3 transit, and pretending they do not would be the same
+    approximation §3.4a rejects.
     """
 
     station: str | None
     carrier: int | None
     lot_code: str | None
     defect_class: str | None
+    # The per-part signal the tolerance below applies to, e.g. `PeakForce`. Matched by name
+    # across whichever station recorded it: nothing between the plant and here translates
+    # signal vocabularies (see `ProcessValue`), so a name belongs to one station in practice.
+    signal: str | None
+    # A part matches when its recorded value is under `below` **or** over `above` — the
+    # out-of-tolerance reading, which is the question a containment scope asks. Either bound
+    # alone is the one-sided form.
+    below: float | None
+    above: float | None
     anchor: AffectedAnchor
+    # What the window actually selected, in words. Prose in a contract earns its place here
+    # for the same reason it does in `DimensionPatterns.not_comparable`: the distinction it
+    # carries is one a reader would otherwise assume away, and an answer nobody can
+    # misread is worth a sentence.
+    window_selects: str
 
 
 class AffectedParts(BaseModel):
