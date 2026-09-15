@@ -203,7 +203,7 @@ the constant and survived the same mutation.
 
 | Claim | Proof | Runs as |
 |---|---|---|
-| §3.5's eight scenarios, each seeded as the **consequences** it declares and never as its fault, each answered by M3's endpoints: the chain's root and category, the dimension a quality problem concentrates in, and the two rows that have the same symptom and different answers | `diagnostics/analysis/tests/test_analysis_proof.py` | `make verify` |
+| §3.5's eight scenarios, each seeded as the **consequences** it declares and never as its fault, each answered by M3's endpoints: the chain's root and category, the dimension a quality problem concentrates in, and the two rows that have the same symptom and different answers | `diagnostics/analysis/tests/test_analysis_proof.py` | `make check` |
 
 §8.4: *"Propagation correctness is where the system's truth actually lives, and it is
 directly checkable: inject a known fault, assert the computed chain against ground truth …
@@ -228,7 +228,7 @@ performs.
 | 1 | `/stops`, `/stops/{id}` | **`external_upstream`**, rooted at **S1** on `starved:feeder`, through all three buffers in order — S4 ← B3_4 ← S3 ← B2_3 ← S2 ← B1_2 ← S1, terminating `line_edge` with no cause candidate |
 | 2 | the same | **`external_downstream`**, rooted at **S4** on `blocked:outfeed`, in **one link** — the three stations backing up behind it are consequences of the same blockage and the walk is right not to climb them |
 | 3 | the same | **`internal`**, rooted at **S2** in `Aborted`, terminating `cause_candidate` with S2 the only candidate — while an **older, still unacknowledged alarm stands at S4**, downstream of the root and raised 60 s before S2's own. `/signals/trend` puts the clamp **10.3 σ** below where it started |
-| 4 | `/stops`, `/inspection/patterns` | **no stop, and no micro-stop.** Carrier **7 significant** at adjusted *p* = 0.0023 (34/1100 against 1.50 % expected) — and carrier 18 beside it on the identical count, which is not a false finding: see below |
+| 4 | `/stops`, `/inspection/patterns` | **no stop, and no micro-stop.** With the worn carrier at the pool's **median** and §3.5's own 33 h depth: the carrier dimension **tested inside the defect class** reports `carrier 7 × misalignment` (12/1100 = 1.09 % against 0.283 %, adjusted *p* = 0.023) and **nothing else out of 108 pairs**, while the plain carrier dimension reports carrier **18** and leaves carrier 7 at adjusted *p* = 0.159, `not_significant` |
 | 5 | the same | no stop; the classes significantly **above** expectation are exactly `missing_part` and `contamination` (*p* = 0.0056 and 1.8 × 10⁻⁶), and the **lane dimension carries no verdict at all**, refused in §3.5's own words |
 | 6 | `/stops`, `/inspection/stats`, `/inspection/patterns` | no stop; the scrap rate holds (1.50 % → 1.35 %) while the breakdown empties — **25 of 27 rejects carry no class the threshold can name**, against 0 of 15 before the fouling. No defect class, no time bucket and no lot is a pattern |
 | 7 | `/inspection/patterns`, `/signals/trend`, `/alarms` | no stop, no alarm; **`gap` is the one class above expectation** (*p* = 2.7 × 10⁻⁶); the **lot** `L-1-01` is significant (24/500 against 2.18 %, *p* = 0.0136) and is the only significant value anywhere in carrier, lot or time; **no time bucket reaches a verdict**; the force moved **0.15 σ** |
@@ -247,33 +247,56 @@ every part and differ only in what was injected. That is what makes "the lot is 
 in one and nothing is significant in the other" a statement about the injection rather than
 about two seeds.
 
-**Three things the measurement showed that the plan did not predict.**
+**What the measurement showed, and the dimension it forced.**
 
-*Scenario 4 depends on where in the pool the worn carrier sits, and the dependence is total.*
-`/inspection/patterns` tests each carrier's **reject rate**; §3.5 row 4's consequence is
-class-scoped (`misalignment | scratch`, `CLASS_CONCENTRATES`), and the dilution is 3:1. At
-the pool's median the wear lifts a carrier's reject rate by 1.6 × inside a pool whose own
-qualities span 3 ×, and **no depth separates it** — measured at 1,100, 1,600 and 2,200 parts
-per carrier, where the only carriers reported are the pool's own extremes. `test_noise`
-measures the shipped seed's carrier 7 at 2.18 % `misalignment | scratch` against the pool's
-0.571 %, so with the 2.86 × wear removed it was already at **1.34 ×** the pool — and it is
-that placement, not the wear alone, that makes it findable. The fixture places it there and
-says so. **A carrier the plant wore at the median would be invisible to this endpoint**, and
-the fix is a dimension §5.5 does not have: carrier × class. `/parts/affected?carrier=&defect_class=`
-already returns the counts to cross by hand.
+*§5.5's four dimensions could not answer row 4, and the fifth is now there.* Row 4's
+consequence is `CLASS_CONCENTRATES` — `misalignment` and `scratch` on carrier 7 — and the
+carrier dimension tests each carrier's **whole reject rate**, diluting two of six raised
+classes into all six. So `/inspection/patterns` now also tests the carrier **within each
+defect class**: carrier 7's `misalignment` rate against the other carriers' `misalignment`
+rate, with the multiplicity family every stratum's comparisons together (18 × 6 = 108
+hypotheses, because "does any carrier concentrate any class" is one question). It is a
+dimension §5.5 happened not to list, in exactly the sense the lot dimension already was, and
+the row that demanded it is the one row §3.5 states as a pair.
 
-*Depth matters as much.* Even so placed, carrier 7 reaches a verdict only at the plant's own
-33 h history depth (1,100 parts per carrier). At 400 and 700 per carrier the same fixture
-reports nothing — correctly, and `NOT_SIGNIFICANT` is the right answer there, but a shift-long
-window will not find a worn carrier on this line.
+*What that bought, measured on this generator at the pool's median placement.* The plain
+dimension's verdict on carrier 7 moves with the draw; the stratified one does not.
 
-*A true finding is not always the finding asked for.* Carrier 18 is significant in scenario 4
-beside carrier 7, and is the **only** finding in scenario 6. It is the top of §3.5's own
-quality spread and genuinely scraps more than the rest, so reporting it is exactly what
-`patterns.py` says Benjamini-Hochberg promises — the share of reported findings that are
-false is bounded, and this one is not false. The proof asserts that carrier 7 is among the
-findings and that there are at most two, rather than that it is alone: a fixture tuned until
-the noise floor went quiet would be a fixture with the noise floor taken out.
+| parts per carrier | plain carrier dimension | carrier within class |
+|---|---|---|
+| 600 | 7, 18 | — |
+| 700 | 7 | — |
+| 800 | 7, 18 | **7 × misalignment** |
+| 900 | 18, 7 | **7 × misalignment** |
+| 1,000 | 18, 7 | **7 × misalignment** |
+| **1,100** (§3.5's own 33 h) | **18** — and not 7 | **7 × misalignment** |
+| 1,300 | 18, 7 | **7 × misalignment** |
+| 2,000 | 18, 7, 3, 2, 1 | **7 × misalignment** |
+
+The smallest depth at which the cross holds is **800 parts per carrier**, two thirds of the
+plant's own history. Below that it correctly reports nothing. Above it, it reports the worn
+carrier and the class it wore, alone, at every depth tried — while the plain dimension
+alternates between naming carrier 7 and not, and by 2,000 parts per carrier is naming five
+carriers because the noise floor's own carrier-to-carrier variation has itself become
+detectable (which `significance.py` already measured from the other direction).
+
+*The placement mattered more than the wear, and that is why it was taken out.* An earlier
+round of this proof placed the worn carrier where the shipped seed drew it — `test_noise`'s
+2.18 % `misalignment | scratch` against the pool's 0.571 %, which with the 2.86 × wear divided
+out is **1.34 ×** the pool baseline before anything was injected. Scenario 4 passed there on
+the plain dimension, and it was passing on the seed's luck. Put at the pool's median it does
+not, and placed three ranks below it — quality 0.872, the seventh of eighteen and an entirely
+ordinary carrier — the plain dimension never names carrier 7 at any depth from 600 to 2,000
+while the cross names it from 1,300. A capability that depends on
+where a draw put the worn carrier is not a capability, so the fixture places it at the median
+and the proof asserts the cross.
+
+*Carrier 18 is the wrong finding and not a false one.* It is the top of §3.5's own quality
+spread and genuinely scraps more than the rest, so reporting it is what `patterns.py` says
+Benjamini-Hochberg's false-discovery bound means. That is a different complaint from a false
+positive, and it is the complaint §3.5 row 4 exists to make: a line has a worst carrier
+whether or not anything is wrong with it, and the answer to "which carrier is wearing" has to
+be more specific than "the worst one".
 
 **Where scenario 7's lot beats the clock, and why that is arranged.** A 500-part lot inside
 60-minute buckets sits almost entirely in one of them unless the window is placed so that a
@@ -287,15 +310,18 @@ statement about that window and a useless one for telling scenario 7 from a bad 
 seeded, not carried over OPC UA by the gateway. §1.2 and §1.3 own that half. What is new here
 is only that the *computing* is real, which is the half §1.5 was waiting for.
 
-**Marked `authenticity`, and the case for moving it is stronger than for the four above.** It
-starts no container of its own — it runs in process against the Postgres the analysis suite
-already starts — and the whole file is **8 s**, of which the largest single cost is seeding
-§3.5's 33 h of history for scenario 4 (2.4 s of it, 19,800 parts and their genealogy; every
-other fixture is under a second). That is the same shape as the propagation, traceability and
-consequence proofs, all three of which are in `make check`. It is left behind `make verify`
-for this round only because §1's proofs are read as a set and splitting the set is a decision
-with an owner; the numbers say it belongs in the gate, and the argument against it is
-currently nothing but consistency with a marker.
+**In `make check`, not behind `make verify`.** It starts no container of its own — it runs in
+process against the Postgres the analysis suite already uses — and the whole file is **8 s**,
+of which the largest single cost is seeding §3.5's 33 h of history for scenario 4 (2.7 s,
+19,800 parts and their genealogy; every other fixture is under a second). That is the same
+shape as the propagation, traceability and consequence proofs, all three of which are in the
+gate for the same reason.
+
+§1's container-dependent proofs stay where they are and the marker set is not collapsed; this
+one file moved to where its cost says it belongs. §8.4's argument is the whole of the reason:
+*"That suite runs in seconds, costs nothing, has no variance, and catches the failures that
+matter most … it is the suite most easily forgotten."* A proof that runs only when somebody
+deliberately looks is one nobody sees fail, which is the definition of forgotten.
 
 ## Not provable yet
 
