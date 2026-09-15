@@ -1,5 +1,5 @@
 import { render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { Line } from "../Line";
 import { StationTile } from "../StationTile";
@@ -130,6 +130,19 @@ function stationIn(category: Category): StationView {
 }
 
 describe("the line", () => {
+  // §3.7's injection panel fetches §3.5's fault vocabulary when it mounts, and `Line`
+  // draws it. Stubbed here so these tests stay a function of one frame and reach no
+  // socket; what the panel does with what it fetches is `panel.test.tsx`'.
+  beforeEach(() => {
+    vi.stubGlobal("fetch", () =>
+      Promise.resolve(new Response("[]", { status: 200 })),
+    );
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it("shows the reason a station is waiting", () => {
     render(<Line snapshot={HELD_S2} />);
     // The whole diagnostic value of the screen: *which* buffer, and which direction.

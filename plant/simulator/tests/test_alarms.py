@@ -9,8 +9,10 @@ and published nothing, fails here.
 
 from __future__ import annotations
 
+import json
 import statistics
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
 from conftest import RecordingNodes, build_running_line, new_clock
@@ -22,7 +24,8 @@ from simulator.alarms import (
 from simulator.clock import SimulatedClock
 from simulator.config import Settings
 from simulator.events import ALARM
-from simulator.faults import NO_FAULTS, FaultSet
+from simulator.faults import NO_FAULTS, FaultKind, FaultSet
+from simulator.ground_truth import INJECTION, OPERATOR, Injector, open_log
 from simulator.line import Line
 from simulator.packml import State
 from simulator.scenarios import scenario
@@ -321,6 +324,119 @@ async def test_an_unnecessary_reset_leaves_the_line_exactly_where_it_found_it(
         signal == "JoiningForcePeak" and at > stopped[-1]
         for signal, at, _value in s2.writes
     ), "S2 stopped producing after the last reset, so it changed something"
+
+
+# --- §3.7's acknowledge button, and §3.5's rule about the panel ----------------------
+
+
+@pytest.mark.asyncio
+async def test_acknowledging_at_the_panel_brings_the_operator_forward() -> None:
+    """§3.7's button, asserted by what it does to the line rather than by what it sets.
+
+    The operator delay is turned up so that the claim has something to be measured
+    against: a drawn visit cannot arrive sooner than `operator_ack_min_seconds`, so an
+    alarm cleared well inside that was cleared because the button was pressed. At the
+    shipped 15 s minimum the two would be a few takts apart and the assertion would pass
+    on a line where the button did nothing at all.
+
+    What is asserted is the whole intervention, not the acknowledgement: pressing the
+    button takes the same path the drawn delay does, so the station is restarted and
+    producing again. A button that only stamped `acked_at` would leave S2 shut down with
+    its alarm marked handled, which is the worst of both.
+    """
+    settings = Settings(
+        operator_ack_min_seconds=600.0,
+        operator_ack_mode_seconds=900.0,
+        operator_ack_max_seconds=1200.0,
+    )
+    clock = new_clock(settings)
+    line, clock, nodes = await build_running_line(
+        settings,
+        faults=scenario(3, settings).fault_set(clock.history_start),
+        clock=clock,
+    )
+    horizon = clock.history_start + timedelta(seconds=9000)
+    pressed = False
+    while (due := line.next_due) is not None and due < horizon:
+        await line.step()
+        if not pressed and line.alarms.alarms:
+            alarm = line.alarms.alarms[0]
+            line.alarms.acknowledge(alarm.sequence, alarm.raised_at)
+            pressed = True
+
+    assert pressed, "the drift never raised an alarm, so the button was never pressed"
+    alarm = line.alarms.alarms[0]
+    assert alarm.acked_at == alarm.raised_at
+    cleared = alarm.cleared_at
+    assert cleared is not None
+    worked = (cleared - alarm.raised_at).total_seconds()
+    assert worked < settings.operator_ack_min_seconds, (
+        f"the alarm was cleared {worked:.0f} s after it was raised, which a drawn visit "
+        f"could have done on its own (minimum {settings.operator_ack_min_seconds} s)"
+    )
+
+    s2 = nodes["S2_Joining"]
+    assert any(
+        signal == "JoiningForcePeak" and at > cleared
+        for signal, at, _value in s2.writes
+    ), "S2 was acknowledged and never restarted"
+
+
+@pytest.mark.asyncio
+async def test_a_panel_injection_reaches_the_line_and_the_log_together(
+    tmp_path: Path,
+) -> None:
+    """§3.5's "**every** injection writes to the ground-truth log", followed all the way
+    to a number S2 published.
+
+    `test_hmi` asserts the HTTP half -- that the endpoint records what it injects and
+    refuses what it cannot. This is the other half and the one that could be quietly
+    false: `FaultSet.inject` appends to the object the four stations were built with, and
+    a version that rebuilt the set instead would record the injection perfectly and reach
+    no station at all. The press is what says which happened.
+    """
+    settings = Settings()
+    clock = new_clock(settings)
+    faults = FaultSet((), clock.history_start)
+    line, clock, nodes = await build_running_line(settings, faults=faults, clock=clock)
+
+    warmup = clock.history_start + timedelta(seconds=600)
+    while (due := line.next_due) is not None and due < warmup:
+        await line.step()
+
+    with open_log(tmp_path / "gt.jsonl", settings, clock, None) as log:
+        injector = Injector(faults, log, clock.history_start)
+        # A step drift rather than a ramp, so the two windows either side of it are
+        # separated by the whole magnitude rather than by part of it.
+        injector.inject(FaultKind.JOINING_FORCE_DRIFT, {"newtons": -400.0}, warmup)
+
+        horizon = warmup + timedelta(seconds=600)
+        while (due := line.next_due) is not None and due < horizon:
+            await line.step()
+
+    peaks = [
+        ((at - warmup).total_seconds(), float(value))
+        for signal, at, value in nodes["S2_Joining"].writes
+        if signal == "JoiningForcePeak"
+    ]
+    before = [value for elapsed, value in peaks if elapsed < 0]
+    after = [value for elapsed, value in peaks if elapsed > 0]
+    assert before and after
+    fall = statistics.fmean(before) - statistics.fmean(after)
+    assert fall > 300.0, (
+        f"the peak fell {fall:.1f} N on a 400 N injected drift: the panel's fault is not "
+        "reaching the press the line is running"
+    )
+
+    records = [
+        json.loads(line_) for line_ in (tmp_path / "gt.jsonl").read_text().splitlines()
+    ]
+    injections = [record for record in records if record["record"] == INJECTION]
+    assert len(injections) == 1
+    assert injections[0]["source"] == OPERATOR
+    assert injections[0]["kind"] == str(FaultKind.JOINING_FORCE_DRIFT)
+    assert injections[0]["at"] == warmup.isoformat()
+    assert injections[0]["until"] is None
 
 
 def test_an_alarm_on_a_station_with_no_nodes_fails_loudly() -> None:

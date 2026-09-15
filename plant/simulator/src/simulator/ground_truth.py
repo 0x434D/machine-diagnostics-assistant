@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import json
 import zlib
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime
 from pathlib import Path
 from types import TracebackType
@@ -39,6 +39,7 @@ from typing import IO, Final, Self
 
 from simulator.clock import SimulatedClock
 from simulator.config import Settings
+from simulator.faults import Fault, FaultKind, FaultSet
 from simulator.inspection_client import InspectionClient
 from simulator.scenarios import Consequence, Injection, Scenario
 from simulator.stations.base import PartOutcome, ProduceFn
@@ -48,6 +49,19 @@ INJECTION: Final = "injection"
 PART: Final = "part"
 """The three record kinds, in the `record` field of every line. A reader dispatches on
 this; nothing is inferred from which fields are present."""
+
+SCENARIO: Final = "scenario"
+OPERATOR: Final = "operator"
+"""Where an injection came from, in the `source` field of every `injection` record.
+
+**Both are real injections and both are recorded; the difference is what may be claimed
+for them.** A scenario's injection carries the consequences §3.5's row states, which Task
+7 asserts. One an operator made at §3.7's panel carries none -- nobody wrote down what
+should follow from a fault chosen at a keyboard, and inventing a claim for it would be
+this file deciding what the plant was going to do. It is still written down, because
+§3.5's rule is that *every* injection is, and a fault that reached the line without
+reaching this log is one no evaluation can ever account for.
+"""
 
 NO_SCENARIO: Final = 0
 """What `scenario` carries on a clean run. `0` rather than absent, because a log with no
@@ -146,7 +160,9 @@ class GroundTruthLog:
             }
         )
 
-    def record_injection(self, injection: Injection, origin: datetime) -> None:
+    def record_injection(
+        self, injection: Injection, origin: datetime, source: str
+    ) -> None:
         """One fault, at the simulated instants it fires and is repaired, with the
         consequences it is expected to produce.
 
@@ -155,12 +171,16 @@ class GroundTruthLog:
         makes the log comparable to `state_changes` and `inspection_results`, which carry
         nothing but instants. Both spellings of one fact, and this is the only place they
         meet.
+
+        `source` is `SCENARIO` or `OPERATOR` and has no default, because the two are
+        different claims and a default would make one of them the quiet case.
         """
         fault = injection.fault
         self._write(
             {
                 "record": INJECTION,
                 "run_id": self._run_id,
+                "source": source,
                 "kind": str(fault.kind),
                 "at": (origin + fault.at).isoformat(),
                 "until": None
@@ -241,12 +261,71 @@ def open_log(
     log.record_run(settings, clock, scenario)
     if scenario is not None:
         for injection in scenario.injections:
-            log.record_injection(injection, clock.history_start)
+            log.record_injection(injection, clock.history_start, SCENARIO)
     return log
 
 
 def _number(scenario: Scenario | None) -> int:
     return NO_SCENARIO if scenario is None else scenario.number
+
+
+class Injector:
+    """The one way a fault reaches a run that is already going, and the reason §3.5's
+    "**every** injection writes to the ground-truth log" is true of §3.7's panel and not
+    only of the scenarios.
+
+    **Both halves in one call, and that is the whole of what this class is for.**
+    `FaultSet.inject` and `GroundTruthLog.record_injection` are both public and either
+    alone is a defect: a fault the plant is running that the log does not know about is
+    one no evaluation can ever account for, and a log entry with no fault behind it
+    describes a run that did not happen. M2b declined a hold button on exactly this
+    ground -- fault injection without a ground-truth log would be this milestone's job
+    done without its evidence -- so the button is legitimate now precisely because it
+    comes through here.
+
+    `origin` is the run's, and it is the same instant the `FaultSet` was built on: a
+    `Fault` carries offsets and the panel has an instant, and this is where the two meet.
+    """
+
+    def __init__(self, faults: FaultSet, log: GroundTruthLog, origin: datetime) -> None:
+        self._faults = faults
+        self._log = log
+        self._origin = origin
+
+    def inject(
+        self,
+        kind: FaultKind,
+        params: Mapping[str, float],
+        at: datetime,
+        until: datetime | None = None,
+    ) -> Fault:
+        """Inject one fault at simulated instant `at`, repaired at `until`.
+
+        Returns the `Fault` as it was recorded, so a caller can show the operator what
+        the plant took rather than what they typed.
+
+        **Written to the log before it is handed to the line**, so there is no ordering in
+        which a fault is running and unrecorded. The reverse would leave exactly that
+        window, and the fault that slipped through it would be invisible to every later
+        measurement.
+
+        Raises ValueError for a window that cannot happen, a parameter this kind does not
+        take, a missing magnitude, or a scope this kind requires and the params omit --
+        all of them from `Fault.__post_init__`, before anything is written or injected.
+        """
+        fault = Fault(
+            kind,
+            at - self._origin,
+            params,
+            None if until is None else until - self._origin,
+        )
+        # No consequences, and that is the honest record rather than an omission: nobody
+        # wrote down what should follow from a fault chosen at a keyboard, and §3.5's
+        # eight rows are the only place this project claims one. `source` is what tells
+        # Task 7 the difference.
+        self._log.record_injection(Injection(fault, ()), self._origin, OPERATOR)
+        self._faults.inject(fault)
+        return fault
 
 
 def recording(log: GroundTruthLog, client: InspectionClient) -> ProduceFn:

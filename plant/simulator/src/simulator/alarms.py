@@ -202,6 +202,25 @@ class AlarmSystem:
         if self._tolerance(station).observe(peak):
             self._raise(station, JOINING_FORCE_OUT_OF_TOLERANCE, at)
 
+    def acknowledge(self, sequence: int, at: datetime) -> Alarm | None:
+        """§3.7's acknowledge button: the operator is at the panel now rather than in
+        `acknowledge_delay_seconds`' time.
+
+        Returns the alarm, or None for a sequence this run never raised and for one whose
+        intervention has already happened -- both of which are a screen a moment behind
+        the line rather than an error.
+
+        **It brings the intervention forward; it does not perform it.** What an operator
+        pressing the button does to the line is the same thing the drawn delay does --
+        acknowledge, restart, clear -- and two paths into that would be two chances for
+        one of them to forget the restart and leave a station shut down with its alarm
+        cleared.
+        """
+        if sequence not in self._due:
+            return None
+        self._due[sequence] = at
+        return self._alarms[sequence]
+
     async def settle(self, line: Line, at: datetime) -> None:
         """Everything the alarms owe `line` at or before simulated instant `at`.
 

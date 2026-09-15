@@ -211,6 +211,39 @@ quantity at a call site is an exception rather than a modifier that never fires.
 
 
 @dataclass(frozen=True)
+class FaultParameters:
+    """What one kind takes, for a caller that is not a scenario.
+
+    §3.7's injection panel has to ask an operator for numbers, and which numbers depends
+    on the kind. Read off `_SPECS` through `parameters_for` rather than restated on the
+    screen: a panel carrying its own copy of the vocabulary is a panel that offers a
+    parameter `Fault.__post_init__` refuses, and the operator finds out by pressing the
+    button.
+    """
+
+    magnitude: str
+    """The name of the number that says how hard, e.g. `newtons` or `factor`."""
+    scope: str | None
+    """`carrier` or `lane` for a kind that can be aimed at one, None for a line-wide one."""
+    scope_required: bool
+    """Whether omitting the scope is refused. The difference between scenario 4 and a
+    line-wide drift -- see `_KindSpec`."""
+
+    @property
+    def names(self) -> tuple[str, ...]:
+        """Every parameter this kind accepts, magnitude first and the ramp last, which is
+        the order a panel should ask for them in."""
+        scope = () if self.scope is None else (self.scope,)
+        return (self.magnitude, *scope, RAMP_SECONDS)
+
+
+def parameters_for(kind: FaultKind) -> FaultParameters:
+    """What `kind` accepts. Raises KeyError for a kind this module does not have."""
+    spec = _SPECS[kind]
+    return FaultParameters(spec.magnitude, spec.scope_param, spec.scope_required)
+
+
+@dataclass(frozen=True)
 class Fault:
     """One injection: what, when it starts, how hard, and when it is repaired.
 
@@ -294,9 +327,15 @@ class Fault:
 class FaultSet:
     """The faults a run carries, and the one way the plant asks about them.
 
-    Immutable. `origin` is the instant offsets are measured from -- the line's
-    `history_start`, so that a scenario fires at the same point of the simulated
-    timeline whatever wall clock the run happens on.
+    `origin` is the instant offsets are measured from -- the line's `history_start`, so
+    that a scenario fires at the same point of the simulated timeline whatever wall clock
+    the run happens on. It never changes.
+
+    **`inject` is the one thing about this object that is not fixed at construction**, and
+    it exists for §3.7's panel: an operator injecting a fault into a run that is already
+    going has nowhere else to put it, because the four stations and the inspection client
+    each hold this object. It appends rather than rebuilding for exactly that reason -- a
+    new FaultSet would reach nothing.
 
     Raises ValueError if faults are given with no origin to place them on.
     """
@@ -316,6 +355,30 @@ class FaultSet:
     def faults(self) -> tuple[Fault, ...]:
         """In declaration order, which is the order `modify` composes them in."""
         return self._faults
+
+    def inject(self, fault: Fault) -> None:
+        """Add a fault to a run already in flight -- §3.7's panel, and nothing else.
+
+        **Call `ground_truth.Injector.inject` instead of this.** §3.5's rule is that
+        *every* injection writes to the ground-truth log, and a fault the plant is running
+        that the log does not know about is one no evaluation can ever account for. The
+        `Injector` is where the two happen together; this is the half of it that reaches
+        the line.
+
+        Appended at the end, so it composes after everything already here -- the same rule
+        `modify` states for declaration order.
+
+        Raises ValueError on a set with no origin, which is `NO_FAULTS` and every set
+        built without one: the offset would name no instant, so the fault could never
+        fire, and a shared empty singleton is not a run to inject into.
+        """
+        if self._origin is None:
+            raise ValueError(
+                f"{fault.kind} cannot be injected into a fault set with no origin: its "
+                "offset would name no instant, and NO_FAULTS is shared by every run that "
+                "carries no scenario"
+            )
+        self._faults = (*self._faults, fault)
 
     def active_at(self, at: datetime) -> tuple[Fault, ...]:
         """Every fault whose window contains `at`, in declaration order.

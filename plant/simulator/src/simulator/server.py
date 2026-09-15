@@ -288,7 +288,16 @@ async def main() -> None:
     chosen = (
         scenarios.scenario(settings.scenario, settings) if settings.scenario else None
     )
-    faults = chosen.fault_set(clock.history_start) if chosen is not None else NO_FAULTS
+    # An empty FaultSet on this run's origin rather than the shared NO_FAULTS, because
+    # §3.7's panel injects into whatever this is: NO_FAULTS has no origin -- its offsets
+    # would name no instant -- and it is shared by every run that carries no scenario, so
+    # injecting into it would be injecting into all of them. A clean boot is the case the
+    # panel is most used on, so it cannot be the case it does not work on.
+    faults = (
+        chosen.fault_set(clock.history_start)
+        if chosen is not None
+        else FaultSet((), clock.history_start)
+    )
 
     with ground_truth.open_log(GROUND_TRUTH_LOG, settings, clock, chosen) as gt:
         async with (
@@ -379,7 +388,18 @@ async def main() -> None:
                 # Its own cadence is hmi_interval_seconds, not this one: the status file is
                 # read by a human at a shell prompt and the screen is drawn continuously,
                 # and one number cannot be right for both.
-                tasks.create_task(hmi.serve(line, clock, settings, recent))
+                # §3.7's panel reaches the line only through this: it writes the
+                # injection to the ground-truth log and then hands it to the FaultSet the
+                # four stations already hold, in that order, so there is no instant at
+                # which a fault is running and unrecorded. §3.5's rule is that **every**
+                # injection is written down, and the panel is the half of it that has
+                # nothing scripted behind it.
+                injector = ground_truth.Injector(faults, gt, clock.history_start)
+                tasks.create_task(
+                    hmi.serve(
+                        line, clock, settings, recent, injector, clock.history_start
+                    )
+                )
                 history_end = await run_catchup(line, writer, clock, settings, storage)
                 catchup_wall = time.monotonic() - started
                 _log(

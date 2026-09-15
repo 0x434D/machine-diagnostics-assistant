@@ -1,3 +1,6 @@
+import { useState } from "react";
+
+import { acknowledgeAlarm } from "./plantApi";
 import type { AlarmView } from "./snapshot";
 
 /** §3.7's active alarms.
@@ -13,6 +16,8 @@ import type { AlarmView } from "./snapshot";
  * outside the line. What is on this list is evidence, in the operator's own words.
  */
 export function AlarmList({ alarms }: { alarms: AlarmView[] }) {
+  const [failed, setFailed] = useState("");
+
   if (alarms.length === 0) {
     // Not an empty list rendered as nothing: no active alarms is the normal state of a
     // line, and a blank area reads as a panel that failed to load.
@@ -40,8 +45,22 @@ export function AlarmList({ alarms }: { alarms: AlarmView[] }) {
           <span className="alarm__ack">
             {alarm.acknowledged ? "acknowledged" : "not acknowledged"}
           </span>
+          {!alarm.acknowledged && (
+            <button
+              type="button"
+              onClick={() => {
+                setFailed("");
+                acknowledgeAlarm(alarm.sequence).catch((error: unknown) => {
+                  setFailed(String(error));
+                });
+              }}
+            >
+              acknowledge
+            </button>
+          )}
         </li>
       ))}
+      {failed !== "" && <li className="alarm__failed">{failed}</li>}
     </ol>
   );
 }

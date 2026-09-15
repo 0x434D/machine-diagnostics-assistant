@@ -27,15 +27,17 @@ from __future__ import annotations
 import asyncio
 from collections import deque
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Final, TypedDict
 
 import uvicorn
-from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
 
 from simulator.alarms import AlarmSystem
 from simulator.clock import SimulatedClock
 from simulator.config import Settings
+from simulator.faults import FaultKind, parameters_for
+from simulator.ground_truth import Injector
 from simulator.line import Line
 from simulator.packml import State
 from simulator.stations.base import PartOutcome, ProduceFn
@@ -301,6 +303,68 @@ def alarm_views(alarms: AlarmSystem) -> list[AlarmView]:
     ]
 
 
+class InjectionRequest(TypedDict):
+    """What §3.7's panel sends to inject a fault.
+
+    A TypedDict rather than a pydantic model, which is what every other request body in
+    this repository is. FastAPI validates it identically -- pydantic v2 reads a TypedDict
+    through the same TypeAdapter -- and it keeps this module out of `mypy.ini`'s list of
+    `disallow_any_explicit` exceptions, which exists only because `class X(BaseModel)`
+    trips a false positive that nothing here needs to take on.
+
+    `duration_seconds` has no default and may be null. A fault nothing repairs is a real
+    choice -- §3.5's row 3 is exactly that -- so the panel says which it meant rather than
+    leaving one of the two as the quiet case.
+    """
+
+    kind: str
+    params: dict[str, float]
+    duration_seconds: float | None
+
+
+class FaultKindView(TypedDict):
+    """One of §3.5's fault kinds, as the injection panel offers it.
+
+    Served rather than written into the bundle, because `faults` is where the vocabulary
+    is: a screen carrying its own copy would offer a parameter `Fault.__post_init__`
+    refuses, and the operator would find out by pressing the button. `parameters` is in
+    the order a panel should ask for them -- the magnitude, the scope where there is one,
+    then the ramp.
+    """
+
+    kind: str
+    parameters: list[str]
+    scope: str | None
+    scope_required: bool
+
+
+class InjectedView(TypedDict):
+    """A fault the panel injected, as the plant took it.
+
+    Returned rather than answered with a bare 204, so the screen shows the instants the
+    run actually placed it at -- which are simulated instants derived from the run's
+    origin, and not the wall clock the operator pressed the button at.
+    """
+
+    kind: str
+    at: str
+    until: str | None
+    params: dict[str, float]
+
+
+def fault_kind_views() -> list[FaultKindView]:
+    """§3.5's kinds and the parameters each takes, read off `faults`."""
+    return [
+        FaultKindView(
+            kind=str(kind),
+            parameters=list(parameters_for(kind).names),
+            scope=parameters_for(kind).scope,
+            scope_required=parameters_for(kind).scope_required,
+        )
+        for kind in FaultKind
+    ]
+
+
 def line_snapshot(
     line: Line, clock: SimulatedClock, recent: RecentParts
 ) -> LineSnapshot:
@@ -345,12 +409,24 @@ def line_snapshot(
 
 
 def build_app(
-    line: Line, clock: SimulatedClock, settings: Settings, recent: RecentParts
+    line: Line,
+    clock: SimulatedClock,
+    settings: Settings,
+    recent: RecentParts,
+    injector: Injector,
+    origin: datetime,
 ) -> FastAPI:
-    """The screen's four endpoints, reading the live `line`, `clock` and strip.
+    """The screen's endpoints, reading the live `line`, `clock` and strip.
 
     `/snapshot` and `/ws` serve the same payload, so a frame the screen renders and one
     a human curls are the same object -- there is no second rendering to disagree.
+
+    `injector` is the only way a fault reaches this run, and `origin` is the instant its
+    offsets are measured from -- the same `history_start` the `FaultSet` was built on.
+    Both are passed rather than reached through the line, because the ground-truth log
+    behind the injector belongs to the process that opened it and the line knows nothing
+    about it (§3.6: it is on a volume the diagnostics stack cannot reach, and the line is
+    not where that boundary is kept).
     """
     app = FastAPI(title="plant HMI", docs_url=None, redoc_url=None)
 
@@ -380,6 +456,56 @@ def build_app(
     async def snapshot() -> LineSnapshot:
         return line_snapshot(line, clock, recent)
 
+    # §3.7's acknowledge button. POST rather than GET: it changes the line -- the
+    # operator's visit is brought forward, the station is restarted and the alarm
+    # clears -- and a browser is free to prefetch a GET.
+    @app.post(
+        "/alarms/{sequence}/acknowledge", status_code=204, response_class=Response
+    )
+    async def acknowledge(sequence: int) -> Response:
+        if line.alarms.acknowledge(sequence, clock.now()) is None:
+            # A sequence this run never raised, or one whose operator has already been.
+            # 404 rather than an error: the screen draws a frame twice a second and a
+            # button pressed against the one before it is a race, not a fault.
+            return Response(status_code=404)
+        return Response(status_code=204)
+
+    # §3.5's vocabulary, so the panel does not carry a copy of it.
+    @app.get("/faults", response_model=None)
+    async def fault_kinds() -> list[FaultKindView]:
+        return fault_kind_views()
+
+    # §3.7's fault-injection panel, and the rule that makes it legitimate: this reaches
+    # the line only through `ground_truth.Injector`, which writes the injection to the
+    # ground-truth log before the plant is running it. §3.5's words are "**every**
+    # injection writes to the ground-truth log", and an injection that does not is a
+    # fault no evaluation can ever account for -- which is exactly why M2b declined a
+    # hold button before the log existed.
+    @app.post("/faults", status_code=201, response_model=None)
+    async def inject(request: InjectionRequest) -> InjectedView:
+        at = clock.now()
+        until = (
+            None
+            if request["duration_seconds"] is None
+            else at + timedelta(seconds=request["duration_seconds"])
+        )
+        try:
+            kind = FaultKind(request["kind"])
+            fault = injector.inject(kind, request["params"], at, until)
+        except ValueError as invalid:
+            # Specifically recoverable, and the recovery is the answer: an operator typed
+            # a kind or a parameter this plant does not take, and `Fault.__post_init__`
+            # has already refused it before anything was written or injected. Re-raised
+            # as the status that says whose mistake it was -- a 500 would read as the
+            # plant having broken, and the panel would have nothing to show.
+            raise HTTPException(status_code=400, detail=str(invalid)) from invalid
+        return InjectedView(
+            kind=str(fault.kind),
+            at=(origin + fault.at).isoformat(),
+            until=None if fault.until is None else (origin + fault.until).isoformat(),
+            params=dict(fault.params),
+        )
+
     @app.websocket("/ws")
     async def stream(socket: WebSocket) -> None:
         await socket.accept()
@@ -400,7 +526,12 @@ def build_app(
 
 
 async def serve(
-    line: Line, clock: SimulatedClock, settings: Settings, recent: RecentParts
+    line: Line,
+    clock: SimulatedClock,
+    settings: Settings,
+    recent: RecentParts,
+    injector: Injector,
+    origin: datetime,
 ) -> None:
     """Run the HMI server until cancelled. Belongs in `server.main`'s TaskGroup.
 
@@ -416,7 +547,7 @@ async def serve(
     socket first.
     """
     config = uvicorn.Config(
-        build_app(line, clock, settings, recent),
+        build_app(line, clock, settings, recent, injector, origin),
         host=settings.hmi_server_host,
         port=settings.hmi_server_port,
         log_level="warning",

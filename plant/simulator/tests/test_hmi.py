@@ -4,6 +4,9 @@ deliberately not as a rendering."""
 from __future__ import annotations
 
 import asyncio
+import json
+from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import cast
@@ -11,9 +14,13 @@ from typing import cast
 import pytest
 import yaml
 from conftest import STATION_CODES, build_running_line, new_clock
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from simulator.address_space import BUFFERS
+from simulator.clock import SimulatedClock
 from simulator.config import Settings
+from simulator.faults import FaultKind, FaultSet, parameters_for
+from simulator.ground_truth import INJECTION, OPERATOR, Injector, open_log
 from simulator.hmi import (
     CATEGORIES,
     RecentParts,
@@ -21,6 +28,7 @@ from simulator.hmi import (
     category_for,
     line_snapshot,
 )
+from simulator.line import Line
 from simulator.packml import State
 from simulator.scenarios import scenario
 from simulator.stations.base import PartOutcome
@@ -189,7 +197,65 @@ async def test_the_buffer_bars_get_the_capacity_they_are_a_fraction_of() -> None
         assert 0 <= buffer["level"] <= Settings().buffer_capacity
 
 
-def test_one_payload_reaches_the_screen_over_http_and_over_the_websocket() -> None:
+@dataclass(frozen=True)
+class Panel:
+    """The screen's server, the fault set behind it, and the log it records into.
+
+    All three together, because §3.5's rule is about the three of them at once: an
+    injection made through the app has to reach the set the line is running on *and* the
+    log on the ground-truth volume, and a fixture that held only the app could not see
+    either half.
+    """
+
+    app: FastAPI
+    faults: FaultSet
+    log_path: Path
+
+
+def _panel(
+    line: Line,
+    clock: SimulatedClock,
+    recent: RecentParts,
+    tmp_path: Path,
+    faults: FaultSet | None = None,
+    settings: Settings | None = None,
+) -> Panel:
+    """`build_app` as `server.main` builds it, on a ground-truth log in `tmp_path`.
+
+    The log is a real `GroundTruthLog` on a real file rather than a double: what is being
+    asserted is that the bytes reach the volume, and a double would assert the call.
+    """
+    settings = settings or Settings()
+    injected = FaultSet((), clock.history_start) if faults is None else faults
+    path = tmp_path / "ground-truth.jsonl"
+    log = open_log(path, settings, clock, None)
+    injector = Injector(injected, log, clock.history_start)
+    return Panel(
+        build_app(line, clock, settings, recent, injector, clock.history_start),
+        injected,
+        path,
+    )
+
+
+def one[T](items: Sequence[T]) -> T:
+    """The single element of `items`, asserting there is exactly one.
+
+    Not `items[0]`: a list that grew a second entry is a panel that injected twice, or a
+    log that recorded an injection nobody made, and indexing would report neither.
+    """
+    assert len(items) == 1, f"expected exactly one, got {len(items)}"
+    return items[0]
+
+
+def _injections(path: Path) -> list[dict[str, object]]:
+    """Every `injection` record in a ground-truth log, in the order it was written."""
+    records = [json.loads(line) for line in path.read_text().splitlines()]
+    return [record for record in records if record["record"] == INJECTION]
+
+
+def test_one_payload_reaches_the_screen_over_http_and_over_the_websocket(
+    tmp_path: Path,
+) -> None:
     """Both endpoints serve `line_snapshot`, so there is no second rendering to
     disagree with the first. Synchronous because `TestClient` drives its own event
     loop; the line is built on a loop of its own beforehand and holds nothing bound
@@ -197,7 +263,7 @@ def test_one_payload_reaches_the_screen_over_http_and_over_the_websocket() -> No
     """
     line, clock, _nodes = asyncio.run(build_running_line())
     recent = asyncio.run(_strip_with(REJECT, GOOD))
-    with TestClient(build_app(line, clock, Settings(), recent)) as client:
+    with TestClient(_panel(line, clock, recent, tmp_path).app) as client:
         assert client.get("/health").json() == {"status": "ok"}
         over_http = client.get("/snapshot").json()
         with client.websocket_connect("/ws") as socket:
@@ -282,7 +348,9 @@ async def test_the_strip_carries_the_last_parts_newest_first() -> None:
 
 
 @pytest.mark.asyncio
-async def test_only_a_reject_offers_an_image_and_it_is_the_one_stored() -> None:
+async def test_only_a_reject_offers_an_image_and_it_is_the_one_stored(
+    tmp_path: Path,
+) -> None:
     """§3.4 gives only rejects an image. The strip carries a path rather than the bytes,
     because a reject's PNG is ~110 kB and a frame goes out twice a second."""
     line, clock, _nodes = await build_running_line()
@@ -292,7 +360,7 @@ async def test_only_a_reject_offers_an_image_and_it_is_the_one_stored() -> None:
     assert snapshot["parts"][0]["image_url"] == "/parts/A-00000001/image"
     assert snapshot["parts"][1]["image_url"] is None
 
-    with TestClient(build_app(line, clock, Settings(), recent)) as client:
+    with TestClient(_panel(line, clock, recent, tmp_path).app) as client:
         response = client.get("/parts/A-00000001/image")
         assert response.status_code == 200
         assert response.content == REJECT.image
@@ -315,6 +383,180 @@ async def test_the_strip_forgets_rather_than_growing_with_the_run() -> None:
     # The three that fell off took their images with them, which is the whole point.
     assert recent.image("A-00000000") is None
     assert recent.image(views[0]["serial"]) == REJECT.image
+
+
+# --- §3.7's fault-injection panel ----------------------------------------------------
+
+
+def test_every_injection_from_the_panel_reaches_the_ground_truth_log(
+    tmp_path: Path,
+) -> None:
+    """**§3.5's rule, and the one that makes the panel legitimate at all.**
+
+    M2b declined a hold button on the grounds that fault injection without a ground-truth
+    log would be this milestone's job done without its evidence. The log exists now, so
+    the button is allowed -- and the condition attached to it was that every injection
+    from the panel writes to the log exactly as a scripted one does. A fault the plant is
+    running that the log does not know about is one no evaluation can ever account for.
+
+    Asserted against the bytes on the volume rather than against a call: `open_log` and
+    `Injector` both write through the same file, and reading it back is the only
+    representation of "it was recorded" that a later milestone will have.
+    """
+    line, clock, _nodes = asyncio.run(build_running_line())
+    panel = _panel(line, clock, RecentParts(1), tmp_path)
+
+    with TestClient(panel.app) as client:
+        response = client.post(
+            "/faults",
+            json={
+                "kind": "joining_force_drift",
+                "params": {"newtons": -250.0, "ramp_seconds": 60.0},
+                "duration_seconds": 900.0,
+            },
+        )
+
+    assert response.status_code == 201
+    body = response.json()
+    assert body["kind"] == "joining_force_drift"
+    assert body["params"] == {"newtons": -250.0, "ramp_seconds": 60.0}
+
+    record = one(_injections(panel.log_path))
+    # `source` is what tells a later milestone this fault had nothing scripted behind it:
+    # it carries no consequences, because nobody wrote down what should follow from one
+    # chosen at a keyboard, and a claim invented here would be the log deciding what the
+    # plant was going to do.
+    assert record["source"] == OPERATOR
+    assert record["kind"] == "joining_force_drift"
+    assert record["consequences"] == []
+    assert record["params"] == {"newtons": -250.0, "ramp_seconds": 60.0}
+    # Simulated instants, not the wall clock the button was pressed at -- the same clock
+    # `state_changes` and `inspection_results` are read on (§4.2).
+    assert record["at"] == body["at"]
+    assert datetime.fromisoformat(cast(str, record["until"])) - datetime.fromisoformat(
+        cast(str, record["at"])
+    ) == timedelta(seconds=900)
+
+
+def test_a_fault_the_panel_injects_is_one_the_line_is_running(tmp_path: Path) -> None:
+    """The other half of the same rule. A log entry with no fault behind it describes a
+    run that did not happen, which is worse than no entry at all.
+
+    The `FaultSet` asserted on is the one the four stations were built with, so this is
+    "the plant is running it" rather than "the injector remembered it" -- a set rebuilt
+    instead of appended to would reach nothing, and `test_alarms` is where the same
+    injection is followed all the way to a number S2 publishes.
+    """
+    settings = Settings()
+    clock = new_clock(settings)
+    faults = FaultSet((), clock.history_start)
+    line, clock, _nodes = asyncio.run(
+        build_running_line(settings, faults=faults, clock=clock)
+    )
+    panel = _panel(line, clock, RecentParts(1), tmp_path, faults=faults)
+
+    with TestClient(panel.app) as client:
+        assert (
+            client.post(
+                "/faults",
+                json={
+                    "kind": "optics_fouling",
+                    "params": {"factor": 0.5},
+                    "duration_seconds": None,
+                },
+            ).status_code
+            == 201
+        )
+
+    injected = one(faults.faults)
+    assert injected.kind is FaultKind.OPTICS_FOULING
+    # Not repaired, because the panel said so rather than because it forgot to ask.
+    assert injected.until is None
+    assert faults.active_at(clock.now())
+
+
+def test_a_fault_the_plant_does_not_take_is_refused_and_not_recorded(
+    tmp_path: Path,
+) -> None:
+    """Both halves, and the second is the one that matters.
+
+    `Fault.__post_init__` refuses a parameter the kind does not read, a missing magnitude
+    and a scope a kind requires -- and it refuses them *before* anything is written, so a
+    rejected injection leaves no record. A log carrying faults the plant never ran would
+    make every part record after it unattributable, which is the same worthlessness §3.6
+    exists to prevent from the other direction.
+
+    400 rather than 500: an operator typed something this plant does not take, and the
+    panel has to be able to say which.
+    """
+    line, clock, _nodes = asyncio.run(build_running_line())
+    panel = _panel(line, clock, RecentParts(1), tmp_path)
+
+    with TestClient(panel.app) as client:
+        refused = [
+            # A kind §3.5 does not have.
+            {"kind": "gremlins", "params": {"factor": 0.5}, "duration_seconds": None},
+            # A parameter this kind does not read -- the failure `Fault.__post_init__`
+            # refuses rather than ignores, because a magnitude that changes nothing is
+            # an injection with no consequence anywhere.
+            {
+                "kind": "optics_fouling",
+                "params": {"newtons": -400.0},
+                "duration_seconds": None,
+            },
+            # Carrier wear with no carrier: a fault that applies to every part is a
+            # line-wide drift, which is a different fault with a different diagnosis.
+            {
+                "kind": "carrier_wear",
+                "params": {"factor": 3.0},
+                "duration_seconds": None,
+            },
+        ]
+        for body in refused:
+            assert client.post("/faults", json=body).status_code == 400, body
+
+    assert _injections(panel.log_path) == []
+    assert panel.faults.faults == ()
+
+
+def test_the_panel_is_offered_exactly_the_kinds_the_plant_has(tmp_path: Path) -> None:
+    """The vocabulary is served rather than written into the bundle.
+
+    §3.5 has seven kinds and each takes its own numbers; a screen carrying its own copy
+    offers a parameter `Fault.__post_init__` refuses, and the operator finds out by
+    pressing the button. This is also what keeps the eighth kind, whenever there is one,
+    from needing a frontend change to be injectable.
+    """
+    line, clock, _nodes = asyncio.run(build_running_line())
+
+    with TestClient(_panel(line, clock, RecentParts(1), tmp_path).app) as client:
+        offered = client.get("/faults").json()
+
+    assert [view["kind"] for view in offered] == [str(kind) for kind in FaultKind]
+    for view in offered:
+        parameters = parameters_for(FaultKind(view["kind"]))
+        assert view["parameters"] == list(parameters.names)
+        assert view["scope"] == parameters.scope
+        assert view["scope_required"] == parameters.scope_required
+
+
+# --- §3.7's acknowledge button --------------------------------------------------------
+
+
+def test_the_acknowledge_button_answers_a_sequence_no_alarm_has(
+    tmp_path: Path,
+) -> None:
+    """The screen draws a frame twice a second, so a button pressed against the frame
+    before this one is a race rather than a fault -- and so is one pressed on an alarm
+    whose operator has already been. 404 says which, and changes nothing.
+
+    What acknowledging actually *does* to the line is `test_alarms`', because it is a
+    claim about the line and not about the endpoint.
+    """
+    line, clock, _nodes = asyncio.run(build_running_line())
+
+    with TestClient(_panel(line, clock, RecentParts(1), tmp_path).app) as client:
+        assert client.post("/alarms/0/acknowledge").status_code == 404
 
 
 @needs_the_screen

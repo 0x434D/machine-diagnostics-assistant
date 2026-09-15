@@ -228,3 +228,47 @@ ol {
   font-variant-numeric: tabular-nums;
   margin: 0;
 }
+
+/* §3.7's fault-injection panel. The demo console, and the one thing on this screen that
+   talks back — so it is the last block and it is as plain as the rest (§15): a select, a
+   number per parameter the plant says the kind takes, and a button. */
+.inject {
+  align-items: end;
+  border-top: 1px solid GrayText;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+}
+
+.inject--empty {
+  border-top: 1px solid GrayText;
+  color: GrayText;
+  margin-top: 1.5rem;
+  padding-top: 1rem;
+}
+
+.inject__field {
+  color: GrayText;
+  display: grid;
+  font-size: 0.85em;
+  gap: 0.1rem;
+}
+
+.inject__field input {
+  inline-size: 8rem;
+}
+
+/* What the plant answered — the instants it placed the fault at, or the reason it
+   refused. Full width, because a 400's text is a sentence and not a label. */
+.inject__message {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+/* The acknowledge button's own failure. Same reason: an unreachable simulator has to say
+   so somewhere, or the button reads as one that does nothing. */
+.alarm__failed {
+  color: var(--held-by-own-fault);
+}
