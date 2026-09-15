@@ -7,6 +7,11 @@ to the buffer it names, finds when that buffer ran empty or full, finds which st
 episode accounts for that, and repeats. It ends at a cause candidate — a station in
 `Held` or `Aborted`, which needs an operator — or at the edge of the line.
 
+**§3.1's carrier loop is part of the line**, and the walk follows it like any other
+link: the carriers circulate rather than being consumed, so a head station with no free
+carrier is reporting something about the *tail*. `LineTopology.carrier_loop` is what
+keeps that inside the walk instead of beside it.
+
 **The category is never assigned, only derived**, from where the chain stopped: that is
 why `Derivation.category` is a property over the links rather than a field something
 sets while walking. And the chain is returned whole, with the episode and the buffer
@@ -39,6 +44,14 @@ CONSEQUENCE_STATE: Final = "Suspended"
 CAUSE_CANDIDATE_STATES: Final = frozenset({"Held", "Aborted"})
 """§3.3's table, and the whole of the classification step. Every other PackML state is
 neither — a chain that reaches one stops there rather than guessing which it resembles."""
+
+CARRIER_RETURN: Final = "carrier-return"
+"""What `starved:<detail>` names when the head of the line has no free carrier.
+
+One of the three details that are not buffer codes, and the only one that is not
+outside the line: `feeder` and `outfeed` are, and this one is §3.1's closed carrier
+loop. `LineTopology.carrier_loop` is where that distinction is made.
+"""
 
 DEFAULT_LEAD_IN: Final = timedelta(minutes=5)
 """How far back of a buffer condition the walk looks for what explains it.
@@ -116,6 +129,14 @@ class StationEpisode:
             return "blocked"
         return None
 
+    @property
+    def reason_detail(self) -> str | None:
+        """What the reason names after the direction: a buffer code, or one of the
+        three conditions that are not buffers."""
+        if self.reason is None or ":" not in self.reason:
+            return None
+        return self.reason.split(":", 1)[1]
+
     def covers(self, moment: datetime) -> bool:
         return self.from_ts <= moment and (self.to_ts is None or moment < self.to_ts)
 
@@ -172,6 +193,58 @@ class LineTopology:
             if candidate.upstream_station == station:
                 return candidate
         return None
+
+    def head(self) -> str | None:
+        """The station no buffer discharges into, when there is exactly one."""
+        return self._sole(
+            station
+            for station in self._stations()
+            if self.upstream_buffer_of(station) is None
+        )
+
+    def tail(self) -> str | None:
+        """The station that discharges into no buffer, when there is exactly one."""
+        return self._sole(
+            station
+            for station in self._stations()
+            if self.downstream_buffer_of(station) is None
+        )
+
+    def carrier_loop(self) -> BufferLink | None:
+        """§3.1's carrier loop, as a link the walk can follow like any other.
+
+        **The carriers circulate, so the pool is inside the line, not above it.** §3.1
+        keeps them in a closed loop on purpose — without it "a worn carrier passes once
+        and the carrier-wear scenario has no statistical signal to find" — which makes
+        an empty pool at the head a statement about the *tail*: the carriers are parked
+        somewhere below, never missing from a supplier. So the loop's upstream is the
+        tail of the line, and `starved:carrier-return` walks the same way every other
+        starvation does rather than becoming a branch beside the walk.
+
+        None when the line has no single head and tail to join, because a loop over a
+        topology this module cannot read is a guess.
+        """
+        head = self.head()
+        tail = self.tail()
+        if head is None or tail is None or head == tail:
+            return None
+        # capacity is never read: the pool is only ever reported `starved` (`line.py`
+        # emits SuspendReason("starved", CARRIER_RETURN) and has no blocked form of it),
+        # and capacity is what the `blocked` condition alone consults.
+        return BufferLink(
+            CARRIER_RETURN, upstream_station=tail, downstream_station=head, capacity=0
+        )
+
+    def _stations(self) -> list[str]:
+        named = {link.upstream_station for link in self.links} | {
+            link.downstream_station for link in self.links
+        }
+        return sorted(named)
+
+    @staticmethod
+    def _sole(stations: Iterable[str]) -> str | None:
+        found = list(stations)
+        return found[0] if len(found) == 1 else None
 
 
 @dataclass(frozen=True)
@@ -287,9 +360,10 @@ def derive_chain(
     while True:
         step = (current.station, current.from_ts)
         if step in seen:
-            # Only reachable from contradictory data -- a starved chain that walks into
-            # a blocked one and back -- but it is reachable, and a walk that looped
-            # would hang rather than answer.
+            # The carrier loop closes the topology, so this is a real cycle and not
+            # only a symptom of contradictory data: a chain that leaves S1 through the
+            # loop and starves its way back down to S1 has found nothing, and without
+            # this it would go round rather than say so.
             return _dead_end(
                 links,
                 candidates,
@@ -324,11 +398,7 @@ def derive_chain(
             )
 
         direction = current.direction
-        buffer_link = (
-            topology.link(current.reason_buffer)
-            if current.reason_buffer is not None
-            else None
-        )
+        buffer_link = _connecting_link(topology, current, direction)
         if buffer_link is None or direction is None:
             links.append(ChainLink(current))
             return _outside_the_line(links, candidates, current, direction, topology)
@@ -351,8 +421,17 @@ def derive_chain(
                 ),
             )
 
-        since = _condition_since(
-            samples, buffer_link, direction, current.from_ts, lead_in
+        # The carrier pool publishes no `Level`: §4.1 gives the line three buffers and
+        # the pool is not one of them, so there is no sample to read and the
+        # StateReason itself is the evidence. S1 reports `starved:carrier-return` at
+        # the instant no carrier is free, which is exactly what a level of zero would
+        # have said.
+        since = (
+            current.from_ts
+            if buffer_link.buffer == CARRIER_RETURN
+            else _condition_since(
+                samples, buffer_link, direction, current.from_ts, lead_in
+            )
         )
         if since is None:
             links.append(ChainLink(current, buffer_link.buffer))
@@ -397,6 +476,22 @@ def _dead_end(
     )
 
 
+def _connecting_link(
+    topology: LineTopology, episode: StationEpisode, direction: Direction | None
+) -> BufferLink | None:
+    """The link the chain follows out of a consequence episode, or None when the reason
+    names something the topology cannot connect to anything.
+
+    §3.1's carrier loop is one of those links, which is the whole of why it is resolved
+    here rather than beside the walk.
+    """
+    if episode.reason_buffer is not None:
+        return topology.link(episode.reason_buffer)
+    if direction == "starved" and episode.reason_detail == CARRIER_RETURN:
+        return topology.carrier_loop()
+    return None
+
+
 def _outside_the_line(
     links: Sequence[ChainLink],
     candidates: Sequence[StationEpisode],
@@ -404,20 +499,31 @@ def _outside_the_line(
     direction: Direction | None,
     topology: LineTopology,
 ) -> Derivation:
-    """A consequence whose reason names no buffer this topology knows.
+    """A consequence whose reason names nothing this topology can follow.
 
     At the head or the tail of the line that is the answer: §3.5's scenarios 1 and 2
     are a dry feeder above S1 and a blocked outfeed below S4, and the reason says which
     (`starved:feeder`, `blocked:outfeed`). In the middle of the line it is not an
     answer, because there is a buffer there and the reason did not name it.
 
-    `starved:carrier-return` at the head is categorised `external_upstream` by the same
-    rule, and that is the one place this reads as thinner than §5.4: an empty carrier
-    pool is a consequence of something *inside* the line. §5.4 categorises by where the
-    chain ends and gives no further rule, and the verbatim reason is on the terminating
-    link for a reader to see, so the derivation is not silently wrong — but a caller
-    that needs the distinction has to make it from the reason, not from the category.
+    **`starved:carrier-return` never reaches that rule**, and must not: an empty carrier
+    pool is not a supplier failure, it is carriers parked somewhere below (§3.1 keeps
+    them circulating, so they do not leave). The walk follows the loop to the tail
+    instead, and only arrives here when the loop could not be built at all — in which
+    case the honest answer is that the shortage is unexplained, never that the feed
+    above S1 is at fault, which is the one place the carriers provably are not.
     """
+    if direction == "starved" and episode.reason_detail == CARRIER_RETURN:
+        return _dead_end(
+            links,
+            candidates,
+            Unexplained(
+                episode.station,
+                CARRIER_RETURN,
+                "the carrier loop needs a single head and tail to join, and this "
+                "topology does not have them",
+            ),
+        )
     at_the_head = (
         direction == "starved" and topology.upstream_buffer_of(episode.station) is None
     )

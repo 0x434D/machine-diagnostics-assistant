@@ -356,3 +356,131 @@ def test_the_lead_in_is_a_parameter() -> None:
 
     assert short.termination is Termination.UNEXPLAINED
     assert short.category is None
+
+
+def _empty_carrier_pool() -> tuple[list[StationEpisode], list[BufferSample]]:
+    """S3 jams and holds its carriers; B3_4 drains, S4 starves, and S1 runs out of
+    free carriers to start a part on. §3.1 circulates the carriers in a closed loop —
+    "without that, a worn carrier passes once and the carrier-wear scenario has no
+    statistical signal to find" — so an empty pool is a statement about the tail of the
+    line, never about a supplier."""
+    episodes = [
+        StationEpisode("S1", "Suspended", _at(14, 0), None, "starved:carrier-return"),
+        StationEpisode("S4", "Suspended", _at(13, 50), None, "starved:B3_4", "B3_4"),
+        StationEpisode("S3", "Held", _at(13, 20), None, "jam"),
+    ]
+    levels = _levels(
+        "B3_4", (_at(13, 30), 2), (_at(13, 40), 1), (_at(13, 50), 0), (_at(13, 58), 0)
+    )
+    return episodes, levels
+
+
+def test_an_empty_carrier_pool_is_explained_by_whoever_holds_the_carriers() -> None:
+    """The walk continues through the carrier loop instead of stopping at S1.
+
+    The loop's upstream is the *tail* of the line, so the chain leaves S1 and arrives at
+    S4, and from there the ordinary buffer walk reaches the station actually holding the
+    carriers. Answering "external_upstream" here would send an operator to inspect a
+    feeder that is full while S3 sits jammed.
+    """
+    episodes, levels = _empty_carrier_pool()
+
+    derivation = derive_chain(
+        station="S1",
+        at=_at(14, 5),
+        episodes=episodes,
+        levels=levels,
+        topology=TOPOLOGY,
+    )
+
+    assert [link.station for link in derivation.links] == ["S1", "S4", "S3"]
+    assert derivation.links[0].buffer == "carrier-return"
+    assert derivation.links[0].buffer_condition_since == _at(14, 0)
+    assert derivation.links[1].buffer == "B3_4"
+    assert derivation.termination is Termination.CAUSE_CANDIDATE
+    assert derivation.category == "internal"
+    assert derivation.root is not None
+    assert derivation.root.station == "S3"
+
+
+def test_a_dry_feeder_and_an_empty_carrier_pool_are_different_facts() -> None:
+    """Both are S1 `Suspended` and `starved`, and §5.4's rule as written — "the chain
+    ends at S1 starved" — categorises them the same. They are not the same: components
+    that did not arrive are outside the line, and carriers that did not come back are
+    inside it. Asserted together so the two branches cannot quietly collapse into one.
+    """
+    dry_feeder = [
+        StationEpisode("S1", "Suspended", _at(14, 0), None, "starved:feeder"),
+    ]
+    from_the_feeder = derive_chain(
+        station="S1",
+        at=_at(14, 5),
+        episodes=dry_feeder,
+        levels=(),
+        topology=TOPOLOGY,
+    )
+
+    episodes, levels = _empty_carrier_pool()
+    from_the_loop = derive_chain(
+        station="S1",
+        at=_at(14, 5),
+        episodes=episodes,
+        levels=levels,
+        topology=TOPOLOGY,
+    )
+
+    assert from_the_feeder.termination is Termination.LINE_EDGE
+    assert from_the_feeder.category == "external_upstream"
+    assert from_the_loop.category != from_the_feeder.category
+    assert from_the_loop.category == "internal"
+
+
+def test_an_unexplained_carrier_shortage_is_not_a_supplier_problem() -> None:
+    """Nothing below S1 accounts for where the carriers went. That is a chain that
+    could not be completed, and saying so is the answer — falling back to
+    `external_upstream` would name the one place the carriers provably are not."""
+    episodes = [
+        StationEpisode("S1", "Suspended", _at(14, 0), None, "starved:carrier-return"),
+        StationEpisode("S4", "Execute", _at(10, 0), None),
+    ]
+
+    derivation = derive_chain(
+        station="S1",
+        at=_at(14, 5),
+        episodes=episodes,
+        levels=(),
+        topology=TOPOLOGY,
+    )
+
+    assert derivation.termination is Termination.UNEXPLAINED
+    assert derivation.category is None
+    assert derivation.unexplained is not None
+    assert derivation.unexplained.station == "S4"
+    assert derivation.unexplained.buffer == "carrier-return"
+
+
+def test_an_empty_carrier_pool_below_a_blocked_outfeed_is_external_downstream() -> None:
+    """The carrier loop leads to the tail, and the tail is `blocked:outfeed` — §3.5's
+    scenario 2, which is where the carriers are: parked on a line that cannot discharge.
+
+    Not `internal`, although the chain entered the loop: the category is derived from
+    where the chain *terminates*, and §3.3 makes a `Suspended` station a consequence
+    rather than a cause however the chain arrived at it. Reporting `internal` here would
+    send an operator into a line whose problem is below it.
+    """
+    episodes = [
+        StationEpisode("S1", "Suspended", _at(14, 0), None, "starved:carrier-return"),
+        StationEpisode("S4", "Suspended", _at(13, 40), None, "blocked:outfeed"),
+    ]
+
+    derivation = derive_chain(
+        station="S1",
+        at=_at(14, 5),
+        episodes=episodes,
+        levels=(),
+        topology=TOPOLOGY,
+    )
+
+    assert [link.station for link in derivation.links] == ["S1", "S4"]
+    assert derivation.termination is Termination.LINE_EDGE
+    assert derivation.category == "external_downstream"
