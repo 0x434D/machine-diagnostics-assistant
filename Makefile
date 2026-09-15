@@ -360,6 +360,13 @@ m2c-demo: preflight
 	@until docker compose -f plant/compose.yml exec -T line-simulator \
 	    python -c "import urllib.request" >/dev/null 2>&1; do sleep 2; done
 	@echo "== 2. what the scenario says it will do, before anything has happened"
+# The gate above says the container execs Python; it does not say the log exists.
+# `server.main` opens the ground-truth log after the status file, the historian and the
+# server context, so a cold start reliably lost this step to a missing file while the
+# re-run seconds later got through. Wait for the artefact the next line points at, which
+# is the rule 84b2dfc set for the M2a demo and step 2 was inserted ahead of.
+	@until docker compose -f plant/compose.yml exec -T line-simulator \
+	    test -s /gt/ground-truth.jsonl >/dev/null 2>&1; do sleep 2; done
 	@docker compose -f plant/compose.yml exec -T line-simulator \
 	    grep -v '"record": "part"' /gt/ground-truth.jsonl
 	@echo "   ^ the run header and every injection, with the consequences §3.5's row claims."
@@ -381,29 +388,67 @@ m2c-demo: preflight
 	    -c "SELECT s.code, a.code, a.text, a.severity, a.raised_at, a.acked_at, a.cleared_at \
 	        FROM alarms a JOIN stations s ON s.id = a.station_id \
 	        ORDER BY a.raised_at LIMIT 10"
-	@echo "-- state_changes: every station that suspended, on which buffer, in what order"
+	@echo "-- state_changes: what the line did around that alarm, oldest first"
+# No `reason IS NOT NULL` and no `DESC`, and both are the fix rather than an oversight.
+# `Aborted` carries no reason by design (line.py says why: the alarm names the cause), so
+# filtering on one excluded row 3's actual consequence outright; and the newest twelve rows
+# are the ordinary buffer suspends of the live phase, while the scenario's consequences sit
+# in history. Anchored on the first alarm, which is where they are. A run that raises none
+# -- scenarios 1, 2 and 4-8 -- falls back to the first suspension of the run.
 	@docker compose -f diagnostics/compose.yml exec -T postgres psql -U postgres -d diagnostics \
-	    -c "SELECT s.code, c.source_ts, c.to_state, c.reason, b.code AS buffer \
+	    -c "SELECT s.code, c.source_ts, c.from_state, c.to_state, c.reason, b.code AS buffer \
 	        FROM state_changes_settled c JOIN stations s ON s.id = c.station_id \
 	        LEFT JOIN buffers b ON b.id = c.reason_buffer_id \
-	        WHERE c.reason IS NOT NULL ORDER BY c.source_ts DESC LIMIT 12"
+	        WHERE c.source_ts >= COALESCE( \
+	            (SELECT min(raised_at) FROM alarms), \
+	            (SELECT min(source_ts) FROM state_changes_settled WHERE reason IS NOT NULL) \
+	          ) - interval '60 seconds' \
+	        ORDER BY c.source_ts LIMIT 12"
 	@echo "-- inspection_results: §3.4's six scores, per class, above the threshold"
-	@curl -s "localhost:$${ANALYSIS_PORT:-8000}/inspection/stats" ; echo
+# /inspection/stats requires `from` and `to` (§5.3's window is not optional), and the call
+# here carried neither: it printed a 422 naming both as missing, under a heading promising
+# six scores, and `curl -s` without `-f` exited 0 so the demo went on. The window comes out
+# of the table rather than off a date typed here, because it is whatever this boot ingested;
+# `to` is exclusive, hence the second past the last row.
+	@bounds=$$(docker compose -f diagnostics/compose.yml exec -T postgres \
+	    psql -U postgres -d diagnostics -t -A \
+	    -c "SELECT to_char(min(source_ts) AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.USZ'), \
+	        to_char((max(source_ts) + interval '1 second') AT TIME ZONE 'UTC', \
+	                'YYYY-MM-DD\"T\"HH24:MI:SS.USZ') \
+	        FROM inspection_results" | tr -d '\r'); \
+	 from=$${bounds%%|*}; to=$${bounds##*|}; \
+	 [ -n "$$from" ] && [ "$$from" != "$$to" ] \
+	   || { echo "   inspection_results is empty: nothing has been ingested yet"; exit 1; }; \
+	 echo "   window $$from .. $$to"; \
+	 body=$$(curl -sf --get --data-urlencode "from=$$from" --data-urlencode "to=$$to" \
+	   "localhost:$${ANALYSIS_PORT:-8000}/inspection/stats") \
+	   || { echo "   /inspection/stats did not answer over that window"; exit 1; }; \
+	 printf '%s' "$$body" | python3 -m json.tool
 	@echo "   ^ read these as evidence and not as an answer. §3.3 is explicit that the first"
 	@echo "     station to raise an alarm is NOT the root cause -- the simulator produced both"
 	@echo "     from one injected fault -- and 004_m2c.sql says so above the table itself."
 	@echo "     Scenarios 1 and 2 raise no alarm anywhere, which is the same warning from the"
 	@echo "     other side."
 	@echo "== 6. the boundary the evaluation rests on"
+# The one check in this demo that is about the invariant the whole evaluation rests on, so
+# it must not be able to pass for the wrong reason. `exec ... ls /gt` fails identically
+# whether /gt is absent or the container is -- and with the diagnostics stack down it was
+# printing "not mounted", which is the reassuring answer to a question nobody asked.
+# So: prove there is a gateway to inspect first, and fail loudly when there is not.
+	@docker compose -f diagnostics/compose.yml exec -T edge-gateway ls / >/dev/null 2>&1 \
+	  || { echo "   NO GATEWAY TO INSPECT -- this check proves nothing about the boundary."; \
+	       echo "   Bring the diagnostics stack up and run it again."; exit 1; }
 	@if docker compose -f diagnostics/compose.yml exec -T edge-gateway \
 	      ls /gt >/dev/null 2>&1; then \
 	    echo "   REACHABLE from the gateway -- every evaluation number here is worthless"; \
 	    exit 1; \
 	 else \
-	    echo "   /gt is not mounted in the gateway, and no diagnostics container mounts it"; \
+	    echo "   /gt is not mounted in the gateway, which is the container that could"; \
+	    echo "   reach the plant at all"; \
 	 fi
 	@echo "   ^ ground truth lives on plant-ground-truth, which exactly one container mounts."
-	@echo "     test_compose_invariants.py is what keeps it that way in the gate."
+	@echo "     This step inspected the gateway; that no OTHER diagnostics container mounts"
+	@echo "     it is test_compose_invariants.py's claim, in the gate, over both files."
 	@echo "== 7. the same run again, from the same seed"
 	@docker compose -f plant/compose.yml exec -T line-simulator \
 	    head -1 /gt/ground-truth.jsonl
