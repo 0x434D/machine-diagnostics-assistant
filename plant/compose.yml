@@ -105,6 +105,11 @@ services:
       # moved the server and left the screen proxying to where it used to be.
       # test_hmi.py pins both restatements against that default.
       PLANT_HMI_SERVER_PORT: "${PLANT_HMI_SERVER_PORT:-8200}"
+      # Which of §3.5's eight rows this boot runs, 0 for none. Interpolated from the host
+      # rather than left to `.env`, because the whole of `make m2c-demo` is running one
+      # scenario and then another without editing a file -- and a scenario is not a
+      # deployment setting, it is what this particular run is for.
+      PLANT_SCENARIO: "${PLANT_SCENARIO:-0}"
     volumes:
       - ../pki:/pki:ro
       - plant-history:/data

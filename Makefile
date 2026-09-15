@@ -1,6 +1,6 @@
 SHELL := /bin/bash
 .PHONY: preflight lock-check fmt lint test check verify ci ci-scheduled contract m1-report \
-        m2a-r5 m2a-demo m2a-propagation backfill-counts authenticity \
+        m2a-r5 m2a-demo m2a-propagation backfill-counts authenticity m2c-demo \
         m1-demo browse ask verify-no-gaps \
         lint-python test-python check-python \
         lint-dotnet test-dotnet check-dotnet audit-dotnet \
@@ -343,6 +343,77 @@ m2a-propagation:
 # button added here would inject faults nothing records, which is the one thing §13 forbids.
 # Step 6 runs the proof instead, and the proof is the stronger artifact anyway: it asserts the
 # delay rather than inviting you to watch for it.
+# M2c, end to end: one of §3.5's eight scenarios runs, and its consequences are read out of
+# §5.2's tables. The ground-truth log is shown from inside the plant, where it lives -- and
+# step 6 is the demonstration that nothing on the other side of the boundary can reach it.
+#
+# PLANT_SCENARIO picks the row (1-8); 3 is the default because it is the one that ends in an
+# alarm and a shutdown, so every §5.2 table M2c touches has something in it inside one run.
+#
+# Every published port is read from the environment with the compose file's own default, for
+# the reason the M1 demo now is: it could not run on the machine it was written on, because
+# 8080 was already taken. On a host like that, `GATEWAY_PORT=18080 ANALYSIS_PORT=18000 make
+# m2c-demo` is the whole change.
+m2c-demo: preflight
+	@echo "== 1. plant: scenario $${PLANT_SCENARIO:-3} of §3.5's eight, from the first part"
+	PLANT_SCENARIO=$${PLANT_SCENARIO:-3} docker compose -f plant/compose.yml up -d --build
+	@until docker compose -f plant/compose.yml exec -T line-simulator \
+	    python -c "import urllib.request" >/dev/null 2>&1; do sleep 2; done
+	@echo "== 2. what the scenario says it will do, before anything has happened"
+	@docker compose -f plant/compose.yml exec -T line-simulator \
+	    grep -v '"record": "part"' /gt/ground-truth.jsonl
+	@echo "   ^ the run header and every injection, with the consequences §3.5's row claims."
+	@echo "     Consequences, never a cause: what an analysis should conclude is M3's, and"
+	@echo "     writing it here would be the answer key written by the reasoning M7 grades."
+	@echo "== 3. the screen the line is built with, now with a fault panel on it (§3.7)"
+	@until curl -sf -o /dev/null "localhost:$${PLANT_HMI_PORT:-5174}/"; do sleep 2; done
+	@echo "   http://localhost:$${PLANT_HMI_PORT:-5174} -- alarms list, and a panel that"
+	@echo "   injects. Every injection you make there is written to the ground-truth log too,"
+	@echo "   with source=operator and no consequences: nobody wrote down what should follow"
+	@echo "   from a fault chosen at a keyboard."
+	@echo "== 4. diagnostics: topology, subscriptions, backfill, live"
+	docker compose -f diagnostics/compose.yml up -d --build
+	@until curl -sf localhost:$${GATEWAY_PORT:-8080}/status | grep -q '"state":"live"'; do \
+	    curl -s localhost:$${GATEWAY_PORT:-8080}/status; echo; sleep 5; done
+	@echo "== 5. the consequences, out of §5.2's tables and nowhere else"
+	@echo "-- alarms: what S2 raised, when, and when it was cleared"
+	@docker compose -f diagnostics/compose.yml exec -T postgres psql -U postgres -d diagnostics \
+	    -c "SELECT s.code, a.code, a.text, a.severity, a.raised_at, a.acked_at, a.cleared_at \
+	        FROM alarms a JOIN stations s ON s.id = a.station_id \
+	        ORDER BY a.raised_at LIMIT 10"
+	@echo "-- state_changes: every station that suspended, on which buffer, in what order"
+	@docker compose -f diagnostics/compose.yml exec -T postgres psql -U postgres -d diagnostics \
+	    -c "SELECT s.code, c.source_ts, c.to_state, c.reason, b.code AS buffer \
+	        FROM state_changes_settled c JOIN stations s ON s.id = c.station_id \
+	        LEFT JOIN buffers b ON b.id = c.reason_buffer_id \
+	        WHERE c.reason IS NOT NULL ORDER BY c.source_ts DESC LIMIT 12"
+	@echo "-- inspection_results: §3.4's six scores, per class, above the threshold"
+	@curl -s "localhost:$${ANALYSIS_PORT:-8000}/inspection/stats" ; echo
+	@echo "   ^ read these as evidence and not as an answer. §3.3 is explicit that the first"
+	@echo "     station to raise an alarm is NOT the root cause -- the simulator produced both"
+	@echo "     from one injected fault -- and 004_m2c.sql says so above the table itself."
+	@echo "     Scenarios 1 and 2 raise no alarm anywhere, which is the same warning from the"
+	@echo "     other side."
+	@echo "== 6. the boundary the evaluation rests on"
+	@if docker compose -f diagnostics/compose.yml exec -T edge-gateway \
+	      ls /gt >/dev/null 2>&1; then \
+	    echo "   REACHABLE from the gateway -- every evaluation number here is worthless"; \
+	    exit 1; \
+	 else \
+	    echo "   /gt is not mounted in the gateway, and no diagnostics container mounts it"; \
+	 fi
+	@echo "   ^ ground truth lives on plant-ground-truth, which exactly one container mounts."
+	@echo "     test_compose_invariants.py is what keeps it that way in the gate."
+	@echo "== 7. the same run again, from the same seed"
+	@docker compose -f plant/compose.yml exec -T line-simulator \
+	    head -1 /gt/ground-truth.jsonl
+	@echo "   ^ run_id is crc32(seed : scenario : history start : depth), derived and not"
+	@echo "     drawn, so two runs of one scenario are the same run and can be compared byte"
+	@echo "     for byte. test_a_run_is_reproducible_byte_for_byte_from_its_seed is the proof."
+	@echo "== 8. what is NOT here"
+	@echo "   Nothing above diagnosed anything. Whether the analysis reaches the right cause"
+	@echo "   is M3, and scoring it against this log is M7."
+
 m2a-demo: preflight
 	@echo "== 1. plant: four stations, three buffers, 25 historised streams, 33 h of history"
 	docker compose -f plant/compose.yml up -d --build
