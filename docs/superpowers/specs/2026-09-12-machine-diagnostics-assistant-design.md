@@ -383,7 +383,7 @@ which is the premise row 7 rests on.
 | 2 | outfeed blocked after S4 | external downstream; blockage propagates back to S1 |
 | 3 | joining force at S2 drifts down → `gap` rises → alarm → S2 aborts | internal, root S2 |
 | 4 | carrier 7 wears → `misalignment` + `scratch` concentrate on it | hypothesis: inspect/remove carrier 7, no stop |
-| 5 | feeder lane 2 contaminated → `missing_part` + `contamination` on lane 2 | hypothesis: clean lane 2 |
+| 5 | feeder lane 2 contaminated → `missing_part` + `contamination` rise together | hypothesis: the incoming components on one feeder — **naming the lane needs evidence the plant does not yet carry**, see below |
 | 6 | optics fouling → confidence decays across all classes, scrap rate flat | hypothesis: clean the optics |
 | 7 | lane 1 receives lot `L-4471` with undersized components → `gap` rises | hypothesis: bad component lot, **plus a containment list** |
 | 8 | one single defective component reaches the line | one bad part, explicitly *not* a lot problem |
@@ -398,6 +398,21 @@ drifting at S2" — but the joining force is perfectly stable. The only thing se
 them is that the defects correlate with the *lot*, not with the force trend, and that
 correlation is invisible without genealogy. So it tests whether the system can resist
 the obvious wrong answer when the data supports a better one.
+
+**Scenario 5 is only half winnable today, and M2c measured why.** Every assembly draws one
+component from *each* lane, so a contaminated lane touches every part and there is no contrast
+group: "these parts saw lane 2 and those did not" is a distinction the line cannot make. What
+*is* assertable is the shape — two classes rising together while the other four stay flat,
+which points at incoming components rather than at the press.
+
+Naming the lane needs the inspection event to say which **component** a defect came from, and
+that is a contract change. Until it exists, the expected diagnosis is the feeder generally,
+not lane 2 specifically — and the ground-truth log records the lane it drew against, so
+whoever adds that evidence has something to score against.
+
+The lot half is different and is fixed: the two lanes' lot boundaries are staggered, so a lot
+window belongs to one lane. That is what keeps scenario 7's *"the defects correlate with the
+lot"* answerable, which is the claim row 7 exists to test.
 
 **Scenario 8 is its mirror**, and it exists to stop the system over-generalising: a
 single defective component must be reported as a single bad part, not as a lot problem.
