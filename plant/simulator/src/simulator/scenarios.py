@@ -37,6 +37,7 @@ from simulator.inspection_client import DEFECT_CLASSES, GAP
 # log knows which of the two it is being pointed at without a convention to remember.
 STATE_CHANGES: Final = "state_changes"
 INSPECTION_RESULTS: Final = "inspection_results"
+ALARMS: Final = "alarms"
 JOINING_FORCE_PEAK: Final = "S2_Joining.JoiningForcePeak"
 
 # What must be true there. Names rather than predicates, because a predicate cannot be
@@ -69,6 +70,18 @@ STREAM_FALLS: Final = "stream_falls"
 ONE_PART_ONLY: Final = "one_part_only"
 """Exactly one part carries the named classes because of this fault. Scenario 8, and it
 exists to stop one bad component being reported as a bad lot."""
+ALARM_RAISED: Final = "alarm_raised"
+"""The named station raises an alarm inside `within_seconds` of the injection.
+
+**It is a claim about the plant and never a claim about the diagnosis.** §3.3 rules out
+"the first station that raised its own alarm" as a root cause because the simulator is
+what produces it -- so this asserts that §3.5 row 3's *alarm* half happened, and says
+nothing about what an analysis should make of it. Scenarios 1 and 2 have no such
+consequence, and that absence is the same warning in the other direction: their cause is
+outside the line and no alarm is raised anywhere."""
+STATION_ABORTS: Final = "station_aborts"
+"""The named station reaches `Aborted` inside `within_seconds` of the injection. §3.3's
+fault shutdown, and row 3's last word."""
 
 
 EXPECTATIONS: Final = frozenset(
@@ -82,9 +95,13 @@ EXPECTATIONS: Final = frozenset(
         STREAM_STABLE,
         STREAM_FALLS,
         ONE_PART_ONLY,
+        ALARM_RAISED,
+        STATION_ABORTS,
     }
 )
-OBSERVABLES: Final = frozenset({STATE_CHANGES, INSPECTION_RESULTS, JOINING_FORCE_PEAK})
+OBSERVABLES: Final = frozenset(
+    {STATE_CHANGES, INSPECTION_RESULTS, ALARMS, JOINING_FORCE_PEAK}
+)
 SCOPES: Final = frozenset({"carrier"})
 """The three closed sets, enforced in `Consequence.__post_init__`.
 
@@ -221,6 +238,37 @@ def _propagation_seconds(settings: Settings) -> float:
     return 2.0 * (stations - 1) * settings.buffer_capacity * settings.takt_seconds
 
 
+def _force_alarm_seconds(settings: Settings) -> float:
+    """How long after scenario 3's injection S2's press must be out of tolerance.
+
+    The drift ramps linearly to `joining_force_drift_newtons` over its ramp, so it
+    crosses the band's edge at `ramp x tolerance / drift` -- 2743 s at the shipped
+    values. Doubled as a **margin**, not as a second measurement: the raise needs
+    `alarm_consecutive_parts` parts on the far side of the edge, and how soon three of
+    them land depends on where the part-to-part spread the drift is still inside puts
+    them. Measured at the shipped settings, the alarm is raised 2902 s after the
+    injection against the 5486 s this returns, which is the size of the margin rather
+    than a prediction of it.
+
+    Derived rather than chosen for the reason `_propagation_seconds` is: a literal here
+    would go on claiming the same window after the tolerance or the drift had moved.
+
+    Raises ValueError for a configuration in which the drift never leaves the band --
+    §3.5's row 3 is "drifts down, alarm, S2 aborts", and a tolerance wider than the drift
+    is a plant where that row cannot happen and a ground-truth log that claims it will.
+    """
+    drift = abs(settings.joining_force_drift_newtons)
+    tolerance = settings.joining_force_tolerance_newtons
+    if tolerance >= drift:
+        raise ValueError(
+            f"scenario 3 drifts the clamp by {drift} N and S2's alarm band is "
+            f"+/-{tolerance} N wide, so the press never reads out of tolerance: §3.5 "
+            "row 3 ends in an alarm and an abort, and this configuration produces "
+            "neither. Lower joining_force_tolerance_sigmas or raise the drift"
+        )
+    return 2.0 * settings.joining_force_drift_ramp_seconds * tolerance / drift
+
+
 def _lot_window(settings: Settings, index: int) -> tuple[timedelta, timedelta]:
     """When lane production is drawing from its `index`-th lot, as offsets.
 
@@ -324,13 +372,35 @@ def _joining_force_drift(settings: Settings) -> Scenario:
                 (
                     Consequence(JOINING_FORCE_PEAK, STREAM_FALLS),
                     Consequence(INSPECTION_RESULTS, CLASS_RATE_RISES, (GAP,)),
+                    # §3.5's row 3 in full: *drifts down -> gap rises -> alarm -> S2
+                    # aborts*. The first two are above and the last two are these. Two
+                    # consequences rather than one "alarm then abort", because each names
+                    # the §5.2 table it is read back from -- which is what `observable`
+                    # is for -- and the order between them is the plant's own: an alarm
+                    # is what the abort is raised from, never the other way round.
+                    Consequence(
+                        ALARMS,
+                        ALARM_RAISED,
+                        ("S2_Joining",),
+                        within_seconds=_force_alarm_seconds(settings),
+                    ),
+                    Consequence(
+                        STATE_CHANGES,
+                        STATION_ABORTS,
+                        ("S2_Joining",),
+                        within_seconds=_force_alarm_seconds(settings),
+                    ),
                 ),
             ),
         ),
         note=(
             "Not repaired: a relief valve that has drifted stays drifted until someone "
-            "turns it back, and §3.5's row 3 ends in S2 aborting rather than in the "
-            "fault clearing itself."
+            "turns it back. So the abort is not the end of the run -- §3.5's noise floor "
+            "has an operator acknowledge the alarm and restart the station, the press is "
+            "still out of tolerance, and S2 aborts again a few parts later. The line "
+            "produces in bursts from there, which is what a drifted relief valve does to "
+            "a shift and is why the force and the gap rate are still readable after the "
+            "first shutdown."
         ),
     )
 
@@ -551,6 +621,8 @@ def scenario(number: int, settings: Settings) -> Scenario:
 
 
 __all__ = [
+    "ALARMS",
+    "ALARM_RAISED",
     "BLOCKED_IN_ORDER",
     "CLASS_CONCENTRATES",
     "CLASS_RATE_RISES",
@@ -560,6 +632,7 @@ __all__ = [
     "ONE_PART_ONLY",
     "SCRAP_RATE_FLAT",
     "STATE_CHANGES",
+    "STATION_ABORTS",
     "STREAM_FALLS",
     "STREAM_STABLE",
     "SUSPENDED_IN_ORDER",

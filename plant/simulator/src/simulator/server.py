@@ -22,10 +22,12 @@ from asyncua.crypto.validator import CertificateValidator, CertificateValidatorO
 from simulator import ground_truth, hmi, scenarios, status
 from simulator.address_space import (
     BUFFERS,
+    STATION_SIGNALS,
     AddressSpace,
     build_address_space,
     publish_clock,
 )
+from simulator.alarms import AlarmSystem
 from simulator.buffers import Buffer
 from simulator.carriers import CarrierPool
 from simulator.clock import SimulatedClock
@@ -152,6 +154,7 @@ def build_line(
     settings: Settings,
     produce: ProduceFn,
     schedule: LotSchedule,
+    alarms: AlarmSystem,
     faults: FaultSet = NO_FAULTS,
 ) -> Line:
     """§3.1's line: four stations in line order, the three buffers between them, and
@@ -172,6 +175,11 @@ def build_line(
     Every station is seeded from the same `settings.seed`; `Station.__init__` folds the
     station code in, so the four draw independently and reproducibly (§3.6).
 
+    `alarms` is §4.2's alarm system, handed to S2 -- the one station with a condition --
+    and to the Line, which is what applies the shutdown and the operator's restart. One
+    object for both, because an alarm S2 raised and a shutdown the Line performed have to
+    be the same alarm.
+
     `faults` is the scenario this run carries (§3.5), handed to all four because a fault
     modifies the number where it is computed and three of the four compute one. It
     defaults to the empty set, which is what makes a line built without a scenario
@@ -186,7 +194,11 @@ def build_line(
             faults=faults,
         ),
         JoiningStation(
-            writer.station("S2_Joining"), settings, settings.seed, faults=faults
+            writer.station("S2_Joining"),
+            settings,
+            settings.seed,
+            alarms,
+            faults=faults,
         ),
         InspectionStation(
             writer.station("S3_Inspection"),
@@ -208,6 +220,7 @@ def build_line(
         buffers,
         CarrierPool(settings.carrier_count),
         timedelta(seconds=settings.state_transition_seconds),
+        alarms,
     )
 
 
@@ -297,6 +310,17 @@ async def main() -> None:
             # image, and wrapping here keeps the four stations free of a dependency on a
             # screen -- which is also what lets them stay testable without one.
             recent = hmi.RecentParts(settings.hmi_recent_parts)
+            # §4.2's alarms, built on the same ledger station handles the line writes
+            # through, so an alarm event is counted and reconciled like every other event
+            # rather than being an un-ledgered row the historian holds and nothing
+            # expects. Every station gets a handle, because §4.1's tree declares the
+            # alarm type on all four (`events.ALARM`) and a station that could raise one
+            # it cannot publish is the failure `AlarmSystem._publish` raises on.
+            alarms = AlarmSystem(
+                settings,
+                settings.seed,
+                {code: writer.station(code) for code in STATION_SIGNALS},
+            )
             line = build_line(
                 writer,
                 settings,
@@ -309,6 +333,7 @@ async def main() -> None:
                     )
                 ),
                 LotSchedule(settings, clock.history_start),
+                alarms,
                 faults,
             )
             _log(

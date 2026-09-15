@@ -18,16 +18,38 @@ from __future__ import annotations
 from datetime import datetime
 from typing import override
 
+from simulator.alarms import AlarmSystem
 from simulator.carriers import Carrier
+from simulator.config import Settings
 from simulator.curve import force_distance, peak_of, work_of
 from simulator.events import PART_PROCESSED
-from simulator.faults import JOINING_CLAMP_FORCE, PRESS_CONTACT
+from simulator.faults import JOINING_CLAMP_FORCE, NO_FAULTS, PRESS_CONTACT, FaultSet
 from simulator.identity import LANES
 from simulator.line import PartState
-from simulator.stations.base import Station, require_assembly
+from simulator.stations.base import Station, StationNodes, require_assembly
 
 
 class JoiningStation(Station):
+    def __init__(
+        self,
+        nodes: StationNodes,
+        settings: Settings,
+        seed: int,
+        alarms: AlarmSystem,
+        *,
+        faults: FaultSet = NO_FAULTS,
+    ) -> None:
+        """`alarms` is §4.2's alarm system, and it has no default.
+
+        The press is the one station with an alarm condition today, and a default would
+        make a JoiningStation built without one a press that cannot report itself out of
+        tolerance -- which is §3.5 row 3's whole first half, absent with nothing raised.
+        The station hands it a measurement and nothing else; what an alarm then does to
+        the line is `AlarmSystem`'s and `Line`'s.
+        """
+        super().__init__(nodes, settings, seed, faults=faults)
+        self._alarms = alarms
+
     @override
     async def on_part(self, at: datetime, carrier: Carrier, part: PartState) -> None:
         assembly = require_assembly(part, carrier, self.code)
@@ -97,6 +119,13 @@ class JoiningStation(Station):
 
         await self._nodes.write("JoiningForcePeak", at, peak)
         await self._nodes.write("JoiningDistance", at, distance)
+        # §4.2's alarm, read off the number that was just published rather than off the
+        # clamp that was drawn or off the FaultSet that may have moved it. That is what
+        # keeps the alarm a measurement: §3.3 warns that "the first station to raise an
+        # alarm" is a circular root cause, and an alarm raised from the injection would
+        # make it circular in the plant as well as in the query. Recording only -- the
+        # shutdown is applied after the cycle, from `Line.step`.
+        self._alarms.observe_joining_force(self.code, at, peak)
         await self._nodes.trigger_event(
             PART_PROCESSED,
             at,

@@ -58,6 +58,30 @@ export interface PartView {
   image_url: string | null;
 }
 
+/** One active alarm on §3.7's screen — §5.2's `alarms` row as the plant knows it.
+ *
+ * `sequence` is the plant's own number for the alarm, not the diagnostics stack's
+ * `alarms.id`: the simulator never sees that one, and the acknowledge button has to
+ * address the alarm the simulator is holding.
+ */
+export interface AlarmView {
+  sequence: number;
+  /** §4.1's browse name, `S2_Joining` — the same field name and the same reason as
+   * `StationView.browse_name`. */
+  station_browse_name: string;
+  /** `A-207`. What M4's `knowledge/alarms/` documents one file per. */
+  code: string;
+  text: string;
+  /** OPC UA's 1–1000 band. Shown as a number rather than as a colour of its own: this
+   * screen already spends its colour on §15's five categories. */
+  severity: number;
+  /** Simulated time, like every other instant here (§4.2). */
+  raised_at: string;
+  acknowledged: boolean;
+  /** `null` until an operator has been. A fact, not a missing value. */
+  acked_at: string | null;
+}
+
 /** The two verdicts `inspection.classifier` returns. The CSS class is derived from this
  * string, exactly as it is for `Category`. */
 export type Disposition = "good" | "reject";
@@ -73,4 +97,7 @@ export interface LineSnapshot {
   stations: StationView[];
   buffers: BufferView[];
   parts: PartView[];
+  /** Active alarms only — raised and not yet cleared. A cleared alarm is history, and
+   * history is what the diagnostics stack is asked about. */
+  alarms: AlarmView[];
 }

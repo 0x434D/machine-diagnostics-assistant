@@ -12,7 +12,8 @@ namespace Gateway.Opc;
 public sealed record EventTypeSpec(string TypeName, IReadOnlyList<string> Fields);
 
 /// <summary>
-/// §4.1's five event types, written out here and deliberately not derived from the plant.
+/// §4.1's five event types and §4.2's alarm, written out here and deliberately not derived
+/// from the plant.
 ///
 /// <para><b>The names are the wire format; the order is this file's own.</b> A notification
 /// does arrive as a positional <c>EventFieldList</c> matching the SelectClauses that were
@@ -97,10 +98,35 @@ public static class PlantEvents
         "PartCompletedEventType",
         ["AssemblySerial", "Disposition", "Reason"]);
 
-    /// <summary>All five, in line order.</summary>
+    /// <summary>
+    /// §4.2's alarm — a simple custom event type, not OPC UA Alarms &amp; Conditions.
+    ///
+    /// <para><b>Every station declares it</b>, so it rides beside each station's own type
+    /// through the same monitored item and the same HistoryRead. That is why every field is
+    /// prefixed: two event types on one stream may not share a field name (see
+    /// <see cref="EventStreamSpec"/>), and BaseEventType already carries <c>Severity</c>,
+    /// <c>Message</c> and <c>Time</c>.</para>
+    ///
+    /// <para><b>One event per lifecycle transition</b>, carrying the state the alarm is in
+    /// after it: active and unacknowledged is the raise, active and acknowledged is the
+    /// acknowledgement, and inactive is the clear. <c>AlarmRaisedAt</c> is the alarm's
+    /// identity and rides all three, because §5.2's <c>alarms</c> row is keyed on it and
+    /// the three can arrive in any order — a raise that fell before this gateway's history
+    /// horizon, or a window halved and re-read. It is not a second copy of <c>Time</c>,
+    /// which is the instant of <i>this</i> transition.</para>
+    /// </summary>
+    public static readonly EventTypeSpec Alarm = new(
+        "AlarmEventType",
+        [
+            "AlarmCode", "AlarmText", "AlarmSeverity", "AlarmRaisedAt", "AlarmActive",
+            "AlarmAcknowledged",
+        ]);
+
+    /// <summary>All six, in line order with the line-wide alarm last.</summary>
     public static readonly IReadOnlyList<EventTypeSpec> All =
     [
         ComponentRead, AssemblyCreated, PartProcessed, InspectionResult, PartCompleted,
+        Alarm,
     ];
 
     /// <summary>
@@ -330,6 +356,15 @@ public sealed class EventStreamSpec
         string text => text.Length == 0 ? null : text,
         string[] texts => texts,
         double[] numbers => numbers,
+
+        // §4.2's alarm carries two of these, and both would otherwise fall through to
+        // Convert.ToDouble: a bool becomes 1 or 0, which the writer would then have to read
+        // back as a number and compare against — losing the distinction between "the plant
+        // said false" and "the plant said 0.0" — and a DateTime throws InvalidCastException
+        // from inside a decode that names no field. AlarmRaisedAt is an instant and stays
+        // one, so §5.2's key is a TIMESTAMPTZ on both sides of the wire.
+        bool flag => flag,
+        DateTime instant => instant,
 
         // Everything else §4.1 declares is a number: Double, UInt32. An unforeseen type
         // fails here rather than being flattened to a string the writer would then store as

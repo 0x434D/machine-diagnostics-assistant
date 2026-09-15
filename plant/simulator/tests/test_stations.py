@@ -18,6 +18,7 @@ from simulator.address_space import (
     STATION_LIVE_SIGNALS,
     STATION_SIGNALS,
 )
+from simulator.alarms import AlarmSystem
 from simulator.carriers import Carrier
 from simulator.config import Settings
 from simulator.curve import peak_of, work_of
@@ -85,6 +86,20 @@ def build_one(
     if factory is FeedingStation:
         return (
             FeedingStation(nodes, settings, seed=1, schedule=LotSchedule(settings, T0)),
+            nodes,
+        )
+    if factory is JoiningStation:
+        # Its own alarm system, reachable nowhere: these tests drive one station and
+        # assert what it *records*, and what an alarm then does to a line is
+        # `test_alarms`'. The press still has to have one, because a press that could
+        # not report itself out of tolerance is not the press the plant runs.
+        return (
+            JoiningStation(
+                nodes,
+                settings,
+                seed=1,
+                alarms=AlarmSystem(settings, 1, {nodes.code: nodes}),
+            ),
             nodes,
         )
     if factory is InspectionStation:
@@ -695,9 +710,12 @@ async def test_a_part_carries_its_serial_from_s1_to_s4() -> None:
     for _ in range(200):
         await line.step()
 
+    # One station each: the four below are §4.1's per-station types, and the alarm --
+    # which every station declares -- carries no serial and is not one of them.
     serials = {
-        event.station: [
-            fields["AssemblySerial"] for fields in nodes[event.station].payloads(event)
+        event.stations[0]: [
+            fields["AssemblySerial"]
+            for fields in nodes[event.stations[0]].payloads(event)
         ]
         for event in (
             ASSEMBLY_CREATED,

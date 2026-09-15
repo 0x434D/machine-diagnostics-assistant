@@ -5,6 +5,7 @@ from datetime import UTC, datetime, timedelta
 
 from asyncua import Server
 from simulator.address_space import BUFFERS, STATION_SIGNALS
+from simulator.alarms import AlarmSystem
 from simulator.buffers import Buffer
 from simulator.carriers import Carrier, CarrierPool
 from simulator.clock import SimulatedClock
@@ -95,18 +96,30 @@ class FakeStation:
 
 def fake_line(carriers: int = 12, capacity: int = 5) -> tuple[Line, list[FakeStation]]:
     """Four fake stations and three buffers, neither started nor seeded. The buffer
-    names match the station codes, which `Line` refuses to run without."""
+    names match the station codes, which `Line` refuses to run without.
+
+    The alarm system it carries is real and gets real node doubles, though nothing here
+    measures anything for it to raise on: a fake line built with an alarm system that
+    could not publish would be a line on which an alarm raised by accident would go
+    missing instead of failing.
+    """
     stations = [FakeStation(code) for code in ("S1", "S2", "S3", "S4")]
     buffers = [
         Buffer("B1_2", capacity, "S1", "S2"),
         Buffer("B2_3", capacity, "S2", "S3"),
         Buffer("B3_4", capacity, "S3", "S4"),
     ]
+    settings = Settings()
     line = Line(
         stations=stations,
         buffers=buffers,
         carriers=CarrierPool(carriers),
         transition_interval=TRANSITION,
+        alarms=AlarmSystem(
+            settings,
+            settings.seed,
+            {station.code: RecordingNodes(station.code) for station in stations},
+        ),
     )
     return line, stations
 
@@ -158,7 +171,7 @@ class RecordingNodes:
     async def trigger_event(
         self, event: EventType, at: datetime, fields: dict[str, object]
     ) -> None:
-        if event.station != self.code:
+        if self.code not in event.stations:
             raise ValueError(f"{self.code} does not emit {event.name}")
         if set(fields) != set(event.field_names):
             raise ValueError(
@@ -234,6 +247,11 @@ async def build_running_line(
     settings = settings or Settings()
     clock = clock or new_clock(settings)
     nodes = {code: RecordingNodes(code) for code in STATION_CODES}
+    # The real alarm system on the real node sets, because a test line whose press could
+    # not report itself out of tolerance would be a different line from the one the plant
+    # runs -- and §3.5 row 3's abort is exactly the behaviour a scenario test has to see.
+    # Reachable afterwards as `line.alarms`.
+    alarms = AlarmSystem(settings, settings.seed, nodes)
     stations: list[Station] = [
         FeedingStation(
             nodes["S1_Feeding"],
@@ -242,7 +260,9 @@ async def build_running_line(
             LotSchedule(settings, clock.history_start),
             faults=faults,
         ),
-        JoiningStation(nodes["S2_Joining"], settings, settings.seed, faults=faults),
+        JoiningStation(
+            nodes["S2_Joining"], settings, settings.seed, alarms, faults=faults
+        ),
         InspectionStation(
             nodes["S3_Inspection"], settings, settings.seed, produce, faults=faults
         ),
@@ -258,6 +278,7 @@ async def build_running_line(
         buffers,
         CarrierPool(settings.carrier_count),
         transition,
+        alarms,
     )
     await line.bring_up(clock.history_start - BRING_UP_TRANSITIONS * transition)
     line.seed(clock.history_start)

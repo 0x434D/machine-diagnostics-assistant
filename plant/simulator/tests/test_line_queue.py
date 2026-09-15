@@ -12,8 +12,10 @@ from datetime import datetime, timedelta
 
 import pytest
 from conftest import T0, TRANSITION, FakeStation, build_fake_line, fake_line
+from simulator.alarms import AlarmSystem
 from simulator.buffers import Buffer
 from simulator.carriers import CarrierPool
+from simulator.config import Settings
 from simulator.line import BRING_UP_TRANSITIONS, CycleQueue, Line
 from simulator.packml import State
 
@@ -144,12 +146,14 @@ def test_a_buffer_placed_between_stations_it_does_not_name_is_refused() -> None:
         Buffer("B2_3", 5, "S3", "S4"),  # transposed with B3_4
         Buffer("B3_4", 5, "S2", "S3"),
     ]
+    settings = Settings()
     with pytest.raises(ValueError, match="B2_3 names"):
         Line(
             stations=stations,
             buffers=buffers,
             carriers=CarrierPool(12),
             transition_interval=TRANSITION,
+            alarms=AlarmSystem(settings, settings.seed, {}),
         )
 
 

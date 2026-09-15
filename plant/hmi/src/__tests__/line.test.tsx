@@ -93,10 +93,28 @@ const HELD_S2: LineSnapshot = {
       image_url: null,
     },
   ],
+  alarms: [
+    {
+      sequence: 4,
+      station_browse_name: "S2_Joining",
+      code: "A-207",
+      text: "joining force out of tolerance",
+      severity: 700,
+      raised_at: "2026-09-13T06:09:12+00:00",
+      acknowledged: false,
+      acked_at: null,
+    },
+  ],
 };
 
 function tileFor(browseName: string): HTMLElement {
-  const tile = screen.getByText(browseName).closest("li");
+  // Scoped to `.station__name`, because a station's browse name appears twice on a
+  // screen with an active alarm on it — once on the tile and once on the alarm row that
+  // names the station it was raised at — and an unscoped lookup finds both.
+  const named = screen
+    .getAllByText(browseName)
+    .find((node) => node.classList.contains("station__name"));
+  const tile = named?.closest("li") ?? null;
   if (tile === null)
     throw new Error(`${browseName} rendered outside a station tile`);
   return tile;
@@ -176,6 +194,28 @@ describe("the line", () => {
       "5",
       "5",
     ]);
+  });
+
+  it("lists an active alarm with the code and text §5.2 keeps", () => {
+    render(<Line snapshot={HELD_S2} />);
+    const alarm = screen.getByTestId("alarm");
+    // The code is what M4's knowledge base is keyed on and the text is what an operator
+    // reads; neither stands in for the other.
+    expect(alarm).toHaveTextContent("A-207");
+    expect(alarm).toHaveTextContent("joining force out of tolerance");
+    expect(alarm).toHaveTextContent("S2_Joining");
+    // Whether anyone has been to it is said in words, not only in the class — the same
+    // rule the station tiles follow (ISA-101).
+    expect(alarm).toHaveClass("alarm--new");
+    expect(alarm).toHaveTextContent("not acknowledged");
+  });
+
+  it("says so rather than rendering nothing when no alarm is active", () => {
+    // No active alarms is the normal state of a line, and a blank area reads as a panel
+    // that failed to load.
+    render(<Line snapshot={{ ...HELD_S2, alarms: [] }} />);
+    expect(screen.queryByTestId("alarm")).toBeNull();
+    expect(screen.getByText("no active alarms")).toBeInTheDocument();
   });
 
   it("labels simulated time as the clock the numbers belong to", () => {

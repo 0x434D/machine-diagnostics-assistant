@@ -498,6 +498,15 @@ invites exactly the time-join §3.4a forbids. That leaves **25 historised stream
 event types**, against M1's two and one. The count is worth stating because all three of
 §12's truncation defects scale with it.
 
+*Amended in M2c:* **six event types, not five.** §4.2 makes an alarm a custom event type and
+this tree above does not draw it, which reads as an omission rather than as a decision. It is
+`AlarmEventType`, and **every station declares it** — §5.2 keys an alarm on `station_id` and
+§3.7's screen lists alarms per station, so a type declared only on the one station that has a
+condition today would make that column a constant the schema pretends is a variable. Every one
+of its fields is prefixed `Alarm`, because two event types on one station may not share a
+field name and because BaseEventType already carries `Severity`, `Message` and `Time`. The
+historised-stream count is unaffected: an event type is not a variable.
+
 Buffer nodes **carry** the stations they sit between, as `String` variables holding the
 station's browse name. The gateway reads them on connect and fills the `stations` and
 `buffers` tables — **the line's topology is discovered, not configured**.

@@ -15,12 +15,14 @@ from simulator.address_space import (
 from simulator.clock import Phase, SimulatedClock
 from simulator.config import ClockConfig, Settings
 from simulator.events import (
+    ALARM,
     ASSEMBLY_CREATED,
     COMPONENT_READ,
     INSPECTION_RESULT,
     PART_COMPLETED,
     PART_PROCESSED,
     EventType,
+    event_types_for,
 )
 from simulator.historian import Ledger, _table_name, attach_historian
 
@@ -81,6 +83,14 @@ _EVENT_FIELD_ORDER: dict[EventType, list[str]] = {
         "Image",
     ],
     PART_COMPLETED: ["AssemblySerial", "Disposition", "Reason"],
+    ALARM: [
+        "AlarmCode",
+        "AlarmText",
+        "AlarmSeverity",
+        "AlarmRaisedAt",
+        "AlarmActive",
+        "AlarmAcknowledged",
+    ],
 }
 """The wire format, as literals.
 
@@ -127,9 +137,21 @@ async def test_the_tree_carries_exactly_twenty_five_historised_streams(
 
 
 @pytest.mark.asyncio
-async def test_every_station_carries_packml_state_and_its_reason(
-    space: AddressSpace,
-) -> None:
+async def test_every_station_can_raise_an_alarm(space: AddressSpace) -> None:
+    """§4.2's alarm type, on all four stations rather than on the one with a condition.
+
+    §5.2 keys an alarm on `station_id` and §3.7's screen lists them per station, so a
+    type declared on S2 alone would make that column a constant the schema pretends is a
+    variable -- and the station that gains the second condition would be a change to the
+    address space rather than to one file.
+
+    Asserted on the generators the tree actually built, not on `events.ALARM.stations`:
+    a station named in that tuple and given no generator raises `ValueError` on its
+    first alarm, in a plant that has already written history.
+    """
+    for code, nodes in space.stations.items():
+        assert ALARM.name in nodes.generators, code
+        assert ALARM in event_types_for(code), code
     """§4.1 gives all four both. M1 omitted them deliberately, because a State node
     that never leaves Execute is a fake; the state machine arrived in Task 2, so they
     are real now."""
@@ -502,8 +524,8 @@ async def test_every_event_type_historises_with_all_its_columns(
     )
 
     for event, expected in _EVENT_FIELD_ORDER.items():
-        nodes = space.stations[event.station]
-        table = _table_name(storage, nodes.node.nodeid)
-        async with storage._db.execute(f'PRAGMA table_info("{table}")') as cursor:
-            columns = {row[1] for row in await cursor.fetchall()}
-        assert set(expected) <= columns, event.name
+        for code in event.stations:
+            table = _table_name(storage, space.stations[code].node.nodeid)
+            async with storage._db.execute(f'PRAGMA table_info("{table}")') as cursor:
+                columns = {row[1] for row in await cursor.fetchall()}
+            assert set(expected) <= columns, f"{event.name} on {code}"

@@ -8,11 +8,13 @@ public sealed class SignalPolicyTests
 {
     private const string MinimalJson = "{}";
 
-    /// <summary>The four types §4.1 adds in M2b. None of them carries an image.</summary>
+    /// <summary>
+    /// The four types §4.1 adds in M2b, plus §4.2's alarm. None of them carries an image.
+    /// </summary>
     private static readonly string[] ImagelessEventTypes =
     [
         "ComponentReadEventType", "AssemblyCreatedEventType", "PartProcessedEventType",
-        "PartCompletedEventType",
+        "PartCompletedEventType", "AlarmEventType",
     ];
 
     /// <summary>The three noisy floats §4.1 gives S1, S2 and S4, and nothing else.</summary>
@@ -201,6 +203,20 @@ public sealed class SignalPolicyTests
             type => Assert.True(
                 policy.ForEvent(type).PageSize < HistoryBackfill.SilentTruncationCeiling,
                 $"{type} is paged at or above the silent-truncation ceiling"));
+    }
+
+    [Fact]
+    public void TheShippedPolicyNamesEveryTypeThisGatewayCanDecode()
+    {
+        // The fail-open default means an unnamed type is still read, so nothing breaks when
+        // one is missing -- it is read at a number nobody measured, which is exactly the kind
+        // of silence D4's per-type page sizes exist to replace. §4.2's alarm was the sixth
+        // type and had no entry when it was first added; this is what says so at boot.
+        var policy = SignalPolicy.Parse(RealJson);
+
+        Assert.Equal(
+            PlantEvents.All.Select(type => type.TypeName).OrderBy(n => n, StringComparer.Ordinal),
+            policy.KnownEventTypes.OrderBy(n => n, StringComparer.Ordinal));
     }
 
     [Fact]

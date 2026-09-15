@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from conftest import RecordingNodes
+from simulator.alarms import AlarmSystem
 from simulator.carriers import Carrier
 from simulator.config import Settings
 from simulator.faults import (
@@ -62,7 +63,13 @@ async def _press_peaks(faults: FaultSet, count: int, first_at: datetime) -> list
     """
     nodes = RecordingNodes("S2_Joining")
     settings = Settings()
-    station = JoiningStation(nodes, settings, settings.seed, faults=faults)
+    station = JoiningStation(
+        nodes,
+        settings,
+        settings.seed,
+        AlarmSystem(settings, settings.seed, {nodes.code: nodes}),
+        faults=faults,
+    )
     schedule = LotSchedule(settings, first_at)
     for index in range(count):
         at = first_at + index * TAKT

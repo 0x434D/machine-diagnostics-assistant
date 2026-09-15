@@ -201,6 +201,41 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     joining_force_sigma: float = 40.0  # newtons
     joining_distance_sigma: float = 0.02  # millimetres
 
+    # §4.2's alarm band at S2, and the first half of §3.5 row 3's shutdown. **In sigmas
+    # of the clamp's own part-to-part spread rather than in newtons**, for the reason
+    # `carrier_wear_sigmas` is one: the limit's whole job is to sit outside the noise it
+    # has to be seen through and inside the drift it has to catch, and a limit in newtons
+    # beside a spread in newtons is two numbers free to drift apart.
+    # `joining_force_tolerance_newtons` below is the product.
+    #
+    # **Bounded from both sides, and both bounds are §3.5's.** Eight sigma against the
+    # 40 N spread is a +/-320 N band, 7.6 % of the 4200 N clamp.
+    #
+    #   * From below by row 3's own order -- *drifts down -> gap rises -> alarm -> S2
+    #     aborts*. A narrow band fires early in the ramp, and the station then spends the
+    #     rest of the run shut down, so the gap rate rises after the alarm instead of
+    #     before it. Measured over 9000 s of paired runs: at 6 sigma the alarm lands 2132 s
+    #     into the 3600 s ramp and the line presses 726 parts; at 8 it lands at 2902 s and
+    #     presses 845; at 10 it lands at 3282 s and presses 987.
+    #   * From above by the drift itself -- `scenarios._force_alarm_seconds` refuses a
+    #     band the drift never leaves. Eight sigma leaves the drifted press 2.3 sigma
+    #     outside the band once the ramp has run; ten leaves it 0.25 sigma outside, which
+    #     is an alarm that depends on which side of its own noise a part lands on.
+    #
+    # The published peak is the largest sample of a noisy trace and so sits a little above
+    # the clamp -- 4214.3 N mean at sd 39.5, measured in test_scenarios -- which leaves
+    # the nearer edge 8.4 sigma away on a clean line. `test_alarms` runs one for four
+    # simulated hours and asserts it never reaches it.
+    joining_force_tolerance_sigmas: float = 8.0
+    # How many consecutive parts must read out of tolerance before the alarm is raised.
+    # **Not decoration.** One part is a draw: a limit with no debounce turns the tail of a
+    # Gaussian into a line stop, and the cost of that is not the frequency but the shape
+    # -- a single outlier would abort a station until an operator walked over, and every
+    # later milestone would be asked to explain a stoppage with no process behind it.
+    # Three consecutive makes the raise a statement about the press rather than about one
+    # part.
+    alarm_consecutive_parts: int = 3
+
     # §3.4a's force-distance curve. THREE knobs, and which fault moves which is the
     # whole of why the curve is stored:
     #
@@ -273,6 +308,18 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
         where it was and silently make scenario 4 easier or unwinnable.
         """
         return math.exp(self.carrier_wear_sigmas * self.carrier_quality_log_sigma)
+
+    @property
+    def joining_force_tolerance_newtons(self) -> float:
+        """Half the width of S2's alarm band, in newtons.
+
+        Derived from the spread the limit has to sit outside of rather than configured
+        beside it, for the reason `carrier_wear_factor` is derived: the pair is a ratio,
+        and a second field holding the product could disagree with it -- which would let
+        a change to `joining_force_sigma` leave the limit where it was and silently make
+        the alarm either unreachable or something a clean line trips.
+        """
+        return self.joining_force_tolerance_sigmas * self.joining_force_sigma
 
     @property
     def press_nominal_work(self) -> float:

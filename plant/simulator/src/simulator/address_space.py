@@ -157,8 +157,9 @@ CURVE_STROKE_SIGNAL = "StrokeLength"
 
 INSPECTION_STATION = "S3_Inspection"
 """The station §4.1 gives the inspection event to, named because the historian and
-`AddressSpace.inspection` reach for it directly. The other four event types belong to
-other stations; `events.EVENT_TYPES` is what says which."""
+`AddressSpace.inspection` reach for it directly. The other four of §4.1's five belong to
+other stations, and §4.2's alarm belongs to all four; `events.EVENT_TYPES` is what says
+which."""
 
 BUFFER_LEVEL_SIGNAL = "Level"
 """The one historised variable a buffer has. Named because the ledger and the
@@ -469,7 +470,9 @@ async def build_address_space(
 
         generators: dict[str, EventGenerator] = {}
         for event in event_types_for(code):
-            # ORDER MATTERS, once per generator and now five times. get_event_generator
+            # ORDER MATTERS, once per generator and now nine times -- §4.1's five, one
+            # per station except S1's two, plus §4.2's alarm on every one of the four.
+            # get_event_generator
             # adds the GeneratesEvent reference from the emitting node to the event type
             # and sets its EventNotifier bit. historize_node_event() later reads exactly
             # those GeneratesEvent references to decide which event types to historise

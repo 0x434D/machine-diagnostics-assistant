@@ -24,6 +24,7 @@ from datetime import datetime, timedelta
 import httpx
 import pytest
 from conftest import RecordingNodes, build_running_line, new_clock
+from simulator.alarms import AlarmSystem
 from simulator.clock import SimulatedClock
 from simulator.config import Settings
 from simulator.faults import NO_FAULTS, FaultSet
@@ -32,10 +33,12 @@ from simulator.inspection_client import DEFECT_CLASSES, GAP, InspectionClient
 from simulator.packml import State
 from simulator.render import render_part
 from simulator.scenarios import (
+    ALARM_RAISED,
     CLASS_CONCENTRATES,
     CLASS_RATE_RISES,
     INSPECTION_RESULTS,
     JOINING_FORCE_PEAK,
+    STATION_ABORTS,
     Consequence,
     Scenario,
     all_scenarios,
@@ -70,6 +73,10 @@ class Run:
     parts: tuple[Part, ...]
     changes: tuple[Change, ...]
     nodes: dict[str, RecordingNodes]
+    alarms: AlarmSystem
+    """The line's own alarm system, as the run left it. §3.5 row 3 ends in an alarm and
+    a shutdown, and neither is recoverable from the parts or the state changes alone --
+    an `Aborted` row says a station shut down and not what it shut down for."""
 
     def elapsed(self, at: datetime) -> float:
         return (at - self.origin).total_seconds()
@@ -165,7 +172,7 @@ async def _run(
                 if before[code] != (state, reason):
                     changes.append(Change(outcome.at, code, state, reason))
 
-    return Run(clock.history_start, tuple(parts), tuple(changes), nodes)
+    return Run(clock.history_start, tuple(parts), tuple(changes), nodes, line.alarms)
 
 
 async def _paired(
@@ -399,10 +406,21 @@ async def test_a_drifting_clamp_lowers_the_peak_and_gaps_parts_that_were_not() -
     true: the published force falls **and** parts start carrying `gap`.
 
     Measured at the shipped drift: `JoiningForcePeak` 4214.3 N before the injection
-    against 3792.5 N once the hour-long ramp has run, a fall of 421.8 N against a
-    part-to-part spread of 39.5 N -- 10.7 sigma. Every part the clean run gapped is
-    still gapped, and the drifted run adds more, which is the difference between a fault
-    that moved a threshold and one that reached the draw.
+    against 3791.5 N once the hour-long ramp has run, a fall of 422.8 N against a
+    part-to-part spread of 39.5 N -- 10.7 sigma.
+
+    **The gap comparison is over the parts both runs pressed, and that is M2c's alarm
+    changing the question rather than weakening it.** Row 3 ends with S2 aborting, so the
+    drifted line presses 845 parts where the clean one presses 1498 -- and a comparison
+    over every part would be measuring the stoppage, not the press: the clean run's last
+    650 parts include three it gapped that the drifted run never made. Restricted to the
+    845 serials both runs inspected, the drifted run gaps `A-00000609` in addition to the
+    two the clean run gapped there, and un-gaps none. **One part added, which is thin and
+    is the plant's honest signal at `gap_work_exponent = 10`**: the gap-specific baseline
+    is ~0.25 % per part and the drift roughly doubles it by the end of the ramp, so a
+    few hundred parts carry about one extra. The "none un-gapped" half is the structural
+    one -- a fault raises a threshold against a fixed draw, so a part the clean run gapped
+    cannot come back clean.
     """
     settings = Settings()
     item = scenario(3, settings)
@@ -419,13 +437,21 @@ async def test_a_drifting_clamp_lowers_the_peak_and_gaps_parts_that_were_not() -
         for elapsed, value in drifted.stream(station, signal)
         if elapsed > at + ramp
     ]
+    assert after, "S2 pressed nothing after the ramp, so the fall is unmeasurable"
     fall = statistics.fmean(before) - statistics.fmean(after)
     assert fall > 0.5 * abs(settings.joining_force_drift_newtons), (
         f"the peak fell {fall:.1f} N on a {settings.joining_force_drift_newtons} N "
         "drift: the clamp is not reaching the trace"
     )
 
-    assert clean.carrying(GAP) < drifted.carrying(GAP), (
+    shared = {part.serial for part in clean.parts} & {
+        part.serial for part in drifted.parts
+    }
+    assert len(shared) > 500, (
+        f"the two runs share only {len(shared)} parts, which is too few for the gap "
+        "comparison below to mean anything"
+    )
+    assert (clean.carrying(GAP) & shared) < (drifted.carrying(GAP) & shared), (
         "the drift did not gap a single part the clean run did not, or un-gapped one: "
         "the press has no path to the defect draw"
     )
@@ -433,9 +459,71 @@ async def test_a_drifting_clamp_lowers_the_peak_and_gaps_parts_that_were_not() -
     # a line-wide drift, which is a different fault with a different diagnosis.
     for name in DEFECT_CLASSES:
         if name != GAP:
-            assert clean.carrying(name) == drifted.carrying(name), (
-                f"the clamp drift changed {name}, which no press decides"
-            )
+            assert (clean.carrying(name) & shared) == (
+                drifted.carrying(name) & shared
+            ), f"the clamp drift changed {name}, which no press decides"
+
+
+@pytest.mark.asyncio
+async def test_the_drift_ends_in_an_alarm_and_a_shutdown_at_s2() -> None:
+    """§3.5 row 3's last two words, which M2c's Task 5 is what made true: *...-> alarm ->
+    S2 aborts*.
+
+    Asserted as the plant's own output and never as "the fault was injected": the alarm
+    is read off `line.alarms`, which S2's press fills from the number it published, and
+    the shutdown off the state changes the run recorded. The **order** is part of the
+    claim -- an alarm is what a station is shut down for, so an abort that preceded its
+    own alarm would be a shutdown with nothing naming it.
+
+    Measured at the shipped settings: A-207 is raised 2902 s after the injection, against
+    the 5486 s the ground-truth log claims, and S2 reaches `Aborted` 1.5 s later. It
+    happens 20 times over the 9000 s run, because nothing repairs a drifted relief valve
+    and the operator's restart puts the press straight back into it.
+    """
+    settings = Settings()
+    item = scenario(3, settings)
+    at, _ = _window(item)
+    raised, aborts = (
+        item.injections[0].consequences[2],
+        item.injections[0].consequences[3],
+    )
+    assert raised.expect == ALARM_RAISED and aborts.expect == STATION_ABORTS
+    assert raised.within_seconds is not None
+    assert aborts.within_seconds is not None
+
+    run = await _scenario_run(
+        3, at + raised.within_seconds + settings.takt_seconds, settings
+    )
+
+    alarms = run.alarms.alarms
+    assert alarms, (
+        "S2's press never read out of tolerance on a clamp drifted by "
+        f"{settings.joining_force_drift_newtons} N against a "
+        f"+/-{settings.joining_force_tolerance_newtons} N band"
+    )
+    first = alarms[0]
+    assert (first.station, first.code.code) == (raised.subjects[0], "A-207")
+    elapsed = run.elapsed(first.raised_at) - at
+    assert 0 < elapsed <= raised.within_seconds, (
+        f"A-207 was raised {elapsed:.0f} s after the injection and the ground-truth log "
+        f"claims {raised.within_seconds:.0f} s"
+    )
+
+    # The published `State` rows rather than `Run.changes`, because the order is the
+    # claim and `changes` stamps every transition with the instant of the cycle it was
+    # noticed on -- which would make the alarm and the shutdown simultaneous by
+    # construction and the assertion below trivially true. These are the instants that
+    # reach §5.2's `state_changes`.
+    aborted = [
+        when
+        for signal, when, value in run.nodes[aborts.subjects[0]].writes
+        if signal == "State" and value == State.ABORTED.value
+    ]
+    assert aborted, "S2 never published Aborted, so the alarm shut nothing down"
+    assert aborted[0] > first.raised_at, (
+        "S2 aborted before its own alarm was raised, so the shutdown names nothing"
+    )
+    assert run.elapsed(aborted[0]) - at <= aborts.within_seconds
 
 
 @pytest.mark.asyncio

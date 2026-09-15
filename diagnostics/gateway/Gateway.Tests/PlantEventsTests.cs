@@ -4,7 +4,7 @@ using Opc.Ua;
 namespace Gateway.Tests;
 
 /// <summary>
-/// §4.1's five event types, written out a third time — the plant states them, the gateway
+/// §4.1's five event types and §4.2's alarm, written out a third time — the plant states them, the gateway
 /// states them, and this file states them again. That is the point: an event notification
 /// is a positional EventFieldList, so a field order that quietly moved would re-assign every
 /// column with nothing raised, and a test that imported the order it checks would move with
@@ -38,6 +38,83 @@ public sealed class PlantEventsTests
         Assert.Equal(
             ["AssemblySerial", "Disposition", "Reason"],
             PlantEvents.PartCompleted.Fields);
+        Assert.Equal(
+            [
+                "AlarmCode", "AlarmText", "AlarmSeverity", "AlarmRaisedAt", "AlarmActive",
+                "AlarmAcknowledged",
+            ],
+            PlantEvents.Alarm.Fields);
+    }
+
+    [Fact]
+    public void TheAlarmSharesNoFieldNameWithAnyTypeItRidesBeside()
+    {
+        // Every station declares the alarm alongside its own type, and two types on one
+        // stream may not share a field name -- the plant's historian de-duplicates event
+        // columns by node rather than by name, so a collision leaves that station with no
+        // event history and no error. The `Alarm` prefix is what buys that, and BaseEventType
+        // is the other half: it already carries Severity, Message and Time.
+        foreach (var type in PlantEvents.All.Where(type => type != PlantEvents.Alarm))
+        {
+            // Constructing the stream is the check: EventStreamSpec throws on a collision.
+            var stream = new EventStreamSpec([type, PlantEvents.Alarm]);
+            Assert.Equal(
+                2 + type.Fields.Count + PlantEvents.Alarm.Fields.Count, stream.Fields.Count);
+        }
+    }
+
+    [Fact]
+    public void TheAlarmsInstantAndItsFlagsSurviveTheDecodeAsThemselves()
+    {
+        // Two shapes no other type carries. A bool falling through to Convert.ToDouble
+        // becomes 1 or 0 and the writer can no longer tell "the plant said false" from "the
+        // plant said 0.0"; a DateTime throws from inside a decode that names no field.
+        // AlarmRaisedAt is §5.2's key for the row, so it has to reach Postgres as an instant.
+        var stream = new EventStreamSpec([PlantEvents.Alarm]);
+        var raised = new DateTime(2026, 9, 14, 2, 13, 40, DateTimeKind.Utc);
+        var acked = new DateTime(2026, 9, 14, 2, 16, 10, DateTimeKind.Utc);
+
+        var record = stream.Decode("S2", "ns=2;i=6",
+        [
+            new Variant(acked),
+            new Variant(new NodeId("AlarmEventType", PlantNamespace)),
+            new Variant("A-207"),
+            new Variant("joining force out of tolerance"),
+            new Variant(700u),
+            new Variant(raised),
+            new Variant(true),
+            new Variant(true),
+        ]);
+
+        // The event's own Time is the instant of this transition; AlarmRaisedAt is the
+        // alarm's identity, and the two are deliberately different here.
+        Assert.Equal(acked, record.SourceTs);
+        Assert.Contains("\"AlarmActive\":true", record.PayloadJson, StringComparison.Ordinal);
+        Assert.Contains("\"AlarmAcknowledged\":true", record.PayloadJson, StringComparison.Ordinal);
+        Assert.Contains("\"AlarmRaisedAt\":\"2026-09-14T02:13:40Z\"", record.PayloadJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AClearedAlarmReportsItselfInactiveRatherThanOmittingTheFlag()
+    {
+        // `false` is a value and not an absence. Were it dropped the way an empty string is,
+        // the clear would be indistinguishable from a raise and the row's cleared_at would
+        // never fill -- every alarm active for ever on §3.7's screen.
+        var stream = new EventStreamSpec([PlantEvents.Alarm]);
+
+        var record = stream.Decode("S2", "ns=2;i=6",
+        [
+            new Variant(new DateTime(2026, 9, 14, 2, 16, 13, DateTimeKind.Utc)),
+            new Variant(new NodeId("AlarmEventType", PlantNamespace)),
+            new Variant("A-207"),
+            new Variant("joining force out of tolerance"),
+            new Variant(700u),
+            new Variant(new DateTime(2026, 9, 14, 2, 13, 40, DateTimeKind.Utc)),
+            new Variant(false),
+            new Variant(true),
+        ]);
+
+        Assert.Contains("\"AlarmActive\":false", record.PayloadJson, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -49,7 +126,7 @@ public sealed class PlantEventsTests
         Assert.Equal(
             [
                 "ComponentReadEventType", "AssemblyCreatedEventType", "PartProcessedEventType",
-                "InspectionResultEventType", "PartCompletedEventType",
+                "InspectionResultEventType", "PartCompletedEventType", "AlarmEventType",
             ],
             PlantEvents.All.Select(type => type.TypeName));
     }

@@ -10,7 +10,7 @@ from typing import cast
 
 import pytest
 import yaml
-from conftest import STATION_CODES, build_running_line
+from conftest import STATION_CODES, build_running_line, new_clock
 from fastapi.testclient import TestClient
 from simulator.address_space import BUFFERS
 from simulator.config import Settings
@@ -22,6 +22,7 @@ from simulator.hmi import (
     line_snapshot,
 )
 from simulator.packml import State
+from simulator.scenarios import scenario
 from simulator.stations.base import PartOutcome
 
 NOMINAL_WORK = Settings().press_nominal_work
@@ -121,6 +122,47 @@ async def test_a_held_station_is_a_cause_candidate_and_a_starved_one_is_not() ->
     }
     assert by_name["S2_Joining"]["category"] == "held-by-own-fault"
     assert by_name["S3_Inspection"]["category"] == "waiting-on-others"
+
+
+@pytest.mark.asyncio
+async def test_the_screen_lists_the_alarms_a_station_is_shut_down_for() -> None:
+    """§3.7: active alarms. The screen's `held-by-own-fault` tile says a station is a
+    cause candidate; the alarm beside it is what it is a candidate *for*, and §5.2's own
+    row is code, text and severity -- so all three travel.
+
+    Driven through §3.5's scenario 3 rather than by putting an alarm into the system by
+    hand: what is being asserted is that the screen shows what the line actually did, and
+    a hand-made alarm would assert the serialiser against itself.
+    """
+    settings = Settings()
+    clock = new_clock(settings)
+    line, clock, _nodes = await build_running_line(
+        settings,
+        faults=scenario(3, settings).fault_set(clock.history_start),
+        clock=clock,
+    )
+    horizon = clock.history_start + timedelta(seconds=6000)
+    while (due := line.next_due) is not None and due < horizon:
+        await line.step()
+
+    assert line.alarms.alarms, "the drift never raised an alarm, so this proved nothing"
+    snapshot = line_snapshot(line, clock, RecentParts(settings.hmi_recent_parts))
+    listed = snapshot["alarms"]
+    assert [alarm["sequence"] for alarm in listed] == [
+        alarm.sequence for alarm in line.alarms.active
+    ]
+    # Cleared alarms are history and history is what the diagnostics stack answers from;
+    # a screen that listed them all would put the one being worked on at the bottom.
+    assert len(listed) < len(line.alarms.alarms)
+
+    shown = listed[0]
+    assert shown["station_browse_name"] in STATION_CODES
+    assert (shown["code"], shown["text"]) == ("A-207", "joining force out of tolerance")
+    assert 1 <= shown["severity"] <= 1000
+    assert datetime.fromisoformat(shown["raised_at"]).tzinfo is not None
+    # An unacknowledged alarm says so without the screen having to read a timestamp to
+    # find out -- the same reason a station's state travels beside its category.
+    assert shown["acknowledged"] is (shown["acked_at"] is not None)
 
 
 def test_every_packml_state_maps_to_exactly_one_category() -> None:

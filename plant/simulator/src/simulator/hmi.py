@@ -33,6 +33,7 @@ from typing import Final, TypedDict
 import uvicorn
 from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
 
+from simulator.alarms import AlarmSystem
 from simulator.clock import SimulatedClock
 from simulator.config import Settings
 from simulator.line import Line
@@ -155,6 +156,29 @@ class PartView(TypedDict):
     image_url: str | None
 
 
+class AlarmView(TypedDict):
+    """One active alarm on §3.7's screen.
+
+    `sequence` is the plant's own number for the alarm and is what the acknowledge
+    button sends back -- deliberately not §5.2's `alarms.id`, which is the gateway's
+    surrogate key and which this process never sees. Two numbers for one alarm would be
+    an acknowledgement addressed to whichever of them the screen happened to hold.
+
+    `acknowledged` travels beside `acked_at` for the reason `state` travels beside
+    `category`: the screen has to be able to say "acknowledged, waiting on the operator"
+    without parsing a timestamp to find out, and an empty string is not a falsy instant.
+    """
+
+    sequence: int
+    station_browse_name: str
+    code: str
+    text: str
+    severity: int
+    raised_at: str
+    acknowledged: bool
+    acked_at: str | None
+
+
 class LineSnapshot(TypedDict):
     """The frame `/snapshot` and `/ws` both serve.
 
@@ -171,6 +195,7 @@ class LineSnapshot(TypedDict):
     stations: list[StationView]
     buffers: list[BufferView]
     parts: list[PartView]
+    alarms: list[AlarmView]
 
 
 @dataclass(frozen=True)
@@ -254,6 +279,28 @@ class RecentParts:
         return next((part.image for part in self._parts if part.serial == serial), None)
 
 
+def alarm_views(alarms: AlarmSystem) -> list[AlarmView]:
+    """§3.7's active alarms, oldest first -- the order an operator works a panel in.
+
+    Active only. A cleared alarm is history, and history is what the diagnostics stack
+    answers from; a screen that listed them all would grow for the life of a run and put
+    the alarm being worked on at the bottom.
+    """
+    return [
+        AlarmView(
+            sequence=alarm.sequence,
+            station_browse_name=alarm.station,
+            code=alarm.code.code,
+            text=alarm.code.text,
+            severity=alarm.code.severity,
+            raised_at=alarm.raised_at.isoformat(),
+            acknowledged=alarm.acknowledged,
+            acked_at=None if alarm.acked_at is None else alarm.acked_at.isoformat(),
+        )
+        for alarm in alarms.active
+    ]
+
+
 def line_snapshot(
     line: Line, clock: SimulatedClock, recent: RecentParts
 ) -> LineSnapshot:
@@ -293,6 +340,7 @@ def line_snapshot(
             for buffer in line.buffers
         ],
         "parts": recent.views(),
+        "alarms": alarm_views(line.alarms),
     }
 
 
