@@ -124,9 +124,33 @@ def _count(table: str) -> int:
     return int(row[0]) if row else 0
 
 
+def _plant_is_running() -> bool:
+    return (
+        _sh("docker", "inspect", "-f", "{{.State.Running}}", PLANT_CONTAINER) == "true"
+    )
+
+
 @pytest.fixture(scope="module")
 def stack() -> Iterator[None]:
-    """A gateway and a Postgres of our own, against the plant that is already running."""
+    """A gateway and a Postgres of our own, against the plant that is already running.
+
+    :raises AssertionError: there is no plant to prove anything against, or the gateway
+        never reached live against the one there is.
+    """
+    # `make verify` starts no plant -- `make authenticity` does, and that is the target the
+    # weekly job runs. Run on its own against no plant, all four proofs erred five minutes
+    # later in `_wait_for` below, and the reason was twenty lines into a container log that
+    # teardown then deleted: SocketException 111 against opc.tcp://line-simulator:4840/plant.
+    # That is a missing precondition reported as a gateway crash, and it cost a session
+    # diagnosing 005_m3_read_layer.sql, which was never involved. One docker call, here,
+    # before the two-minute image build, because this is knowable before anything is started.
+    if not _plant_is_running():
+        raise AssertionError(
+            f"{PLANT_CONTAINER} is not running, and these proofs answer against the plant "
+            "that is already up. `make authenticity` brings it up, runs them, and takes it "
+            "down again; `make verify` alone does not."
+        )
+
     subprocess.run(
         [
             "docker",
