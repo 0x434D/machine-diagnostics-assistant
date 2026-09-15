@@ -10,9 +10,12 @@ from __future__ import annotations
 from fastapi import FastAPI
 
 from analysis import (
+    routes_alarms,
     routes_coverage,
     routes_inspection,
+    routes_line,
     routes_parts,
+    routes_signals,
     routes_stops,
     routes_time,
 )
@@ -21,5 +24,8 @@ app = FastAPI(title="machine-agent analysis", version="0.1.0")
 app.include_router(routes_time.router)
 app.include_router(routes_coverage.router)
 app.include_router(routes_stops.router)
+app.include_router(routes_alarms.router)
+app.include_router(routes_signals.router)
+app.include_router(routes_line.router)
 app.include_router(routes_inspection.router)
 app.include_router(routes_parts.router)

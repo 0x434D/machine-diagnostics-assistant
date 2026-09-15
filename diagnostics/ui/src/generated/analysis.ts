@@ -4,6 +4,30 @@
  */
 
 export interface paths {
+    "/alarms": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Alarms
+         * @description Every alarm whose life overlaps the window, newest first.
+         *
+         *     A `station` that the line does not have is a 404 rather than an empty list: §6.5 checks
+         *     cited ids against the database, and "S9 raised no alarms" is a false statement about a
+         *     station that does not exist.
+         */
+        get: operations["listAlarms"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/coverage": {
         parameters: {
             query?: never;
@@ -58,6 +82,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/line/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Line Status
+         * @description Each station's last state and reason, the buffer levels, the standing alarms, the
+         *     last part out — and how old all of that is.
+         *
+         *     `live` is a comparison and nothing more: the newest row in the database against
+         *     `live_within_seconds`, both of which are in the response so that the verdict can be
+         *     checked rather than believed.
+         *
+         *     Two edges worth knowing. A database with no rows at all reports a null staleness and
+         *     `live` false — nothing has ever arrived, which is a different thing from nothing having
+         *     arrived lately and calls for a different action. And a *negative* staleness is possible
+         *     and is reported as it is: all analysis reads `SourceTimestamp`, which is simulated time,
+         *     and simulated time ahead of the wall clock is a fact about the plant's clock rather than
+         *     something to clamp away.
+         */
+        get: operations["lineStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/parts/{serial}": {
         parameters: {
             query?: never;
@@ -103,6 +159,34 @@ export interface paths {
          * @description Rejects only. A good part has no image and that is not a missing value (§3.4).
          */
         get: operations["getPartImage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/signals/trend": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Signal Trend
+         * @description One historised signal over a window, raw or bucketed.
+         *
+         *     Buckets are half-open and aligned to the clock in UTC, so the 09:00 bucket is the same
+         *     hour whichever window asked for it and two trends can be read against each other.
+         *
+         *     A station the line does not have is a 404; a station that published nothing under this
+         *     name is an empty series. §6.5 needs those to be different answers — "S2 has no signal
+         *     called JoiningForce" and "S2's JoiningForce was silent for this hour" lead to different
+         *     next steps, and an empty list for both would hide a typo as a measurement.
+         */
+        get: operations["signalTrend"];
         put?: never;
         post?: never;
         delete?: never;
@@ -241,6 +325,21 @@ export interface components {
             text: string;
         };
         /**
+         * AlarmList
+         * @description The alarms overlapping a window, newest first.
+         *
+         *     Overlap, not containment: an alarm raised before the window and still uncleared inside
+         *     it is one of the more important things the window holds, and a containment test is
+         *     exactly what would drop it.
+         */
+        AlarmList: {
+            /** Alarms */
+            alarms: components["schemas"]["Alarm"][];
+            /** Station */
+            station: string | null;
+            window: components["schemas"]["Window"];
+        };
+        /**
          * BufferLevelPoint
          * @description One `buffer_levels` row. §4.1 publishes one only when a carrier moves through the
          *     buffer, so a flat stretch here is a line that moved nothing, not a sampling interval.
@@ -255,6 +354,28 @@ export interface components {
             buffer: string;
             /** Level */
             level: number;
+        };
+        /**
+         * BufferStatus
+         * @description A buffer's last published level, and when it was published.
+         *
+         *     `at` is load-bearing: §4.1 publishes a level only when a carrier moves through, so a
+         *     stopped line's last level is arbitrarily old and the number alone would read as now.
+         *
+         *     Both are null for a buffer that has published nothing at all — the line has not moved a
+         *     carrier through it since the gateway connected. The buffer is listed anyway, for the
+         *     reason `StationStatus` lists a silent station: a line reported with two buffers when it
+         *     has three is a wrong picture, where a buffer with an explicit "no level" is a true one.
+         */
+        BufferStatus: {
+            /** At */
+            at: string | null;
+            /** Buffer */
+            buffer: string;
+            /** Capacity */
+            capacity: number;
+            /** Level */
+            level: number | null;
         };
         /**
          * ComponentOrigin
@@ -473,6 +594,59 @@ export interface components {
             window: components["schemas"]["Window"];
         };
         /**
+         * LastPartOut
+         * @description The most recent part to leave S4, which is the line's real output clock.
+         */
+        LastPartOut: {
+            /** Assembly Serial */
+            assembly_serial: string;
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** Disposition */
+            disposition: string;
+            /** Reason */
+            reason: string | null;
+        };
+        /**
+         * LineStatus
+         * @description §5.3's "what is happening right now", answered honestly with the plant shut down.
+         *
+         *     §2.2 requires the diagnostics stack to answer from history when the plant is not
+         *     running, and this is the endpoint where that becomes visible or does not. Every field
+         *     below is the *last known* value and none of them is timestamped "now"; `staleness_seconds`
+         *     is the one number that separates a live line from a stopped gateway, and it is beside
+         *     the threshold it was judged against so that `live` is not a verdict without a reason.
+         *
+         *     `staleness_seconds` is null only when the database holds no row at all — a fresh
+         *     deployment, not a stale one, and reporting an infinite staleness there would be a
+         *     measurement of nothing.
+         */
+        LineStatus: {
+            /** Active Alarms */
+            active_alarms: components["schemas"]["Alarm"][];
+            /**
+             * As Of
+             * Format: date-time
+             */
+            as_of: string;
+            /** Buffers */
+            buffers: components["schemas"]["BufferStatus"][];
+            last_part_out: components["schemas"]["LastPartOut"] | null;
+            /** Latest Data At */
+            latest_data_at: string | null;
+            /** Live */
+            live: boolean;
+            /** Live Within Seconds */
+            live_within_seconds: number;
+            /** Staleness Seconds */
+            staleness_seconds: number | null;
+            /** Stations */
+            stations: components["schemas"]["StationStatus"][];
+        };
+        /**
          * ObservedSpan
          * @description What the window actually holds, across every stream the analysis reads.
          *
@@ -549,6 +723,35 @@ export interface components {
             value: number;
         };
         /**
+         * SignalTrend
+         * @description §5.3's `/signals/trend`, aggregated in SQL.
+         *
+         *     `bucket_seconds` is null for `raw` and is the bucket width otherwise. Buckets are
+         *     aligned to the clock in UTC and half-open `[at, at + bucket_seconds)`, so the same
+         *     minute means the same minute across two calls with different windows.
+         *
+         *     `truncated` is what stops a cut series reading as a complete one. A trend that stops
+         *     early looks exactly like a signal that stopped, which is a diagnosis.
+         */
+        SignalTrend: {
+            /**
+             * Agg
+             * @enum {string}
+             */
+            agg: "raw" | "minute" | "hour";
+            /** Bucket Seconds */
+            bucket_seconds: number | null;
+            /** Points */
+            points: components["schemas"]["TrendPoint"][];
+            /** Signal */
+            signal: string;
+            /** Station */
+            station: string;
+            /** Truncated */
+            truncated: boolean;
+            window: components["schemas"]["Window"];
+        };
+        /**
          * StateEpisode
          * @description One station holding one state, for a UI to draw as a bar.
          *
@@ -572,6 +775,24 @@ export interface components {
             station: string;
             /** To Ts */
             to_ts: string | null;
+        };
+        /**
+         * StationStatus
+         * @description What one station was last seen doing, and when it was last seen.
+         *
+         *     `since` is when the state began. `as_of` is the newest row this station has of any
+         *     kind — with the plant down, `since` goes on reading like a live state while `as_of`
+         *     is what says the reading is hours old.
+         */
+        StationStatus: {
+            /** Reason */
+            reason: string | null;
+            /** Since */
+            since: string | null;
+            /** State */
+            state: string | null;
+            /** Station */
+            station: string;
         };
         /**
          * StatsGroup
@@ -738,6 +959,32 @@ export interface components {
             window: components["schemas"]["Window"];
         };
         /**
+         * TrendPoint
+         * @description One point of a trend: a bucket, or a single sample when `agg` is `raw`.
+         *
+         *     `at` is the bucket's start (half-open, clock-aligned) or the sample's own
+         *     `SourceTimestamp`. `value` is the bucket's mean or the sample's value; `count` is how
+         *     many samples it is of, and is 1 for a raw point.
+         *
+         *     `value`, `min_value` and `max_value` are nullable for one reason only: a bucket the
+         *     query emitted with nothing in it. They are never a stand-in for a value that exists.
+         */
+        TrendPoint: {
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** Count */
+            count: number;
+            /** Max Value */
+            max_value: number | null;
+            /** Min Value */
+            min_value: number | null;
+            /** Value */
+            value: number | null;
+        };
+        /**
          * Unexplained
          * @description Where a chain stopped short, named precisely enough to be checked by hand.
          */
@@ -784,6 +1031,39 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    listAlarms: {
+        parameters: {
+            query: {
+                station?: string | null;
+                from: string;
+                to: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AlarmList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     coverage: {
         parameters: {
             query: {
@@ -849,6 +1129,26 @@ export interface operations {
             };
         };
     };
+    lineStatus: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LineStatus"];
+                };
+            };
+        };
+    };
     getPart: {
         parameters: {
             query?: never;
@@ -898,6 +1198,41 @@ export interface operations {
                 };
                 content: {
                     "image/png": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    signalTrend: {
+        parameters: {
+            query: {
+                station: string;
+                signal: string;
+                agg?: "raw" | "minute" | "hour";
+                from: string;
+                to: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignalTrend"];
                 };
             };
             /** @description Validation Error */

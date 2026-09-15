@@ -68,6 +68,34 @@ components:
       - active
       title: Alarm
       type: object
+    AlarmList:
+      description: 'The alarms overlapping a window, newest first.
+
+
+        Overlap, not containment: an alarm raised before the window and still uncleared inside
+
+        it is one of the more important things the window holds, and a containment test is
+
+        exactly what would drop it.'
+      properties:
+        alarms:
+          items:
+            $ref: '#/components/schemas/Alarm'
+          title: Alarms
+          type: array
+        station:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Station
+        window:
+          $ref: '#/components/schemas/Window'
+      required:
+      - window
+      - station
+      - alarms
+      title: AlarmList
+      type: object
     BufferLevelPoint:
       description: "One `buffer_levels` row. \xA74.1 publishes one only when a carrier moves through the\n\
         buffer, so a flat stretch here is a line that moved nothing, not a sampling interval."
@@ -87,6 +115,39 @@ components:
       - at
       - level
       title: BufferLevelPoint
+      type: object
+    BufferStatus:
+      description: "A buffer's last published level, and when it was published.\n\n`at` is load-bearing:\
+        \ \xA74.1 publishes a level only when a carrier moves through, so a\nstopped line's last level\
+        \ is arbitrarily old and the number alone would read as now.\n\nBoth are null for a buffer that\
+        \ has published nothing at all \u2014 the line has not moved a\ncarrier through it since the gateway\
+        \ connected. The buffer is listed anyway, for the\nreason `StationStatus` lists a silent station:\
+        \ a line reported with two buffers when it\nhas three is a wrong picture, where a buffer with\
+        \ an explicit \"no level\" is a true one."
+      properties:
+        at:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: At
+        buffer:
+          title: Buffer
+          type: string
+        capacity:
+          title: Capacity
+          type: integer
+        level:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Level
+      required:
+      - buffer
+      - level
+      - capacity
+      - at
+      title: BufferStatus
       type: object
     ComponentOrigin:
       description: "One as-built component of an assembly, and the supplier lot it was drawn from.\n\n\
@@ -445,6 +506,93 @@ components:
       - groups
       title: InspectionStats
       type: object
+    LastPartOut:
+      description: The most recent part to leave S4, which is the line's real output clock.
+      properties:
+        assembly_serial:
+          title: Assembly Serial
+          type: string
+        at:
+          format: date-time
+          title: At
+          type: string
+        disposition:
+          title: Disposition
+          type: string
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+      required:
+      - assembly_serial
+      - at
+      - disposition
+      - reason
+      title: LastPartOut
+      type: object
+    LineStatus:
+      description: "\xA75.3's \"what is happening right now\", answered honestly with the plant shut down.\n\
+        \n\xA72.2 requires the diagnostics stack to answer from history when the plant is not\nrunning,\
+        \ and this is the endpoint where that becomes visible or does not. Every field\nbelow is the *last\
+        \ known* value and none of them is timestamped \"now\"; `staleness_seconds`\nis the one number\
+        \ that separates a live line from a stopped gateway, and it is beside\nthe threshold it was judged\
+        \ against so that `live` is not a verdict without a reason.\n\n`staleness_seconds` is null only\
+        \ when the database holds no row at all \u2014 a fresh\ndeployment, not a stale one, and reporting\
+        \ an infinite staleness there would be a\nmeasurement of nothing."
+      properties:
+        active_alarms:
+          items:
+            $ref: '#/components/schemas/Alarm'
+          title: Active Alarms
+          type: array
+        as_of:
+          format: date-time
+          title: As Of
+          type: string
+        buffers:
+          items:
+            $ref: '#/components/schemas/BufferStatus'
+          title: Buffers
+          type: array
+        last_part_out:
+          anyOf:
+          - $ref: '#/components/schemas/LastPartOut'
+          - type: 'null'
+        latest_data_at:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: Latest Data At
+        live:
+          title: Live
+          type: boolean
+        live_within_seconds:
+          title: Live Within Seconds
+          type: number
+        staleness_seconds:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Staleness Seconds
+        stations:
+          items:
+            $ref: '#/components/schemas/StationStatus'
+          title: Stations
+          type: array
+      required:
+      - as_of
+      - latest_data_at
+      - staleness_seconds
+      - live
+      - live_within_seconds
+      - stations
+      - buffers
+      - active_alarms
+      - last_part_out
+      title: LineStatus
+      type: object
     ObservedSpan:
       description: "What the window actually holds, across every stream the analysis reads.\n\nThis is\
         \ the half of coverage the gap rows cannot supply. A window with no gaps and no\nrows is a quiet\
@@ -578,6 +726,51 @@ components:
       - value
       title: ProcessValue
       type: object
+    SignalTrend:
+      description: "\xA75.3's `/signals/trend`, aggregated in SQL.\n\n`bucket_seconds` is null for `raw`\
+        \ and is the bucket width otherwise. Buckets are\naligned to the clock in UTC and half-open `[at,\
+        \ at + bucket_seconds)`, so the same\nminute means the same minute across two calls with different\
+        \ windows.\n\n`truncated` is what stops a cut series reading as a complete one. A trend that stops\n\
+        early looks exactly like a signal that stopped, which is a diagnosis."
+      properties:
+        agg:
+          enum:
+          - raw
+          - minute
+          - hour
+          title: Agg
+          type: string
+        bucket_seconds:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Bucket Seconds
+        points:
+          items:
+            $ref: '#/components/schemas/TrendPoint'
+          title: Points
+          type: array
+        signal:
+          title: Signal
+          type: string
+        station:
+          title: Station
+          type: string
+        truncated:
+          title: Truncated
+          type: boolean
+        window:
+          $ref: '#/components/schemas/Window'
+      required:
+      - station
+      - signal
+      - window
+      - agg
+      - bucket_seconds
+      - points
+      - truncated
+      title: SignalTrend
+      type: object
     StateEpisode:
       description: "One station holding one state, for a UI to draw as a bar.\n\n`to_ts` is null while\
         \ the station was still in this state at the end of the history\nthat was read \u2014 not \"until\
@@ -617,6 +810,38 @@ components:
       - reason
       - reason_buffer
       title: StateEpisode
+      type: object
+    StationStatus:
+      description: "What one station was last seen doing, and when it was last seen.\n\n`since` is when\
+        \ the state began. `as_of` is the newest row this station has of any\nkind \u2014 with the plant\
+        \ down, `since` goes on reading like a live state while `as_of`\nis what says the reading is hours\
+        \ old."
+      properties:
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        since:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: Since
+        state:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: State
+        station:
+          title: Station
+          type: string
+      required:
+      - station
+      - state
+      - reason
+      - since
+      title: StationStatus
       type: object
     StatsGroup:
       description: "One value of the requested grouping, and the reject share within it.\n\n**`parts`\
@@ -848,6 +1073,51 @@ components:
       - now
       title: TimeResolution
       type: object
+    TrendPoint:
+      description: 'One point of a trend: a bucket, or a single sample when `agg` is `raw`.
+
+
+        `at` is the bucket''s start (half-open, clock-aligned) or the sample''s own
+
+        `SourceTimestamp`. `value` is the bucket''s mean or the sample''s value; `count` is how
+
+        many samples it is of, and is 1 for a raw point.
+
+
+        `value`, `min_value` and `max_value` are nullable for one reason only: a bucket the
+
+        query emitted with nothing in it. They are never a stand-in for a value that exists.'
+      properties:
+        at:
+          format: date-time
+          title: At
+          type: string
+        count:
+          title: Count
+          type: integer
+        max_value:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Max Value
+        min_value:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Min Value
+        value:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Value
+      required:
+      - at
+      - value
+      - min_value
+      - max_value
+      - count
+      title: TrendPoint
+      type: object
     Unexplained:
       description: Where a chain stopped short, named precisely enough to be checked by hand.
       properties:
@@ -916,6 +1186,49 @@ info:
   version: 0.1.0
 openapi: 3.1.0
 paths:
+  /alarms:
+    get:
+      description: "Every alarm whose life overlaps the window, newest first.\n\nA `station` that the\
+        \ line does not have is a 404 rather than an empty list: \xA76.5 checks\ncited ids against the\
+        \ database, and \"S9 raised no alarms\" is a false statement about a\nstation that does not exist."
+      operationId: listAlarms
+      parameters:
+      - in: query
+        name: station
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Station
+      - in: query
+        name: from
+        required: true
+        schema:
+          format: date-time
+          title: From
+          type: string
+      - in: query
+        name: to
+        required: true
+        schema:
+          format: date-time
+          title: To
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AlarmList'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Alarms
   /coverage:
     get:
       description: Where the data is, and where it is not, over a half-open window.
@@ -1006,6 +1319,26 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Inspection Stats
+  /line/status:
+    get:
+      description: "Each station's last state and reason, the buffer levels, the standing alarms, the\n\
+        last part out \u2014 and how old all of that is.\n\n`live` is a comparison and nothing more: the\
+        \ newest row in the database against\n`live_within_seconds`, both of which are in the response\
+        \ so that the verdict can be\nchecked rather than believed.\n\nTwo edges worth knowing. A database\
+        \ with no rows at all reports a null staleness and\n`live` false \u2014 nothing has ever arrived,\
+        \ which is a different thing from nothing having\narrived lately and calls for a different action.\
+        \ And a *negative* staleness is possible\nand is reported as it is: all analysis reads `SourceTimestamp`,\
+        \ which is simulated time,\nand simulated time ahead of the wall clock is a fact about the plant's\
+        \ clock rather than\nsomething to clamp away."
+      operationId: lineStatus
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LineStatus'
+          description: Successful Response
+      summary: Line Status
   /parts/{serial}:
     get:
       description: "\xA714's trace: genealogy, what each station recorded, the verdict and the disposition.\n\
@@ -1064,6 +1397,68 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Get Part Image
+  /signals/trend:
+    get:
+      description: "One historised signal over a window, raw or bucketed.\n\nBuckets are half-open and\
+        \ aligned to the clock in UTC, so the 09:00 bucket is the same\nhour whichever window asked for\
+        \ it and two trends can be read against each other.\n\nA station the line does not have is a 404;\
+        \ a station that published nothing under this\nname is an empty series. \xA76.5 needs those to\
+        \ be different answers \u2014 \"S2 has no signal\ncalled JoiningForce\" and \"S2's JoiningForce\
+        \ was silent for this hour\" lead to different\nnext steps, and an empty list for both would hide\
+        \ a typo as a measurement."
+      operationId: signalTrend
+      parameters:
+      - in: query
+        name: station
+        required: true
+        schema:
+          title: Station
+          type: string
+      - in: query
+        name: signal
+        required: true
+        schema:
+          title: Signal
+          type: string
+      - in: query
+        name: agg
+        required: false
+        schema:
+          default: raw
+          enum:
+          - raw
+          - minute
+          - hour
+          title: Agg
+          type: string
+      - in: query
+        name: from
+        required: true
+        schema:
+          format: date-time
+          title: From
+          type: string
+      - in: query
+        name: to
+        required: true
+        schema:
+          format: date-time
+          title: To
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SignalTrend'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Signal Trend
   /stops:
     get:
       description: "Every stop in the window, with a duration and a category for each.\n\nCoverage rides\
