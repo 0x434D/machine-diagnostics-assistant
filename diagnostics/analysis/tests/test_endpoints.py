@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import pytest
 from analysis.config import Settings
 from fastapi.testclient import TestClient
@@ -234,3 +236,162 @@ def test_a_rejects_image_comes_back_as_png_bytes(client: TestClient) -> None:
     assert response.status_code == 200
     assert response.headers["content-type"] == "image/png"
     assert response.content.startswith(b"\x89PNG")
+
+
+# --- §5.3's group_by, added in M3 -------------------------------------------------------
+
+
+@pytest.mark.usefixtures("seeded_db")
+def test_no_grouping_asked_for_is_null_and_not_an_empty_list(
+    client: TestClient,
+) -> None:
+    """A caller that asked for no grouping and a caller that asked for one over an empty
+    window are not entitled to the same answer."""
+    body = client.get("/inspection/stats", params=WINDOW).json()
+
+    assert body["group_by"] is None
+    assert body["groups"] is None
+
+
+@pytest.mark.usefixtures("seeded_db")
+def test_grouping_by_carrier_counts_parts_and_rejects_within_each_carrier(
+    client: TestClient,
+) -> None:
+    """Fifteen carriers, forty parts each, and every reject on one of three of them.
+
+    The twelve clean carriers come back with a share of 0.0 and not null: there were parts
+    and none of them was rejected, which is a measurement. Null is reserved for the group
+    that had no parts to take a share of at all.
+    """
+    groups = client.get(
+        "/inspection/stats", params={**WINDOW, "group_by": "carrier"}
+    ).json()["groups"]
+
+    assert len(groups) == 15
+    assert {group["parts"] for group in groups} == {40}
+    rejecting = {group["key"]: group["rejects"] for group in groups if group["rejects"]}
+    assert rejecting == {"3": 10, "8": 10, "13": 10}
+    assert all(group["from_ts"] is None for group in groups)
+    clean = next(group for group in groups if group["rejects"] == 0)
+    assert clean["reject_share"] == 0.0
+
+
+@pytest.mark.usefixtures("seeded_db")
+def test_grouping_by_lane_counts_every_part_under_both_lanes(
+    client: TestClient,
+) -> None:
+    """**These groups are not disjoint, and the numbers say so.**
+
+    Every assembly draws one component from each feeder lane (§3.5), so each part is counted
+    under both and the group totals sum to twice the window's. The counts are true; what
+    they cannot support is a comparison, which is why `/inspection/patterns` declines the
+    lane dimension rather than returning a verdict over the same parts twice.
+    """
+    body = client.get("/inspection/stats", params={**WINDOW, "group_by": "lane"}).json()
+
+    groups = body["groups"]
+    assert [group["key"] for group in groups] == ["1", "2"]
+    assert [group["parts"] for group in groups] == [600, 600]
+    assert sum(group["parts"] for group in groups) == 2 * body["total"]
+
+
+@pytest.mark.usefixtures("seeded_db")
+def test_grouping_by_defect_class_takes_the_share_over_every_inspected_part(
+    client: TestClient,
+) -> None:
+    """The per-part denominator: a part is one trial for each class, and the shares across
+    the classes therefore do not sum to the window's reject rate."""
+    body = client.get(
+        "/inspection/stats", params={**WINDOW, "group_by": "defect_class"}
+    ).json()
+
+    groups = {group["key"]: group for group in body["groups"]}
+    assert {group["parts"] for group in groups.values()} == {600}
+    assert groups["scratch"]["rejects"] == 6
+    assert groups["gap"]["reject_share"] == pytest.approx(5 / 600)
+    # The same counts the breakdown carries, because they are the same query.
+    breakdown = {row["defect_class"]: row["count"] for row in body["by_defect_class"]}
+    assert breakdown == {key: group["rejects"] for key, group in groups.items()}
+
+
+@pytest.mark.usefixtures("seeded_db")
+def test_time_buckets_are_clock_aligned_and_an_empty_one_has_no_share(
+    client: TestClient,
+) -> None:
+    """**The distinction `float | None` exists for, over three hours.**
+
+    Midnight holds the one row seeded before the window, 01:00 holds the whole hour of
+    production, and 02:00 holds nothing at all. The middle bucket's share is a rate, the
+    first one's is a measured zero, and the last one's is null — "no parts, so no rate".
+    Flattened to 0.0 the third would read as an hour that ran perfectly while the line was
+    off.
+    """
+    groups = client.get(
+        "/inspection/stats",
+        params={
+            "from": "2026-09-12T00:00:00Z",
+            "to": "2026-09-12T03:00:00Z",
+            "group_by": "time",
+        },
+    ).json()["groups"]
+
+    assert [group["key"] for group in groups] == [
+        "2026-09-12T00:00:00+00:00",
+        "2026-09-12T01:00:00+00:00",
+        "2026-09-12T02:00:00+00:00",
+    ]
+    assert [group["parts"] for group in groups] == [1, 600, 0]
+    assert groups[0]["reject_share"] == 0.0
+    assert groups[1]["reject_share"] == pytest.approx(30 / 600)
+    assert groups[2]["reject_share"] is None
+
+
+@pytest.mark.usefixtures("seeded_db")
+def test_a_bucket_the_window_only_half_covers_is_visibly_short(
+    client: TestClient,
+) -> None:
+    """The key stays the bucket's true, clock-aligned start — stable across any two windows —
+    while the reported edges are clipped to what this window actually observed. A partial
+    bucket is then a short one rather than a full hour with a mysteriously low count."""
+    groups = client.get(
+        "/inspection/stats",
+        params={
+            "from": "2026-09-12T00:30:00Z",
+            "to": "2026-09-12T02:30:00Z",
+            "group_by": "time",
+        },
+    ).json()["groups"]
+
+    assert groups[0]["key"] == "2026-09-12T00:00:00+00:00"
+    assert groups[0]["from_ts"] == "2026-09-12T00:30:00Z"
+    assert groups[0]["to_ts"] == "2026-09-12T01:00:00Z"
+    assert groups[-1]["to_ts"] == "2026-09-12T02:30:00Z"
+
+
+def test_the_bucket_size_is_configuration_and_not_an_hour_by_definition(
+    seeded_db: str,
+    analysis_url: str,
+    tuned_client: Callable[[Settings], TestClient],
+) -> None:
+    """§10.3. A deployment with a different takt wants a different bucket, and a test that
+    could not move it would be pinning one line's hour as if it were the rule."""
+    assert seeded_db
+    client = tuned_client(
+        Settings(database_url=analysis_url, stats_time_bucket_minutes=30)
+    )
+    groups = client.get(
+        "/inspection/stats", params={**WINDOW, "group_by": "time"}
+    ).json()["groups"]
+
+    assert [group["key"] for group in groups] == [
+        "2026-09-12T01:00:00+00:00",
+        "2026-09-12T01:30:00+00:00",
+    ]
+    assert [group["parts"] for group in groups] == [300, 300]
+
+
+@pytest.mark.usefixtures("seeded_db")
+def test_a_grouping_the_contract_does_not_offer_is_refused(client: TestClient) -> None:
+    response = client.get("/inspection/stats", params={**WINDOW, "group_by": "shift"})
+
+    assert response.status_code == 422

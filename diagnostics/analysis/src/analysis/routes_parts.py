@@ -12,12 +12,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Response
 from psycopg import Connection
 
+from analysis import queries_traceability
 from analysis.config import Settings
 from analysis.db import connection
 from analysis.dependencies import settings_dependency
 from analysis.models import (
     ComponentOrigin,
-    Disposition,
     Inspection,
     Part,
     ProcessCurve,
@@ -71,7 +71,7 @@ def get_part(
             process_values=_process_values(conn, serial),
             process_curves=_process_curves(conn, serial),
             inspection=inspection,
-            disposition=_disposition(conn, serial),
+            disposition=queries_traceability.part_disposition(conn, serial),
         )
 
 
@@ -182,21 +182,6 @@ def _inspection(conn: Connection, serial: str) -> Inspection | None:
         model_version=row[6],
         image_url=f"/parts/{serial}/image" if row[7] else None,
     )
-
-
-def _disposition(conn: Connection, serial: str) -> Disposition | None:
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT at, disposition, reason FROM read.part_dispositions "
-            "WHERE assembly_serial = %s",
-            (serial,),
-        )
-        row = cur.fetchone()
-
-    if row is None:
-        return None
-
-    return Disposition(at=row[0], disposition=row[1], reason=row[2])
 
 
 @router.get(

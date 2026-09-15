@@ -52,15 +52,35 @@ components:
       title: ComponentOrigin
       type: object
     Coverage:
-      description: "\xA74.4: without gap markers, missing data is indistinguishable from a quiet machine."
+      description: "\xA74.4: without gap markers, missing data is indistinguishable from a quiet machine.\n\
+        \n`fully_covered` is carried rather than left to a reader comparing `covered_fraction`\nagainst\
+        \ 1.0, for the reason `coverage.Coverage` gives: `gaps == []` and \"fully covered\"\nare only\
+        \ the same fact when nothing was clipped into `gaps` in the first place.\n\n`window` is repeated\
+        \ here and in the response that embeds this, and deliberately: the\ncoverage of a window is unreadable\
+        \ without the window it is of, and a UI that passes\nthis object around alone would otherwise\
+        \ be holding a fraction of nothing."
       properties:
+        covered_fraction:
+          title: Covered Fraction
+          type: number
+        fully_covered:
+          title: Fully Covered
+          type: boolean
         gaps:
           items:
             $ref: '#/components/schemas/Gap'
           title: Gaps
           type: array
+        observed:
+          $ref: '#/components/schemas/ObservedSpan'
+        window:
+          $ref: '#/components/schemas/Window'
       required:
+      - window
       - gaps
+      - covered_fraction
+      - fully_covered
+      - observed
       title: Coverage
       type: object
     DefectClassCount:
@@ -206,6 +226,23 @@ components:
         defect_class_threshold:
           title: Defect Class Threshold
           type: number
+        group_by:
+          anyOf:
+          - enum:
+            - time
+            - carrier
+            - lane
+            - defect_class
+            type: string
+          - type: 'null'
+          title: Group By
+        groups:
+          anyOf:
+          - items:
+              $ref: '#/components/schemas/StatsGroup'
+            type: array
+          - type: 'null'
+          title: Groups
         rejects:
           title: Rejects
           type: integer
@@ -231,7 +268,39 @@ components:
       - rejects_without_class
       - sample_serials
       - coverage
+      - group_by
+      - groups
       title: InspectionStats
+      type: object
+    ObservedSpan:
+      description: "What the window actually holds, across every stream the analysis reads.\n\nThis is\
+        \ the half of coverage the gap rows cannot supply. A window with no gaps and no\nrows is a quiet\
+        \ line; a window with no rows because a gap covers all of it is a\nblackout; and the two are the\
+        \ same empty answer until something counts what is there.\n`events` is deliberately a total over\
+        \ the streams rather than a breakdown \u2014 the\nquestion it answers is \"is there anything here\
+        \ at all\", and a per-stream count would\ninvite it being read as a production figure, which it\
+        \ is not."
+      properties:
+        events:
+          title: Events
+          type: integer
+        from_ts:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: From Ts
+        to_ts:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: To Ts
+      required:
+      - from_ts
+      - to_ts
+      - events
+      title: ObservedSpan
       type: object
     Part:
       description: "\xA714's end-to-end trace of one serial, every section read by that serial alone.\n\
@@ -336,6 +405,96 @@ components:
       - value
       title: ProcessValue
       type: object
+    StatsGroup:
+      description: "One value of the requested grouping, and the reject share within it.\n\n**`parts`\
+        \ is the denominator and it is not the same quantity for every grouping.** For\n`time`, `carrier`\
+        \ and `lane` the group is a set of parts and `parts` counts them. For\n`defect_class` the group\
+        \ is a *class*, which is not a set of parts at all \u2014 \xA73.4's six\nscores are independent,\
+        \ a part can carry several and most carry none \u2014 so the\ndenominator is every inspected part\
+        \ in the window, the same number under every class,\nand `rejects` is how many of them scored\
+        \ at or above the threshold on this one.\n\nThat choice is the per-part denominator, and it is\
+        \ the same one `/inspection/patterns`\ntests with: a part is one trial for each class, not one\
+        \ trial shared between them. The\nconsequence to read the numbers with is that the defect-class\
+        \ shares do not sum to the\nwindow's reject rate and were never going to \u2014 a part carrying\
+        \ two classes is counted\nunder both, exactly as `DefectClassCount` describes.\n\n`lane` is a\
+        \ third case again, and the one to be careful with: every assembly draws one\ncomponent from *each*\
+        \ feeder lane (\xA73.5), so the lane groups hold the same parts and\ntheir `parts` counts sum\
+        \ to more than the window's. The counts are real; what they do\nnot support is a comparison between\
+        \ the lanes, which is why `/inspection/patterns`\nrefuses that dimension rather than returning\
+        \ a verdict on it.\n\n`from_ts` and `to_ts` are set for `time` and null for everything else. They\
+        \ are the\nbucket's edges **clipped to the requested window**, so a bucket the window only partly\n\
+        covers is visibly short rather than quietly under-counted."
+      properties:
+        from_ts:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: From Ts
+        key:
+          title: Key
+          type: string
+        parts:
+          title: Parts
+          type: integer
+        reject_share:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Reject Share
+        rejects:
+          title: Rejects
+          type: integer
+        to_ts:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: To Ts
+      required:
+      - key
+      - from_ts
+      - to_ts
+      - parts
+      - rejects
+      - reject_share
+      title: StatsGroup
+      type: object
+    TimeResolution:
+      description: 'What `/time/resolve` made of a phrase, and as of when.
+
+
+        `now` is echoed because `closed` is a statement about the clock and not about the
+
+        window: the same expression resolved a minute later can answer the same window and a
+
+        different `closed`, and a cache that kept the flag without the instant it was taken at
+
+        would be asserting a fact it cannot support.'
+      properties:
+        closed:
+          title: Closed
+          type: boolean
+        expression:
+          title: Expression
+          type: string
+        label:
+          title: Label
+          type: string
+        now:
+          format: date-time
+          title: Now
+          type: string
+        window:
+          $ref: '#/components/schemas/Window'
+      required:
+      - expression
+      - window
+      - label
+      - closed
+      - now
+      title: TimeResolution
+      type: object
     ValidationError:
       properties:
         ctx:
@@ -382,18 +541,68 @@ info:
   version: 0.1.0
 openapi: 3.1.0
 paths:
+  /coverage:
+    get:
+      description: Where the data is, and where it is not, over a half-open window.
+      operationId: coverage
+      parameters:
+      - in: query
+        name: from
+        required: true
+        schema:
+          format: date-time
+          title: From
+          type: string
+      - in: query
+        name: to
+        required: true
+        schema:
+          format: date-time
+          title: To
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Coverage'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Coverage
   /inspection/stats:
     get:
-      description: "Counts over a closed window, with the gaps that make them incomplete.\n\n**The breakdown\
-        \ reads \xA73.4's score vector, not a scalar class.** It grouped by\n`inspection_results.defect_class`\
+      description: "Counts over a half-open window, with the gaps that make them incomplete.\n\n**The\
+        \ breakdown reads \xA73.4's score vector, not a scalar class.** It grouped by\n`inspection_results.defect_class`\
         \ until M2b Task 7, and by then nothing filled that\ncolumn: the plant sends `DefectClasses`,\
         \ the gateway's select clause named the old\nscalar, asyncua maps a select clause it cannot resolve\
         \ to `Variant(None)` rather than\nerroring, the writer resolves that to `DBNull`, and `defect_class\
         \ IS NOT NULL` then\nemptied the group-by. No exception and no 500 \u2014 `by_defect_class: []`\
         \ beside a correct\n`total` and `rejects`, which is a silently empty answer to \"which defects\
-        \ are we\nseeing\" and the exact failure \xA71 exists to prevent."
+        \ are we\nseeing\" and the exact failure \xA71 exists to prevent. The column is no longer in the\
+        \ read\nlayer at all, so the query that produced that answer can no longer be written.\n\n`group_by`\
+        \ is absent by default and `groups` is then null rather than empty: a caller\nthat asked for no\
+        \ grouping and a caller that asked for one over an empty window are not\nentitled to the same\
+        \ answer."
       operationId: inspectionStats
       parameters:
+      - in: query
+        name: group_by
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - time
+            - carrier
+            - lane
+            - defect_class
+            type: string
+          - type: 'null'
+          title: Group By
       - in: query
         name: from
         required: true
@@ -480,3 +689,39 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Get Part Image
+  /time/resolve:
+    get:
+      description: 'Resolve a fixed time phrase to a concrete UTC window against the shift calendar.
+
+
+        **An expression this does not understand is a 422 carrying the list of ones it does,
+
+        never a guess.** A near-miss guessed wrong is the worst of the three possible outcomes:
+
+        the caller gets a window, believes it is the one it asked for, and every number computed
+
+        over it is an answer to a different question. The list is in the error so that the agent
+
+        can retry with something real instead of rephrasing at random.'
+      operationId: resolveTime
+      parameters:
+      - in: query
+        name: expression
+        required: true
+        schema:
+          title: Expression
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimeResolution'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Resolve Time

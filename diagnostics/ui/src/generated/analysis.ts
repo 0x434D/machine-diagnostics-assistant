@@ -4,6 +4,26 @@
  */
 
 export interface paths {
+    "/coverage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Coverage
+         * @description Where the data is, and where it is not, over a half-open window.
+         */
+        get: operations["coverage"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/inspection/stats": {
         parameters: {
             query?: never;
@@ -13,7 +33,7 @@ export interface paths {
         };
         /**
          * Inspection Stats
-         * @description Counts over a closed window, with the gaps that make them incomplete.
+         * @description Counts over a half-open window, with the gaps that make them incomplete.
          *
          *     **The breakdown reads §3.4's score vector, not a scalar class.** It grouped by
          *     `inspection_results.defect_class` until M2b Task 7, and by then nothing filled that
@@ -22,7 +42,12 @@ export interface paths {
          *     erroring, the writer resolves that to `DBNull`, and `defect_class IS NOT NULL` then
          *     emptied the group-by. No exception and no 500 — `by_defect_class: []` beside a correct
          *     `total` and `rejects`, which is a silently empty answer to "which defects are we
-         *     seeing" and the exact failure §1 exists to prevent.
+         *     seeing" and the exact failure §1 exists to prevent. The column is no longer in the read
+         *     layer at all, so the query that produced that answer can no longer be written.
+         *
+         *     `group_by` is absent by default and `groups` is then null rather than empty: a caller
+         *     that asked for no grouping and a caller that asked for one over an empty window are not
+         *     entitled to the same answer.
          */
         get: operations["inspectionStats"];
         put?: never;
@@ -86,6 +111,32 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/time/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Resolve Time
+         * @description Resolve a fixed time phrase to a concrete UTC window against the shift calendar.
+         *
+         *     **An expression this does not understand is a 422 carrying the list of ones it does,
+         *     never a guess.** A near-miss guessed wrong is the worst of the three possible outcomes:
+         *     the caller gets a window, believes it is the one it asked for, and every number computed
+         *     over it is an answer to a different question. The list is in the error so that the agent
+         *     can retry with something real instead of rephrasing at random.
+         */
+        get: operations["resolveTime"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -117,10 +168,24 @@ export interface components {
         /**
          * Coverage
          * @description §4.4: without gap markers, missing data is indistinguishable from a quiet machine.
+         *
+         *     `fully_covered` is carried rather than left to a reader comparing `covered_fraction`
+         *     against 1.0, for the reason `coverage.Coverage` gives: `gaps == []` and "fully covered"
+         *     are only the same fact when nothing was clipped into `gaps` in the first place.
+         *
+         *     `window` is repeated here and in the response that embeds this, and deliberately: the
+         *     coverage of a window is unreadable without the window it is of, and a UI that passes
+         *     this object around alone would otherwise be holding a fraction of nothing.
          */
         Coverage: {
+            /** Covered Fraction */
+            covered_fraction: number;
+            /** Fully Covered */
+            fully_covered: boolean;
             /** Gaps */
             gaps: components["schemas"]["Gap"][];
+            observed: components["schemas"]["ObservedSpan"];
+            window: components["schemas"]["Window"];
         };
         /**
          * DefectClassCount
@@ -225,6 +290,10 @@ export interface components {
             coverage: components["schemas"]["Coverage"];
             /** Defect Class Threshold */
             defect_class_threshold: number;
+            /** Group By */
+            group_by: ("time" | "carrier" | "lane" | "defect_class") | null;
+            /** Groups */
+            groups: components["schemas"]["StatsGroup"][] | null;
             /** Rejects */
             rejects: number;
             /** Rejects Without Class */
@@ -234,6 +303,25 @@ export interface components {
             /** Total */
             total: number;
             window: components["schemas"]["Window"];
+        };
+        /**
+         * ObservedSpan
+         * @description What the window actually holds, across every stream the analysis reads.
+         *
+         *     This is the half of coverage the gap rows cannot supply. A window with no gaps and no
+         *     rows is a quiet line; a window with no rows because a gap covers all of it is a
+         *     blackout; and the two are the same empty answer until something counts what is there.
+         *     `events` is deliberately a total over the streams rather than a breakdown — the
+         *     question it answers is "is there anything here at all", and a per-stream count would
+         *     invite it being read as a production figure, which it is not.
+         */
+        ObservedSpan: {
+            /** Events */
+            events: number;
+            /** From Ts */
+            from_ts: string | null;
+            /** To Ts */
+            to_ts: string | null;
         };
         /**
          * Part
@@ -292,6 +380,70 @@ export interface components {
             /** Value */
             value: number;
         };
+        /**
+         * StatsGroup
+         * @description One value of the requested grouping, and the reject share within it.
+         *
+         *     **`parts` is the denominator and it is not the same quantity for every grouping.** For
+         *     `time`, `carrier` and `lane` the group is a set of parts and `parts` counts them. For
+         *     `defect_class` the group is a *class*, which is not a set of parts at all — §3.4's six
+         *     scores are independent, a part can carry several and most carry none — so the
+         *     denominator is every inspected part in the window, the same number under every class,
+         *     and `rejects` is how many of them scored at or above the threshold on this one.
+         *
+         *     That choice is the per-part denominator, and it is the same one `/inspection/patterns`
+         *     tests with: a part is one trial for each class, not one trial shared between them. The
+         *     consequence to read the numbers with is that the defect-class shares do not sum to the
+         *     window's reject rate and were never going to — a part carrying two classes is counted
+         *     under both, exactly as `DefectClassCount` describes.
+         *
+         *     `lane` is a third case again, and the one to be careful with: every assembly draws one
+         *     component from *each* feeder lane (§3.5), so the lane groups hold the same parts and
+         *     their `parts` counts sum to more than the window's. The counts are real; what they do
+         *     not support is a comparison between the lanes, which is why `/inspection/patterns`
+         *     refuses that dimension rather than returning a verdict on it.
+         *
+         *     `from_ts` and `to_ts` are set for `time` and null for everything else. They are the
+         *     bucket's edges **clipped to the requested window**, so a bucket the window only partly
+         *     covers is visibly short rather than quietly under-counted.
+         */
+        StatsGroup: {
+            /** From Ts */
+            from_ts: string | null;
+            /** Key */
+            key: string;
+            /** Parts */
+            parts: number;
+            /** Reject Share */
+            reject_share: number | null;
+            /** Rejects */
+            rejects: number;
+            /** To Ts */
+            to_ts: string | null;
+        };
+        /**
+         * TimeResolution
+         * @description What `/time/resolve` made of a phrase, and as of when.
+         *
+         *     `now` is echoed because `closed` is a statement about the clock and not about the
+         *     window: the same expression resolved a minute later can answer the same window and a
+         *     different `closed`, and a cache that kept the flag without the instant it was taken at
+         *     would be asserting a fact it cannot support.
+         */
+        TimeResolution: {
+            /** Closed */
+            closed: boolean;
+            /** Expression */
+            expression: string;
+            /** Label */
+            label: string;
+            /**
+             * Now
+             * Format: date-time
+             */
+            now: string;
+            window: components["schemas"]["Window"];
+        };
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -327,9 +479,42 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    coverage: {
+        parameters: {
+            query: {
+                from: string;
+                to: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Coverage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     inspectionStats: {
         parameters: {
             query: {
+                group_by?: ("time" | "carrier" | "lane" | "defect_class") | null;
                 from: string;
                 to: string;
             };
@@ -408,6 +593,37 @@ export interface operations {
                 };
                 content: {
                     "image/png": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resolveTime: {
+        parameters: {
+            query: {
+                expression: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TimeResolution"];
                 };
             };
             /** @description Validation Error */

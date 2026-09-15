@@ -15,7 +15,7 @@ test pinning a fiction, and this one was hiding the endpoint it was meant to cov
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -24,7 +24,7 @@ import pytest
 from analysis.app import app
 from analysis.config import Settings
 from analysis.db import reset_pool
-from analysis.dependencies import settings_dependency
+from analysis.dependencies import now_dependency, settings_dependency
 from fastapi.testclient import TestClient
 from psycopg import Connection, sql
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
@@ -225,10 +225,37 @@ def database(postgres: str) -> Iterator[str]:
             " ('S1', 'Feeding', 1), ('S2', 'Joining', 2),"
             " ('S3', 'Inspection', 3), ('S4', 'Outfeed', 4)"
         )
+        _seed_topology(conn)
         conn.commit()
     reset_pool()
     yield postgres
     reset_pool()
+
+
+BUFFERS = (("B1_2", "S1", "S2"), ("B2_3", "S2", "S3"), ("B3_4", "S3", "S4"))
+BUFFER_CAPACITY = 10
+"""§4.1's three buffers, seeded beside the stations because they are the line's *shape*.
+
+Two things read them and neither is about one test's data: `/parts/affected` finds the head
+and the tail of the line here to decide which per-part instant a station records, and the
+propagation walk discovers the whole topology from these rows. A fixture that seeded them
+only where a stop was being tested would leave every other endpoint answering over a line
+with no shape -- which is not a state the plant can be in.
+"""
+
+
+def _seed_topology(conn: Connection) -> None:
+    stations = _station_ids(conn)
+    for code, upstream, downstream in BUFFERS:
+        conn.execute(
+            "INSERT INTO buffers (code, upstream_station_id, downstream_station_id,"
+            " capacity) VALUES (%s, %s, %s, %s)",
+            (code, stations[upstream], stations[downstream], BUFFER_CAPACITY),
+        )
+
+
+def _buffer_ids(conn: Connection) -> dict[str, int]:
+    return {code: id_ for code, id_ in conn.execute("SELECT code, id FROM buffers")}
 
 
 def _station_ids(conn: Connection) -> dict[str, int]:
@@ -546,8 +573,190 @@ def seeded_db_with_gap(database: str) -> str:
     return database
 
 
+STOP_FROM = WINDOW_START + timedelta(minutes=30)
+STOP_TO = WINDOW_START + timedelta(minutes=35)
+"""The five minutes in which no part leaves S4.
+
+Both ends land exactly on a disposition: the base seed writes one every 6 s from
+`WINDOW_START + TAKT`, so 30 min is part 299's and 35 min is part 349's. The stop is
+therefore bounded by two real outputs, which is what makes its id a fact about the line
+rather than about the window a test happened to ask for.
+"""
+
+_ALARM_DECOY_OFFSET = timedelta(seconds=90)
+_ROOT_OFFSET = timedelta(seconds=40)
+_S3_OFFSET = timedelta(seconds=20)
+"""§5.4's worked example, laid out backwards from the stop.
+
+S2 aborts first, B2_3 drains, S3 starves, B3_4 drains, S4 starves and the output stops. The
+decoy alarm at the *tail* is raised 90 s before any of it -- earlier than the root's own
+alarm and downstream of the root -- so a chain that had quietly been reading "the first
+station to raise an alarm" would terminate at S4 and this fixture would catch it.
+"""
+
+
 @pytest.fixture
-def client(database: str, analysis_url: str) -> Iterator[TestClient]:
+def seeded_db_with_a_stop(database: str) -> str:
+    """§5.4's chain, end to end: an S2 abort that reaches the outfeed five minutes later.
+
+    Built by removing dispositions rather than by seeding a second line, because a stop is
+    an *absence* of output and the only faithful way to seed one is to take the output away.
+    The parts themselves stay: they were inspected and then the line stopped before they
+    could be dispositioned, which is exactly the state a stop leaves behind.
+    """
+    _seed_parts(database)
+    with psycopg.connect(database) as conn:
+        conn.execute(
+            "DELETE FROM part_dispositions WHERE at > %s AND at < %s",
+            (STOP_FROM, STOP_TO),
+        )
+        stations = _station_ids(conn)
+        buffers = _buffer_ids(conn)
+        _seed_state_changes(conn, stations, buffers)
+        _seed_buffer_levels(conn, buffers)
+        _seed_alarms(conn, stations)
+        conn.commit()
+    return database
+
+
+def _seed_state_changes(
+    conn: Connection, stations: dict[str, int], buffers: dict[str, int]
+) -> None:
+    """Every station's timeline, as `state_changes` rows the settled view will admit.
+
+    `to_state` is filled on every row: the unfiltered table is reachable through no view, so
+    a half-filled row -- a StateReason that arrived before the state it belongs to -- could
+    not be read back here even if it were seeded.
+    """
+    rows: tuple[tuple[str, datetime, str | None, str, str | None, str | None], ...] = (
+        ("S1", WINDOW_START, None, "Execute", None, None),
+        ("S2", WINDOW_START, None, "Execute", None, None),
+        ("S2", STOP_FROM - _ROOT_OFFSET, "Execute", "Aborted", None, None),
+        ("S2", STOP_TO, "Aborted", "Execute", None, None),
+        ("S3", WINDOW_START, None, "Execute", None, None),
+        (
+            "S3",
+            STOP_FROM - _S3_OFFSET,
+            "Execute",
+            "Suspended",
+            "starved:B2_3",
+            "B2_3",
+        ),
+        ("S3", STOP_TO, "Suspended", "Execute", None, None),
+        ("S4", WINDOW_START, None, "Execute", None, None),
+        ("S4", STOP_FROM, "Execute", "Suspended", "starved:B3_4", "B3_4"),
+        ("S4", STOP_TO, "Suspended", "Execute", None, None),
+    )
+    for station, at, from_state, to_state, reason, buffer_code in rows:
+        conn.execute(
+            "INSERT INTO state_changes (station_id, source_ts, from_state, to_state,"
+            " reason, reason_buffer_id) VALUES (%s, %s, %s, %s, %s, %s)",
+            (
+                stations[station],
+                at,
+                from_state,
+                to_state,
+                reason,
+                None if buffer_code is None else buffers[buffer_code],
+            ),
+        )
+
+
+def _seed_buffer_levels(conn: Connection, buffers: dict[str, int]) -> None:
+    """Levels that run down to empty before each starvation, and stay there.
+
+    Two zero samples per buffer, not one: the walk reports when a buffer *became* empty and
+    stayed so, which is the instant the station above it has to account for, and a single
+    sample cannot tell a run from a blip.
+    """
+    levels: tuple[tuple[str, timedelta, int], ...] = (
+        ("B2_3", timedelta(seconds=-60), 3),
+        ("B2_3", timedelta(seconds=-40), 2),
+        ("B2_3", timedelta(seconds=-25), 0),
+        ("B2_3", timedelta(seconds=-24), 0),
+        ("B3_4", timedelta(seconds=-60), 4),
+        ("B3_4", timedelta(seconds=-30), 2),
+        ("B3_4", timedelta(seconds=-6), 0),
+        ("B3_4", timedelta(seconds=-5), 0),
+        ("B1_2", timedelta(seconds=-60), 7),
+        # B1_2 fills while S2 is down, which is the consequence the walk must *not* follow:
+        # S2 is a cause candidate and the chain stops there rather than asking why the
+        # buffer above it is full.
+        ("B1_2", timedelta(seconds=-10), BUFFER_CAPACITY),
+    )
+    for buffer_code, offset, level in levels:
+        conn.execute(
+            "INSERT INTO buffer_levels (buffer_id, source_ts, level) VALUES (%s, %s, %s)",
+            (buffers[buffer_code], STOP_FROM + offset, level),
+        )
+
+
+def _seed_alarms(conn: Connection, stations: dict[str, int]) -> None:
+    """Three alarms, one in each lifecycle state, and the first of them is a decoy.
+
+    A-100 is raised at the *tail* 90 s before the root's own alarm and is never cleared.
+    §3.3 and `004_m2c.sql` both warn that "the first station to raise an alarm" is circular;
+    here it is also simply wrong, and any chain that consulted alarms would say S4.
+    """
+    rows: tuple[
+        tuple[str, str, str, int, datetime, datetime | None, datetime | None], ...
+    ] = (
+        (
+            "S4",
+            "A-100",
+            "outfeed conveyor warning",
+            1,
+            STOP_FROM - _ALARM_DECOY_OFFSET,
+            None,
+            None,
+        ),
+        (
+            "S3",
+            "A-050",
+            "inspection illumination low",
+            3,
+            STOP_FROM - timedelta(seconds=50),
+            STOP_FROM - timedelta(seconds=45),
+            None,
+        ),
+        (
+            "S2",
+            "A-207",
+            "joining force out of tolerance",
+            2,
+            STOP_FROM - _ROOT_OFFSET,
+            STOP_FROM - timedelta(seconds=30),
+            STOP_TO,
+        ),
+    )
+    for station, code, text, severity, raised, acked, cleared in rows:
+        conn.execute(
+            "INSERT INTO alarms (station_id, code, text, severity, raised_at, acked_at,"
+            " cleared_at) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            (stations[station], code, text, severity, raised, acked, cleared),
+        )
+
+
+FROZEN_NOW = WINDOW_START + timedelta(hours=1)
+"""The instant every endpoint test's clock reads: exactly where the seeded window closes.
+
+A fixed clock rather than the real one, because `/time/resolve`, `/line/status` and an open
+stop are all statements *about* now -- and a test of one of them against a moving clock is a
+test that asserts something different every time it runs.
+"""
+
+
+@pytest.fixture
+def frozen_now() -> Iterator[datetime]:
+    app.dependency_overrides[now_dependency] = lambda: FROZEN_NOW
+    yield FROZEN_NOW
+    app.dependency_overrides.pop(now_dependency, None)
+
+
+@pytest.fixture
+def client(
+    database: str, analysis_url: str, frozen_now: datetime
+) -> Iterator[TestClient]:
     """The service, connected the way it is deployed: as `analysis`, over `read.*`.
 
     `database` is depended on for its truncation and its seeded stations rather than for
@@ -557,8 +766,40 @@ def client(database: str, analysis_url: str) -> Iterator[TestClient]:
     assert (
         conninfo_to_dict(database)["dbname"] == conninfo_to_dict(analysis_url)["dbname"]
     )
+    assert frozen_now == FROZEN_NOW
     app.dependency_overrides[settings_dependency] = lambda: Settings(
         database_url=analysis_url
     )
     yield TestClient(app)
     app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def tuned_client(
+    frozen_now: datetime,
+) -> Iterator[Callable[[Settings], TestClient]]:
+    """A client whose `Settings` the test supplies, for the numbers §10.3 makes configurable.
+
+    The sample gate and the bucket size are the two that change what an endpoint *says*
+    rather than how fast it says it, and a test that could not move them would be pinning
+    one deployment's constants as if they were the rule.
+    """
+
+    def build(settings: Settings) -> TestClient:
+        app.dependency_overrides[settings_dependency] = lambda: settings
+        return TestClient(app)
+
+    assert frozen_now == FROZEN_NOW
+    yield build
+    app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def clockless_client(frozen_now: datetime) -> TestClient:
+    """The service with a fixed clock and no database, for the one endpoint that needs none.
+
+    `/time/resolve` reads a calendar, not Postgres, and giving it a container would hide
+    that -- an endpoint that quietly started querying would go on passing.
+    """
+    assert frozen_now == FROZEN_NOW
+    return TestClient(app)
