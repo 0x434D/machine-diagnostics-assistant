@@ -8,10 +8,13 @@ and an empty list are three different answers.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import pytest
+from analysis.config import Settings
 from fastapi.testclient import TestClient
 
-from tests.conftest import STOP_FROM, STOP_TO
+from tests.conftest import STOP_FROM, STOP_TO, WINDOW_START
 
 WINDOW = {"from": "2026-09-12T01:00:00Z", "to": "2026-09-12T02:00:00Z"}
 STOP_ID = "stop-20260912T013000.000000Z"
@@ -166,12 +169,23 @@ def test_the_timeline_carries_every_station_and_closes_its_bars(
 def test_the_history_read_reaches_further_back_than_the_stop(
     client: TestClient,
 ) -> None:
-    """The chain needs the run-up, not the stop. Every episode in this fixture begins before
-    the stop did, so a read bounded by the stop alone would hand the walk an empty timeline
-    and it would terminate `UNEXPLAINED` over evidence the database holds."""
+    """**By the configured depth, and the multiple is what is asserted.**
+
+    "Earlier than the stop" is satisfied by a one-second read and would not falsify the
+    decision this test exists to document: the walk applies its lead-in again at *every*
+    link, so the history depth is a multiple of the lead-in and not equal to it. A read
+    bounded by one lead-in hands the walk a timeline that stops mid-chain, and the chain
+    terminates `UNEXPLAINED` over evidence the database holds -- with nothing in the answer
+    saying so.
+    """
+    settings = Settings()
     body = client.get(f"/stops/{STOP_ID}").json()
 
-    assert body["history_from_ts"] < body["stop"]["from_ts"]
+    reach = datetime.fromisoformat(body["stop"]["from_ts"]) - datetime.fromisoformat(
+        body["history_from_ts"]
+    )
+    assert reach == settings.propagation_history
+    assert reach > settings.propagation_lead_in
     assert any(
         episode["from_ts"] < body["stop"]["from_ts"] for episode in body["timeline"]
     )
@@ -224,3 +238,89 @@ def test_a_stop_list_carries_the_coverage_of_the_window_it_is_over(
 
     assert body["coverage"]["fully_covered"] is True
     assert body["micro_stop_threshold_seconds"] == 60.0
+
+
+@pytest.mark.usefixtures("seeded_db_with_a_stop")
+def test_an_id_no_part_ever_preceded_is_a_404_and_not_a_six_year_stop(
+    client: TestClient,
+) -> None:
+    """**§6.5's whole purpose, defended.**
+
+    M4 verifies every cited id against the database precisely to catch one the model
+    invented. An instant before the history horizon has no part leaving S4 at or before it,
+    so nothing in the database says the line was ever producing there — and a stop built
+    from the caller's own string would be perfectly self-consistent, pass verification, and
+    be cited as a line stop measured in years.
+    """
+    response = client.get("/stops/stop-20200101T000000.000000Z")
+
+    assert response.status_code == 404
+    assert "no part left S4 at or before it" in response.json()["detail"]
+
+
+@pytest.mark.usefixtures("seeded_db_with_a_stop")
+def test_a_stop_already_running_when_the_window_opened_cites_where_it_began(
+    client: TestClient,
+) -> None:
+    """The window's edge is a property of the question and would give one stop a different
+    id in every window it appeared in. The part that left before it is the line's own fact.
+
+    The second stop below starts at a real output and cites it; the first starts at a
+    boundary the database has nothing before, so it carries no id at all rather than one
+    that would answer 404 — a citation the agent could name and nobody could open.
+    """
+    body = client.get(
+        "/stops",
+        params={"from": "2026-09-11T23:00:00Z", "to": "2026-09-12T01:00:00Z"},
+    ).json()
+
+    assert len(body["stops"]) == 2
+    assert body["stops"][0]["started_before_window"] is True
+    assert body["stops"][0]["id"] is None
+    assert body["stops"][1]["id"] is not None
+    assert client.get(f"/stops/{body['stops'][1]['id']}").status_code == 200
+
+
+@pytest.mark.usefixtures("seeded_db_with_a_stop")
+def test_a_stop_carries_the_coverage_of_its_own_interval(client: TestClient) -> None:
+    body = client.get(f"/stops/{STOP_ID}").json()
+
+    assert body["coverage"]["fully_covered"] is True
+    assert body["coverage"]["window"]["from_ts"] == STOP_FROM.isoformat().replace(
+        "+00:00", "Z"
+    )
+    assert body["coverage"]["window"]["to_ts"] == STOP_TO.isoformat().replace(
+        "+00:00", "Z"
+    )
+
+
+@pytest.mark.usefixtures("seeded_db_with_a_stop_and_a_gap")
+def test_a_gateway_outage_does_not_resolve_to_a_line_stop_unremarked(
+    client: TestClient,
+) -> None:
+    """**§4.4, at the endpoint that needs it most.**
+
+    Both of this stop's boundaries are reconstructed from `part_dispositions` rows that are
+    not there, and an ingest gap is an absence of exactly the same shape. So a five-minute
+    gateway outage produces a five-minute stop with an unexplained derivation, and without
+    coverage beside it the agent reports a line stop where the line may well have been
+    running. The endpoint still answers — the stop is what the output says — but it says
+    where the data is not.
+    """
+    body = client.get(f"/stops/{STOP_ID}").json()
+
+    assert body["stop"]["duration_seconds"] == 300.0
+    assert body["coverage"]["fully_covered"] is False
+    assert body["coverage"]["covered_fraction"] == 0.0
+    assert [gap["reason"] for gap in body["coverage"]["gaps"]] == ["plant_unreachable"]
+
+
+@pytest.mark.usefixtures("seeded_db_with_a_stop")
+def test_the_window_edge_is_not_a_stop_the_database_can_confirm(
+    client: TestClient,
+) -> None:
+    """A guard on the fixture rather than on the code: the first disposition of the whole
+    database lies after the window above opens, which is what makes that test's null id the
+    real case and not an accident of ordering."""
+    assert WINDOW_START.hour == 1
+    assert client.get("/stops/stop-20260911T230000.000000Z").status_code == 404

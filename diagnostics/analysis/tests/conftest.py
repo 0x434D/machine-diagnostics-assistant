@@ -737,6 +737,25 @@ def _seed_alarms(conn: Connection, stations: dict[str, int]) -> None:
         )
 
 
+@pytest.fixture
+def seeded_db_with_a_stop_and_a_gap(seeded_db_with_a_stop: str) -> str:
+    """The same stop, with an ingest gap across exactly the same five minutes.
+
+    The two are indistinguishable from `part_dispositions` alone -- both are an absence of
+    rows -- which is the whole reason /stops and /stops/{id} carry coverage. This fixture is
+    what makes "the gateway was down" and "the line was stopped" two different answers
+    rather than one.
+    """
+    with psycopg.connect(seeded_db_with_a_stop) as conn:
+        conn.execute(
+            "INSERT INTO ingest_gaps (from_ts, to_ts, reason)"
+            " VALUES (%s, %s, 'plant_unreachable')",
+            (STOP_FROM, STOP_TO),
+        )
+        conn.commit()
+    return seeded_db_with_a_stop
+
+
 FROZEN_NOW = WINDOW_START + timedelta(hours=1)
 """The instant every endpoint test's clock reads: exactly where the seeded window closes.
 

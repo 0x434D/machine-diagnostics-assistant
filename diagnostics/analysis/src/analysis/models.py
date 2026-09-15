@@ -308,8 +308,15 @@ class TimeResolution(BaseModel):
 class Stop(BaseModel):
     """§5.4's line stop — an absence of output, not a state.
 
-    `id` is derived from `from_ts` and resolves against the database on its own (§6.5), so
-    two windows that both contain this stop cite it by the same id.
+    `id` is derived from the instant the line stopped producing and resolves against the
+    database on its own (§6.5), so two windows that both contain this stop cite it by the
+    same id. For a stop already running when the window opened that instant is the part that
+    left before it, not the window's edge -- the edge is a property of the question.
+
+    **`id` is null when the database holds no such part**: the window opens before the
+    history does, so the stop's start is the caller's own boundary and there is no instant
+    to cite that `/stops/{id}` could verify. An id minted anyway would be a citation the
+    agent could name and nobody could open.
 
     `started_before_window` and `open_at_window_end` are what keep `duration_seconds`
     honest: a stop reported as 90 s because the window closed 90 s into it is a different
@@ -319,7 +326,7 @@ class Stop(BaseModel):
     rather than a gap — see `Derivation`.
     """
 
-    id: str
+    id: str | None
     from_ts: datetime
     to_ts: datetime
     duration_seconds: float
@@ -467,6 +474,12 @@ class StopDetail(BaseModel):
     alarm at all — so the derivation is computed without them and they are returned beside
     it, never through it.
 
+    `coverage` is over the stop's own interval and is not decoration: both of this stop's
+    boundaries were reconstructed from `part_dispositions` rows that are *not there*, and a
+    window the gateway was down for holds no such rows either. Without it a five-minute
+    outage reads as a five-minute line stop with an unexplained derivation, which is exactly
+    the confusion §4.4's gap markers exist to prevent.
+
     `as_of` is the clock this was answered at, and matters for exactly one case: a stop with
     no part out after it is measured to `as_of`, and `stop.open_at_window_end` is what says
     the end is a reading of the clock rather than an observation of a part.
@@ -474,6 +487,10 @@ class StopDetail(BaseModel):
 
     stop: Stop
     as_of: datetime
+    # Over the stop's own interval. A stop is a claim about absence -- no part left S4 --
+    # and an ingest gap is an absence indistinguishable from it here, so a gateway outage
+    # would otherwise resolve to a line stop of exactly its length (§4.4).
+    coverage: Coverage
     history_from_ts: datetime
     timeline: list[StateEpisode]
     buffer_levels: list[BufferLevelPoint]
@@ -625,14 +642,17 @@ class DimensionPatterns(BaseModel):
 
     `unattributed` counts the observations that carry no value along this dimension — a
     part whose carrier the gateway never saw belongs to no carrier and can be compared to
-    none. Counted rather than quietly dropped.
+    none. Counted rather than quietly dropped, and **null when `comparable` is false**: no
+    observations were built for a dimension nothing was computed over, and a zero there
+    would be a measurement nobody made. That is the same distinction `PatternValue` keeps
+    between a null share and a zero one, and this endpoint defends it everywhere else.
     """
 
     dimension: Dimension
     comparable: bool
     not_comparable: str | None
     patterns: list[PatternValue]
-    unattributed: int
+    unattributed: int | None
 
 
 class PatternReport(BaseModel):

@@ -545,7 +545,10 @@ components:
         \ stay available at\n`/inspection/stats?group_by=lane`, which is where a count with no comparison\
         \ belongs.\n\n`unattributed` counts the observations that carry no value along this dimension\
         \ \u2014 a\npart whose carrier the gateway never saw belongs to no carrier and can be compared\
-        \ to\nnone. Counted rather than quietly dropped."
+        \ to\nnone. Counted rather than quietly dropped, and **null when `comparable` is false**: no\n\
+        observations were built for a dimension nothing was computed over, and a zero there\nwould be\
+        \ a measurement nobody made. That is the same distinction `PatternValue` keeps\nbetween a null\
+        \ share and a zero one, and this endpoint defends it everywhere else."
       properties:
         comparable:
           title: Comparable
@@ -563,8 +566,10 @@ components:
           title: Patterns
           type: array
         unattributed:
+          anyOf:
+          - type: integer
+          - type: 'null'
           title: Unattributed
-          type: integer
       required:
       - dimension
       - comparable
@@ -1349,8 +1354,13 @@ components:
       type: object
     Stop:
       description: "\xA75.4's line stop \u2014 an absence of output, not a state.\n\n`id` is derived from\
-        \ `from_ts` and resolves against the database on its own (\xA76.5), so\ntwo windows that both\
-        \ contain this stop cite it by the same id.\n\n`started_before_window` and `open_at_window_end`\
+        \ the instant the line stopped producing and resolves against the\ndatabase on its own (\xA76.5),\
+        \ so two windows that both contain this stop cite it by the\nsame id. For a stop already running\
+        \ when the window opened that instant is the part that\nleft before it, not the window's edge\
+        \ -- the edge is a property of the question.\n\n**`id` is null when the database holds no such\
+        \ part**: the window opens before the\nhistory does, so the stop's start is the caller's own boundary\
+        \ and there is no instant\nto cite that `/stops/{id}` could verify. An id minted anyway would\
+        \ be a citation the\nagent could name and nobody could open.\n\n`started_before_window` and `open_at_window_end`\
         \ are what keep `duration_seconds`\nhonest: a stop reported as 90 s because the window closed\
         \ 90 s into it is a different\nclaim from a stop that ended after 90 s, and only these two say\
         \ which was meant.\n\n`category` is null when the derivation could not be completed, which is\
@@ -1374,8 +1384,10 @@ components:
           title: From Ts
           type: string
         id:
+          anyOf:
+          - type: string
+          - type: 'null'
           title: Id
-          type: string
         open_at_window_end:
           title: Open At Window End
           type: boolean
@@ -1404,10 +1416,14 @@ components:
         \ makes a chain's `buffer_condition_since` checkable by eye.\n\n`alarms` is an annotation and\
         \ nothing more. \xA73.3 and `004_m2c.sql` both warn that \"the\nfirst station to raise an alarm\"\
         \ is circular, and two of M2c's eight scenarios raise no\nalarm at all \u2014 so the derivation\
-        \ is computed without them and they are returned beside\nit, never through it.\n\n`as_of` is the\
-        \ clock this was answered at, and matters for exactly one case: a stop with\nno part out after\
-        \ it is measured to `as_of`, and `stop.open_at_window_end` is what says\nthe end is a reading\
-        \ of the clock rather than an observation of a part."
+        \ is computed without them and they are returned beside\nit, never through it.\n\n`coverage` is\
+        \ over the stop's own interval and is not decoration: both of this stop's\nboundaries were reconstructed\
+        \ from `part_dispositions` rows that are *not there*, and a\nwindow the gateway was down for holds\
+        \ no such rows either. Without it a five-minute\noutage reads as a five-minute line stop with\
+        \ an unexplained derivation, which is exactly\nthe confusion \xA74.4's gap markers exist to prevent.\n\
+        \n`as_of` is the clock this was answered at, and matters for exactly one case: a stop with\nno\
+        \ part out after it is measured to `as_of`, and `stop.open_at_window_end` is what says\nthe end\
+        \ is a reading of the clock rather than an observation of a part."
       properties:
         alarms:
           items:
@@ -1423,6 +1439,8 @@ components:
             $ref: '#/components/schemas/BufferLevelPoint'
           title: Buffer Levels
           type: array
+        coverage:
+          $ref: '#/components/schemas/Coverage'
         derivation:
           $ref: '#/components/schemas/Derivation'
         history_from_ts:
@@ -1439,6 +1457,7 @@ components:
       required:
       - stop
       - as_of
+      - coverage
       - history_from_ts
       - timeline
       - buffer_levels

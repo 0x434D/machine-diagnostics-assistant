@@ -98,7 +98,7 @@ def inspection_patterns(window: WindowDep, settings: SettingsDep) -> PatternRepo
             comparable=False,
             not_comparable=LANE_NOT_COMPARABLE,
             patterns=[],
-            unattributed=0,
+            unattributed=None,
         ),
         _tested(patterns.find_patterns(lots, patterns.Dimension.LOT, pattern_settings)),
         _tested(

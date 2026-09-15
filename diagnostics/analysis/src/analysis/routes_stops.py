@@ -121,13 +121,20 @@ def list_stops(window: WindowDep, settings: SettingsDep) -> StopList:
         levels = queries.buffer_samples(conn, history_from, history_to)
         topology = queries.topology(conn)
         coverage = coverage_of(conn, window)
+        # The part that left last before the window opened, which is where a stop already
+        # running when it opened actually began. Anchoring on it rather than on the window's
+        # edge is what makes such a stop's id the same string the window after it would
+        # cite, and the same one /stops/{id} returns as canonical.
+        earlier_output = queries.output_at_or_before(conn, window.from_ts)
 
     return StopList(
         window=Window.of(window),
         coverage=coverage,
         stops=[
             Stop(
-                id=stop_id(stop.from_ts),
+                id=_identifier(
+                    stop.started_before_window, stop.from_ts, earlier_output
+                ),
                 from_ts=stop.from_ts,
                 to_ts=stop.to_ts,
                 duration_seconds=stop.duration_seconds,
@@ -177,7 +184,23 @@ def get_stop(identifier: str, settings: SettingsDep, now: NowDep) -> StopDetail:
         # The last part out at or before the cited instant is the stop's true start. An id
         # taken from a stop that was already running when its window opened carries the
         # window's edge, and this is what walks it back to the part it actually followed.
-        from_ts = queries.output_at_or_before(conn, began_at) or began_at
+        #
+        # **None is a 404 and must never be a fallback to `began_at`.** A stop begins when a
+        # part stops following one that left; with no earlier part there is nothing in the
+        # database saying the line was ever producing, so a "stop" starting there would be
+        # built entirely out of the caller's own string. §6.5 has M4 verify every cited id
+        # against the database precisely to catch one the model invented — and an invented
+        # instant before the history horizon would have passed that check, come back
+        # self-consistent, and been cited as a line stop measured in years.
+        from_ts = queries.output_at_or_before(conn, began_at)
+        if from_ts is None:
+            raise HTTPException(
+                status_code=404,
+                detail=(
+                    f"no stop at {began_at.isoformat()}: no part left S4 at or before it, "
+                    "so nothing in the database says the line was producing there"
+                ),
+            )
         ended_at = queries.output_after(conn, began_at)
         # An open stop is measured to the clock, and `open` is what says the end is a
         # reading of now rather than an observation of a part.
@@ -201,8 +224,15 @@ def get_stop(identifier: str, settings: SettingsDep, now: NowDep) -> StopDetail:
         episodes = queries.state_episodes(conn, history_from, history_to)
         levels = queries.buffer_samples(conn, history_from, history_to)
         topology = queries.topology(conn)
-        alarms = queries.alarms_overlapping(conn, windows.Window(from_ts, to_ts), None)
+        stop_window = windows.Window(from_ts, to_ts)
+        alarms = queries.alarms_overlapping(conn, stop_window, None)
         level_points = queries.buffer_level_points(conn, history_from, history_to)
+        # The same argument `StopList` makes, and it is stronger here: this endpoint
+        # reconstructs *both* boundaries from `part_dispositions` rows that are not there.
+        # An ingest gap is an absence that looks exactly the same from here, so a
+        # five-minute gateway outage would otherwise resolve to a five-minute line stop
+        # with an unexplained derivation -- §4.4's failure, stated as a diagnosis.
+        coverage = coverage_of(conn, stop_window)
 
     derivation = _derivation(episodes, levels, topology, from_ts, to_ts, settings)
     return StopDetail(
@@ -216,12 +246,32 @@ def get_stop(identifier: str, settings: SettingsDep, now: NowDep) -> StopDetail:
             category=derivation.category,
         ),
         as_of=now,
+        coverage=coverage,
         history_from_ts=history_from,
         timeline=queries.episode_models(episodes),
         buffer_levels=level_points,
         alarms=alarms,
         derivation=derivation,
     )
+
+
+def _identifier(
+    started_before_window: bool, from_ts: datetime, earlier_output: datetime | None
+) -> str | None:
+    """The stop's citable id, or None when the database holds nothing to anchor one to.
+
+    A stop that was already running when the window opened begins at the part that left
+    before it, not at the window's edge -- the edge is a property of the question and would
+    give the same stop a different id in every window it appeared in.
+
+    None when there is no such part: the window opens before the history does, the stop's
+    start is the caller's own boundary, and there is no instant to cite that /stops/{id}
+    could verify. An id minted here that answered 404 there would be a citation the agent
+    could name and nobody could open (§6.5).
+    """
+    if not started_before_window:
+        return stop_id(from_ts)
+    return None if earlier_output is None else stop_id(earlier_output)
 
 
 def _derivation(

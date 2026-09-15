@@ -73,6 +73,9 @@ def test_the_lane_dimension_is_refused_rather_than_answered_not_significant(
 
     assert lane["comparable"] is False
     assert _patterns(lane) == []
+    # Null and not zero: no observations were built for a dimension nothing was computed
+    # over, and a zero there is a measurement nobody made.
+    assert lane["unattributed"] is None
     # §3.5's own words, quoted rather than paraphrased, so that the next reader can see the
     # specification already settled this and does not "fix" it into a silent negative.
     reason = str(lane["not_comparable"])
@@ -129,7 +132,9 @@ def test_nothing_significant_is_the_expected_answer_and_is_a_number(
 
 
 def test_a_real_effect_is_found_once_the_gate_admits_the_sample(
-    analysis_url: str, tuned_client: Callable[[Settings], TestClient]
+    seeded_db: str,
+    analysis_url: str,
+    tuned_client: Callable[[Settings], TestClient],
 ) -> None:
     """The fixture puts every reject on one of three carriers — 10 in 40 against 20 in 560.
 
@@ -137,6 +142,7 @@ def test_a_real_effect_is_found_once_the_gate_admits_the_sample(
     the fixture's scale; the effect it then finds is the fixture's own construction, so the
     assertion is that the endpoint reports the carriers the rejects are actually on.
     """
+    assert seeded_db, "the counts below are this fixture's, not whatever ran before"
     client = tuned_client(
         Settings(database_url=analysis_url, significance_minimum_sample=10)
     )
@@ -244,7 +250,9 @@ def test_a_part_whose_lot_is_unknown_is_counted_rather_than_dropped(
 
 
 def test_the_multiplicity_correction_is_configuration(
-    analysis_url: str, tuned_client: Callable[[Settings], TestClient]
+    seeded_db: str,
+    analysis_url: str,
+    tuned_client: Callable[[Settings], TestClient],
 ) -> None:
     """§10.3: it is a number that changes what the service claims.
 
@@ -253,6 +261,7 @@ def test_the_multiplicity_correction_is_configuration(
     measured against and is what this asserts, because with no correction every adjusted
     p-value is its own raw one and the comparison is exact rather than directional.
     """
+    assert seeded_db, "the counts below are this fixture's, not whatever ran before"
     uncorrected = tuned_client(
         Settings(
             database_url=analysis_url,
@@ -270,11 +279,14 @@ def test_the_multiplicity_correction_is_configuration(
 
 
 def test_the_corrected_report_is_never_stronger_than_the_uncorrected_one(
-    analysis_url: str, tuned_client: Callable[[Settings], TestClient]
+    seeded_db: str,
+    analysis_url: str,
+    tuned_client: Callable[[Settings], TestClient],
 ) -> None:
     """Fifteen carriers tested at once is fifteen chances to find something. The correction
     is what stops that becoming a finding on a line where nothing is wrong, and the price is
     paid in every adjusted p-value being at or above its raw one."""
+    assert seeded_db, "the counts below are this fixture's, not whatever ran before"
     corrected = tuned_client(
         Settings(
             database_url=analysis_url,
