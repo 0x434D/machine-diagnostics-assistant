@@ -7,6 +7,87 @@
 # Regenerate with: make contract
 components:
   schemas:
+    Alarm:
+      description: "One alarm and its whole lifecycle (\xA74.1).\n\n**Not an input to propagation, and\
+        \ this is the file to say so in.** \xA73.3 and\n`004_m2c.sql` both warn that \"the first station\
+        \ to raise an alarm\" is circular, and two\nof M2c's eight scenarios raise no alarm at all. An\
+        \ alarm is what a terminated chain is\nannotated with; `/stops/{id}` returns both and connects\
+        \ neither."
+      properties:
+        acked_at:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: Acked At
+        active:
+          title: Active
+          type: boolean
+        cleared_at:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: Cleared At
+        code:
+          title: Code
+          type: string
+        id:
+          title: Id
+          type: integer
+        raised_at:
+          format: date-time
+          title: Raised At
+          type: string
+        severity:
+          title: Severity
+          type: integer
+        station:
+          title: Station
+          type: string
+        status:
+          enum:
+          - raised
+          - acknowledged
+          - cleared
+          title: Status
+          type: string
+        text:
+          title: Text
+          type: string
+      required:
+      - id
+      - station
+      - code
+      - text
+      - severity
+      - raised_at
+      - acked_at
+      - cleared_at
+      - status
+      - active
+      title: Alarm
+      type: object
+    BufferLevelPoint:
+      description: "One `buffer_levels` row. \xA74.1 publishes one only when a carrier moves through the\n\
+        buffer, so a flat stretch here is a line that moved nothing, not a sampling interval."
+      properties:
+        at:
+          format: date-time
+          title: At
+          type: string
+        buffer:
+          title: Buffer
+          type: string
+        level:
+          title: Level
+          type: integer
+      required:
+      - buffer
+      - at
+      - level
+      title: BufferLevelPoint
+      type: object
     ComponentOrigin:
       description: "One as-built component of an assembly, and the supplier lot it was drawn from.\n\n\
         Everything but the serial and the position is nullable, and null means **unknown**, not\nabsent:\
@@ -99,6 +180,98 @@ components:
       - defect_class
       - count
       title: DefectClassCount
+      type: object
+    Derivation:
+      description: "\xA75.4's chain as data, seed first and root last.\n\nReturned whole, with the episode\
+        \ and the buffer behind every step, because \xA76.5 means\nthe agent to be able to *contradict*\
+        \ it \u2014 which is only possible against reasoning it\ncan see. A verdict with the same category\
+        \ and no links would be the same answer with\nthe checking removed.\n\n`category` is derived from\
+        \ where the chain terminates and is never assigned; null means\nthe chain did not terminate, and\
+        \ `unexplained` says where it ran out.\n\n`cause_candidates` holds every `Held` or `Aborted` episode\
+        \ the walk met. More than one\nis `ambiguous`: the line had two independent faults over the interval,\
+        \ and \xA75.4 keeps\nboth rather than picking the nearer."
+      properties:
+        category:
+          anyOf:
+          - enum:
+            - internal
+            - external_upstream
+            - external_downstream
+            - ambiguous
+            type: string
+          - type: 'null'
+          title: Category
+        cause_candidates:
+          items:
+            $ref: '#/components/schemas/StateEpisode'
+          title: Cause Candidates
+          type: array
+        links:
+          items:
+            $ref: '#/components/schemas/DerivationLink'
+          title: Links
+          type: array
+        termination:
+          $ref: '#/components/schemas/Termination'
+        unexplained:
+          anyOf:
+          - $ref: '#/components/schemas/Unexplained'
+          - type: 'null'
+      required:
+      - links
+      - termination
+      - category
+      - cause_candidates
+      - unexplained
+      title: Derivation
+      type: object
+    DerivationLink:
+      description: "One step of \xA75.4's chain: an episode, and the buffer that leads to the next.\n\n\
+        `buffer` is null on the last link. `buffer_condition_since` alone being null says the\nepisode\
+        \ named a buffer whose empty-or-full moment could not be found within the\nlead-in \u2014 the\
+        \ difference between the end of a chain and the end of the evidence."
+      properties:
+        buffer:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Buffer
+        buffer_condition_since:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: Buffer Condition Since
+        from_ts:
+          format: date-time
+          title: From Ts
+          type: string
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        state:
+          title: State
+          type: string
+        station:
+          title: Station
+          type: string
+        to_ts:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: To Ts
+      required:
+      - station
+      - state
+      - from_ts
+      - to_ts
+      - reason
+      - buffer
+      - buffer_condition_since
+      title: DerivationLink
       type: object
     Disposition:
       description: How the part left the line, and why. Absent while the part is still on it.
@@ -405,6 +578,46 @@ components:
       - value
       title: ProcessValue
       type: object
+    StateEpisode:
+      description: "One station holding one state, for a UI to draw as a bar.\n\n`to_ts` is null while\
+        \ the station was still in this state at the end of the history\nthat was read \u2014 not \"until\
+        \ now\", which is a claim about a clock this record has not\nconsulted."
+      properties:
+        from_ts:
+          format: date-time
+          title: From Ts
+          type: string
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+        reason_buffer:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason Buffer
+        state:
+          title: State
+          type: string
+        station:
+          title: Station
+          type: string
+        to_ts:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: To Ts
+      required:
+      - station
+      - state
+      - from_ts
+      - to_ts
+      - reason
+      - reason_buffer
+      title: StateEpisode
+      type: object
     StatsGroup:
       description: "One value of the requested grouping, and the reject share within it.\n\n**`parts`\
         \ is the denominator and it is not the same quantity for every grouping.** For\n`time`, `carrier`\
@@ -460,6 +673,146 @@ components:
       - reject_share
       title: StatsGroup
       type: object
+    Stop:
+      description: "\xA75.4's line stop \u2014 an absence of output, not a state.\n\n`id` is derived from\
+        \ `from_ts` and resolves against the database on its own (\xA76.5), so\ntwo windows that both\
+        \ contain this stop cite it by the same id.\n\n`started_before_window` and `open_at_window_end`\
+        \ are what keep `duration_seconds`\nhonest: a stop reported as 90 s because the window closed\
+        \ 90 s into it is a different\nclaim from a stop that ended after 90 s, and only these two say\
+        \ which was meant.\n\n`category` is null when the derivation could not be completed, which is\
+        \ an answer\nrather than a gap \u2014 see `Derivation`."
+      properties:
+        category:
+          anyOf:
+          - enum:
+            - internal
+            - external_upstream
+            - external_downstream
+            - ambiguous
+            type: string
+          - type: 'null'
+          title: Category
+        duration_seconds:
+          title: Duration Seconds
+          type: number
+        from_ts:
+          format: date-time
+          title: From Ts
+          type: string
+        id:
+          title: Id
+          type: string
+        open_at_window_end:
+          title: Open At Window End
+          type: boolean
+        started_before_window:
+          title: Started Before Window
+          type: boolean
+        to_ts:
+          format: date-time
+          title: To Ts
+          type: string
+      required:
+      - id
+      - from_ts
+      - to_ts
+      - duration_seconds
+      - started_before_window
+      - open_at_window_end
+      - category
+      title: Stop
+      type: object
+    StopDetail:
+      description: "One stop, everything around it, and \xA75.4's derivation \u2014 shaped for a Gantt.\n\
+        \n`timeline` is every station's episodes over the stop *and the history read before it*,\nso the\
+        \ chart shows the run-up rather than starting at the moment output stopped:\n`history_from_ts`\
+        \ says how far back that goes. `buffer_levels` is the second row of the\nsame chart, and is what\
+        \ makes a chain's `buffer_condition_since` checkable by eye.\n\n`alarms` is an annotation and\
+        \ nothing more. \xA73.3 and `004_m2c.sql` both warn that \"the\nfirst station to raise an alarm\"\
+        \ is circular, and two of M2c's eight scenarios raise no\nalarm at all \u2014 so the derivation\
+        \ is computed without them and they are returned beside\nit, never through it.\n\n`as_of` is the\
+        \ clock this was answered at, and matters for exactly one case: a stop with\nno part out after\
+        \ it is measured to `as_of`, and `stop.open_at_window_end` is what says\nthe end is a reading\
+        \ of the clock rather than an observation of a part."
+      properties:
+        alarms:
+          items:
+            $ref: '#/components/schemas/Alarm'
+          title: Alarms
+          type: array
+        as_of:
+          format: date-time
+          title: As Of
+          type: string
+        buffer_levels:
+          items:
+            $ref: '#/components/schemas/BufferLevelPoint'
+          title: Buffer Levels
+          type: array
+        derivation:
+          $ref: '#/components/schemas/Derivation'
+        history_from_ts:
+          format: date-time
+          title: History From Ts
+          type: string
+        stop:
+          $ref: '#/components/schemas/Stop'
+        timeline:
+          items:
+            $ref: '#/components/schemas/StateEpisode'
+          title: Timeline
+          type: array
+      required:
+      - stop
+      - as_of
+      - history_from_ts
+      - timeline
+      - buffer_levels
+      - alarms
+      - derivation
+      title: StopDetail
+      type: object
+    StopList:
+      description: "Every stop in the window, the micro-stops beneath it, and where the data is not.\n\
+        \nCoverage rides along because a stop list is a claim about *absence* \u2014 no part left S4 \u2014\
+        \nand absence is exactly what an ingest gap also looks like. A stop list read without it\nwould\
+        \ report the gateway's outage as the line's."
+      properties:
+        coverage:
+          $ref: '#/components/schemas/Coverage'
+        micro_stop_threshold_seconds:
+          title: Micro Stop Threshold Seconds
+          type: number
+        micro_stops:
+          title: Micro Stops
+          type: integer
+        stops:
+          items:
+            $ref: '#/components/schemas/Stop'
+          title: Stops
+          type: array
+        truncated:
+          title: Truncated
+          type: boolean
+        window:
+          $ref: '#/components/schemas/Window'
+      required:
+      - window
+      - coverage
+      - stops
+      - micro_stops
+      - micro_stop_threshold_seconds
+      - truncated
+      title: StopList
+      type: object
+    Termination:
+      description: Where the walk stopped. `Derivation.category` is a function of this.
+      enum:
+      - cause_candidate
+      - line_edge
+      - unexplained
+      title: Termination
+      type: string
     TimeResolution:
       description: 'What `/time/resolve` made of a phrase, and as of when.
 
@@ -494,6 +847,28 @@ components:
       - closed
       - now
       title: TimeResolution
+      type: object
+    Unexplained:
+      description: Where a chain stopped short, named precisely enough to be checked by hand.
+      properties:
+        buffer:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Buffer
+        detail:
+          title: Detail
+          type: string
+        station:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Station
+      required:
+      - station
+      - buffer
+      - detail
+      title: Unexplained
       type: object
     ValidationError:
       properties:
@@ -689,6 +1064,80 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Get Part Image
+  /stops:
+    get:
+      description: "Every stop in the window, with a duration and a category for each.\n\nCoverage rides\
+        \ along because this endpoint's answer is a claim about *absence* \u2014 no part\nleft S4 \u2014\
+        \ and an ingest gap is an absence that looks exactly the same from here. Without\nit, a window\
+        \ in which the gateway was down reports the outage as the line's stop.\n\nThe state history is\
+        \ read once for the whole window and every stop's chain is derived\nfrom the same rows, rather\
+        \ than one read per stop: a shift with forty stops would\notherwise be forty passes over the same\
+        \ timeline."
+      operationId: listStops
+      parameters:
+      - in: query
+        name: from
+        required: true
+        schema:
+          format: date-time
+          title: From
+          type: string
+      - in: query
+        name: to
+        required: true
+        schema:
+          format: date-time
+          title: To
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StopList'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: List Stops
+  /stops/{identifier}:
+    get:
+      description: "One stop, the state timeline around it, and \xA75.4's chain as a visible derivation.\n\
+        \n**The stop is rebuilt from the database, not from a window.** The id names the instant\nthe\
+        \ line stopped producing; the stop is that instant to the next part out, and both ends\ncome from\
+        \ `part_dispositions`. So the same id resolves to the same stop whatever window\nit was first\
+        \ cited from \u2014 which is what \xA76.5 means by an id that verifies.\n\nAn id landing inside\
+        \ an interruption rather than at its start resolves to the whole\ninterruption, and the `id` in\
+        \ the response is the canonical one. That is not a\ncorrection of the caller: a stop that had\
+        \ already begun when a window opened is reported\nat the window's edge by `/stops`, and this is\
+        \ where its true beginning is found.\n\n404 when no interruption at that instant is long enough\
+        \ to be a stop, and 422 when the\nid is not an id. \xA76.5 needs those to be different answers,\
+        \ and neither is an empty\nresult."
+      operationId: getStop
+      parameters:
+      - in: path
+        name: identifier
+        required: true
+        schema:
+          title: Identifier
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StopDetail'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Stop
   /time/resolve:
     get:
       description: 'Resolve a fixed time phrase to a concrete UTC window against the shift calendar.

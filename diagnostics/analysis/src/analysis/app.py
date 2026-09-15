@@ -13,11 +13,13 @@ from analysis import (
     routes_coverage,
     routes_inspection,
     routes_parts,
+    routes_stops,
     routes_time,
 )
 
 app = FastAPI(title="machine-agent analysis", version="0.1.0")
 app.include_router(routes_time.router)
 app.include_router(routes_coverage.router)
+app.include_router(routes_stops.router)
 app.include_router(routes_inspection.router)
 app.include_router(routes_parts.router)

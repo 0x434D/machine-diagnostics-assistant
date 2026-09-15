@@ -111,6 +111,68 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/stops": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Stops
+         * @description Every stop in the window, with a duration and a category for each.
+         *
+         *     Coverage rides along because this endpoint's answer is a claim about *absence* — no part
+         *     left S4 — and an ingest gap is an absence that looks exactly the same from here. Without
+         *     it, a window in which the gateway was down reports the outage as the line's stop.
+         *
+         *     The state history is read once for the whole window and every stop's chain is derived
+         *     from the same rows, rather than one read per stop: a shift with forty stops would
+         *     otherwise be forty passes over the same timeline.
+         */
+        get: operations["listStops"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/stops/{identifier}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Stop
+         * @description One stop, the state timeline around it, and §5.4's chain as a visible derivation.
+         *
+         *     **The stop is rebuilt from the database, not from a window.** The id names the instant
+         *     the line stopped producing; the stop is that instant to the next part out, and both ends
+         *     come from `part_dispositions`. So the same id resolves to the same stop whatever window
+         *     it was first cited from — which is what §6.5 means by an id that verifies.
+         *
+         *     An id landing inside an interruption rather than at its start resolves to the whole
+         *     interruption, and the `id` in the response is the canonical one. That is not a
+         *     correction of the caller: a stop that had already begun when a window opened is reported
+         *     at the window's edge by `/stops`, and this is where its true beginning is found.
+         *
+         *     404 when no interruption at that instant is long enough to be a stop, and 422 when the
+         *     id is not an id. §6.5 needs those to be different answers, and neither is an empty
+         *     result.
+         */
+        get: operations["getStop"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/time/resolve": {
         parameters: {
             query?: never;
@@ -141,6 +203,59 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * Alarm
+         * @description One alarm and its whole lifecycle (§4.1).
+         *
+         *     **Not an input to propagation, and this is the file to say so in.** §3.3 and
+         *     `004_m2c.sql` both warn that "the first station to raise an alarm" is circular, and two
+         *     of M2c's eight scenarios raise no alarm at all. An alarm is what a terminated chain is
+         *     annotated with; `/stops/{id}` returns both and connects neither.
+         */
+        Alarm: {
+            /** Acked At */
+            acked_at: string | null;
+            /** Active */
+            active: boolean;
+            /** Cleared At */
+            cleared_at: string | null;
+            /** Code */
+            code: string;
+            /** Id */
+            id: number;
+            /**
+             * Raised At
+             * Format: date-time
+             */
+            raised_at: string;
+            /** Severity */
+            severity: number;
+            /** Station */
+            station: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "raised" | "acknowledged" | "cleared";
+            /** Text */
+            text: string;
+        };
+        /**
+         * BufferLevelPoint
+         * @description One `buffer_levels` row. §4.1 publishes one only when a carrier moves through the
+         *     buffer, so a flat stretch here is a line that moved nothing, not a sampling interval.
+         */
+        BufferLevelPoint: {
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+            /** Buffer */
+            buffer: string;
+            /** Level */
+            level: number;
+        };
         /**
          * ComponentOrigin
          * @description One as-built component of an assembly, and the supplier lot it was drawn from.
@@ -200,6 +315,59 @@ export interface components {
             count: number;
             /** Defect Class */
             defect_class: string;
+        };
+        /**
+         * Derivation
+         * @description §5.4's chain as data, seed first and root last.
+         *
+         *     Returned whole, with the episode and the buffer behind every step, because §6.5 means
+         *     the agent to be able to *contradict* it — which is only possible against reasoning it
+         *     can see. A verdict with the same category and no links would be the same answer with
+         *     the checking removed.
+         *
+         *     `category` is derived from where the chain terminates and is never assigned; null means
+         *     the chain did not terminate, and `unexplained` says where it ran out.
+         *
+         *     `cause_candidates` holds every `Held` or `Aborted` episode the walk met. More than one
+         *     is `ambiguous`: the line had two independent faults over the interval, and §5.4 keeps
+         *     both rather than picking the nearer.
+         */
+        Derivation: {
+            /** Category */
+            category: ("internal" | "external_upstream" | "external_downstream" | "ambiguous") | null;
+            /** Cause Candidates */
+            cause_candidates: components["schemas"]["StateEpisode"][];
+            /** Links */
+            links: components["schemas"]["DerivationLink"][];
+            termination: components["schemas"]["Termination"];
+            unexplained: components["schemas"]["Unexplained"] | null;
+        };
+        /**
+         * DerivationLink
+         * @description One step of §5.4's chain: an episode, and the buffer that leads to the next.
+         *
+         *     `buffer` is null on the last link. `buffer_condition_since` alone being null says the
+         *     episode named a buffer whose empty-or-full moment could not be found within the
+         *     lead-in — the difference between the end of a chain and the end of the evidence.
+         */
+        DerivationLink: {
+            /** Buffer */
+            buffer: string | null;
+            /** Buffer Condition Since */
+            buffer_condition_since: string | null;
+            /**
+             * From Ts
+             * Format: date-time
+             */
+            from_ts: string;
+            /** Reason */
+            reason: string | null;
+            /** State */
+            state: string;
+            /** Station */
+            station: string;
+            /** To Ts */
+            to_ts: string | null;
         };
         /**
          * Disposition
@@ -381,6 +549,31 @@ export interface components {
             value: number;
         };
         /**
+         * StateEpisode
+         * @description One station holding one state, for a UI to draw as a bar.
+         *
+         *     `to_ts` is null while the station was still in this state at the end of the history
+         *     that was read — not "until now", which is a claim about a clock this record has not
+         *     consulted.
+         */
+        StateEpisode: {
+            /**
+             * From Ts
+             * Format: date-time
+             */
+            from_ts: string;
+            /** Reason */
+            reason: string | null;
+            /** Reason Buffer */
+            reason_buffer: string | null;
+            /** State */
+            state: string;
+            /** Station */
+            station: string;
+            /** To Ts */
+            to_ts: string | null;
+        };
+        /**
          * StatsGroup
          * @description One value of the requested grouping, and the reject share within it.
          *
@@ -422,6 +615,106 @@ export interface components {
             to_ts: string | null;
         };
         /**
+         * Stop
+         * @description §5.4's line stop — an absence of output, not a state.
+         *
+         *     `id` is derived from `from_ts` and resolves against the database on its own (§6.5), so
+         *     two windows that both contain this stop cite it by the same id.
+         *
+         *     `started_before_window` and `open_at_window_end` are what keep `duration_seconds`
+         *     honest: a stop reported as 90 s because the window closed 90 s into it is a different
+         *     claim from a stop that ended after 90 s, and only these two say which was meant.
+         *
+         *     `category` is null when the derivation could not be completed, which is an answer
+         *     rather than a gap — see `Derivation`.
+         */
+        Stop: {
+            /** Category */
+            category: ("internal" | "external_upstream" | "external_downstream" | "ambiguous") | null;
+            /** Duration Seconds */
+            duration_seconds: number;
+            /**
+             * From Ts
+             * Format: date-time
+             */
+            from_ts: string;
+            /** Id */
+            id: string;
+            /** Open At Window End */
+            open_at_window_end: boolean;
+            /** Started Before Window */
+            started_before_window: boolean;
+            /**
+             * To Ts
+             * Format: date-time
+             */
+            to_ts: string;
+        };
+        /**
+         * StopDetail
+         * @description One stop, everything around it, and §5.4's derivation — shaped for a Gantt.
+         *
+         *     `timeline` is every station's episodes over the stop *and the history read before it*,
+         *     so the chart shows the run-up rather than starting at the moment output stopped:
+         *     `history_from_ts` says how far back that goes. `buffer_levels` is the second row of the
+         *     same chart, and is what makes a chain's `buffer_condition_since` checkable by eye.
+         *
+         *     `alarms` is an annotation and nothing more. §3.3 and `004_m2c.sql` both warn that "the
+         *     first station to raise an alarm" is circular, and two of M2c's eight scenarios raise no
+         *     alarm at all — so the derivation is computed without them and they are returned beside
+         *     it, never through it.
+         *
+         *     `as_of` is the clock this was answered at, and matters for exactly one case: a stop with
+         *     no part out after it is measured to `as_of`, and `stop.open_at_window_end` is what says
+         *     the end is a reading of the clock rather than an observation of a part.
+         */
+        StopDetail: {
+            /** Alarms */
+            alarms: components["schemas"]["Alarm"][];
+            /**
+             * As Of
+             * Format: date-time
+             */
+            as_of: string;
+            /** Buffer Levels */
+            buffer_levels: components["schemas"]["BufferLevelPoint"][];
+            derivation: components["schemas"]["Derivation"];
+            /**
+             * History From Ts
+             * Format: date-time
+             */
+            history_from_ts: string;
+            stop: components["schemas"]["Stop"];
+            /** Timeline */
+            timeline: components["schemas"]["StateEpisode"][];
+        };
+        /**
+         * StopList
+         * @description Every stop in the window, the micro-stops beneath it, and where the data is not.
+         *
+         *     Coverage rides along because a stop list is a claim about *absence* — no part left S4 —
+         *     and absence is exactly what an ingest gap also looks like. A stop list read without it
+         *     would report the gateway's outage as the line's.
+         */
+        StopList: {
+            coverage: components["schemas"]["Coverage"];
+            /** Micro Stop Threshold Seconds */
+            micro_stop_threshold_seconds: number;
+            /** Micro Stops */
+            micro_stops: number;
+            /** Stops */
+            stops: components["schemas"]["Stop"][];
+            /** Truncated */
+            truncated: boolean;
+            window: components["schemas"]["Window"];
+        };
+        /**
+         * Termination
+         * @description Where the walk stopped. `Derivation.category` is a function of this.
+         * @enum {string}
+         */
+        Termination: "cause_candidate" | "line_edge" | "unexplained";
+        /**
          * TimeResolution
          * @description What `/time/resolve` made of a phrase, and as of when.
          *
@@ -443,6 +736,18 @@ export interface components {
              */
             now: string;
             window: components["schemas"]["Window"];
+        };
+        /**
+         * Unexplained
+         * @description Where a chain stopped short, named precisely enough to be checked by hand.
+         */
+        Unexplained: {
+            /** Buffer */
+            buffer: string | null;
+            /** Detail */
+            detail: string;
+            /** Station */
+            station: string | null;
         };
         /** ValidationError */
         ValidationError: {
@@ -593,6 +898,69 @@ export interface operations {
                 };
                 content: {
                     "image/png": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    listStops: {
+        parameters: {
+            query: {
+                from: string;
+                to: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StopList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getStop: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                identifier: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StopDetail"];
                 };
             };
             /** @description Validation Error */
