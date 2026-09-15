@@ -7,6 +7,29 @@
 # Regenerate with: make contract
 components:
   schemas:
+    AffectedParts:
+      description: "The containment scope: which parts this condition touched, split by where they went.\n\
+        \n`unplaceable` is the count of parts that match every criterion but the window, because\nthe\
+        \ instant the window would be applied to is null for them \u2014 an assembly created\nbefore the\
+        \ gateway's history horizon has no creation instant. They are reported rather\nthan dropped: a\
+        \ containment list silently short is worse than one that says it is."
+      properties:
+        criteria:
+          $ref: '#/components/schemas/AppliedCriteria'
+        parts:
+          $ref: '#/components/schemas/PartsByOutcome'
+        unplaceable:
+          title: Unplaceable
+          type: integer
+        window:
+          $ref: '#/components/schemas/Window'
+      required:
+      - window
+      - criteria
+      - parts
+      - unplaceable
+      title: AffectedParts
+      type: object
     Alarm:
       description: "One alarm and its whole lifecycle (\xA74.1).\n\n**Not an input to propagation, and\
         \ this is the file to say so in.** \xA73.3 and\n`004_m2c.sql` both warn that \"the first station\
@@ -96,6 +119,49 @@ components:
       - alarms
       title: AlarmList
       type: object
+    AppliedCriteria:
+      description: "What `/parts/affected` was actually asked, echoed back.\n\n`anchor` is the one a reader\
+        \ must see: the window is applied to a *per-part* instant,\nand which instant that is depends\
+        \ on the criteria. With a station it is that station's\nown record for the part; without one it\
+        \ is `assemblies.created_at`, the instant the\npart entered the line. \xA73.4a forbids reconstructing\
+        \ either by joining the time series,\nso a station whose record carries no instant cannot be asked\
+        \ for at all rather than\nbeing answered with a neighbouring station's."
+      properties:
+        anchor:
+          enum:
+          - created
+          - inspected
+          - left
+          title: Anchor
+          type: string
+        carrier:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Carrier
+        defect_class:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Defect Class
+        lot_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lot Code
+        station:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Station
+      required:
+      - station
+      - carrier
+      - lot_code
+      - defect_class
+      - anchor
+      title: AppliedCriteria
+      type: object
     BufferLevelPoint:
       description: "One `buffer_levels` row. \xA74.1 publishes one only when a carrier moves through the\n\
         buffer, so a flat stretch here is a line that moved nothing, not a sampling interval."
@@ -148,6 +214,80 @@ components:
       - capacity
       - at
       title: BufferStatus
+      type: object
+    CarrierParts:
+      description: "Which assemblies rode this carrier. \xA73.1 keeps the carriers in a closed loop, so\
+        \ a\ncarrier returns \u2014 this is a list over a window, never a list of one pass."
+      properties:
+        carrier_id:
+          title: Carrier Id
+          type: integer
+        parts:
+          $ref: '#/components/schemas/PartsByOutcome'
+        window:
+          anyOf:
+          - $ref: '#/components/schemas/Window'
+          - type: 'null'
+      required:
+      - carrier_id
+      - window
+      - parts
+      title: CarrierParts
+      type: object
+    ComponentAssembly:
+      description: "\xA75.3's single-component recall: a supplier names one serial months later.\n\n`assembly_serial`\
+        \ null is a real answer and not a miss \u2014 the component was read at a\nfeeder and has not\
+        \ been built into anything yet. The component being unknown is a 404,\nand the two must not look\
+        \ alike (\xA76.5)."
+      properties:
+        assembly_created_at:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: Assembly Created At
+        assembly_serial:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Assembly Serial
+        carrier_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Carrier Id
+        component_serial:
+          title: Component Serial
+          type: string
+        disposition:
+          anyOf:
+          - $ref: '#/components/schemas/Disposition'
+          - type: 'null'
+        lane:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Lane
+        lot:
+          anyOf:
+          - $ref: '#/components/schemas/LotRef'
+          - type: 'null'
+        read_at:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: Read At
+      required:
+      - component_serial
+      - lane
+      - read_at
+      - lot
+      - assembly_serial
+      - assembly_created_at
+      - carrier_id
+      - disposition
+      title: ComponentAssembly
       type: object
     ComponentOrigin:
       description: "One as-built component of an assembly, and the supplier lot it was drawn from.\n\n\
@@ -641,6 +781,71 @@ components:
       - last_part_out
       title: LineStatus
       type: object
+    LotParts:
+      description: 'Which assemblies contain a component from this lot.
+
+
+        `lots` is a list because a lot code is unique per *lane*, not per line: the same code
+
+        loaded on both feeders is two rows and two populations, and answering as though it were
+
+        one would merge them.'
+      properties:
+        lot_code:
+          title: Lot Code
+          type: string
+        lots:
+          items:
+            $ref: '#/components/schemas/LotRef'
+          title: Lots
+          type: array
+        parts:
+          $ref: '#/components/schemas/PartsByOutcome'
+        window:
+          anyOf:
+          - $ref: '#/components/schemas/Window'
+          - type: 'null'
+      required:
+      - lot_code
+      - lots
+      - window
+      - parts
+      title: LotParts
+      type: object
+    LotRef:
+      description: 'One `component_lots` row.
+
+
+        `depleted_at` is absent and is never coming: 003 never writes it, and a lot is depleted
+
+        at the first draw of the next lot on its lane, which is a query over `loaded_at`.
+
+        Exposed, it would read as "no lot has ever been depleted".'
+      properties:
+        id:
+          title: Id
+          type: integer
+        lane:
+          title: Lane
+          type: integer
+        loaded_at:
+          format: date-time
+          title: Loaded At
+          type: string
+        lot_code:
+          title: Lot Code
+          type: string
+        supplier:
+          title: Supplier
+          type: string
+      required:
+      - id
+      - lot_code
+      - lane
+      - supplier
+      - loaded_at
+      title: LotRef
+      type: object
     ObservedSpan:
       description: "What the window actually holds, across every stream the analysis reads.\n\nThis is\
         \ the half of coverage the gap rows cannot supply. A window with no gaps and no\nrows is a quiet\
@@ -726,6 +931,53 @@ components:
       - inspection
       - disposition
       title: Part
+      type: object
+    PartGroup:
+      description: "One outcome of a containment scope: how many, and enough serials to act on.\n\n`count`\
+        \ is exact and `serials` is capped, so a containment list can be trusted as a\nnumber even where\
+        \ it is too long to be read as a list. `truncated` is what stops the\ncapped list being mistaken\
+        \ for the whole of it \u2014 the failure mode that matters here is\na short list read as complete\
+        \ at three in the morning."
+      properties:
+        count:
+          title: Count
+          type: integer
+        serials:
+          items:
+            type: string
+          title: Serials
+          type: array
+        truncated:
+          title: Truncated
+          type: boolean
+      required:
+      - count
+      - serials
+      - truncated
+      title: PartGroup
+      type: object
+    PartsByOutcome:
+      description: "\xA75.3's split, and the reason `/parts/affected` exists.\n\n*\"340 serials, 62 rejected,\
+        \ 278 shipped and need checking.\"* `rejected` is already\ncontained; `shipped` is the number\
+        \ someone has to act on tonight; `on_the_line` is\nneither yet, because the part has no disposition\
+        \ row and is still between stations.\nCollapsing the three into a total is what makes a containment\
+        \ answer useless."
+      properties:
+        on_the_line:
+          $ref: '#/components/schemas/PartGroup'
+        rejected:
+          $ref: '#/components/schemas/PartGroup'
+        shipped:
+          $ref: '#/components/schemas/PartGroup'
+        total:
+          title: Total
+          type: integer
+      required:
+      - total
+      - rejected
+      - shipped
+      - on_the_line
+      title: PartsByOutcome
       type: object
     PatternReport:
       description: "\xA75.5 over every dimension, and the empty answer is the expected one.\n\n`/inspection/patterns`\
@@ -1387,6 +1639,80 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: List Alarms
+  /carriers/{carrier_id}/parts:
+    get:
+      description: "Which assemblies rode this carrier.\n\n\xA73.1 keeps the carriers in a closed loop,\
+        \ so a carrier comes round again \u2014 this is a\nlist over however much history the window admits,\
+        \ never a list of one pass. That is also\nwhat makes carrier wear detectable at all: a carrier\
+        \ that passed once would leave no\nstatistical signal to find."
+      operationId: carrierParts
+      parameters:
+      - in: path
+        name: carrier_id
+        required: true
+        schema:
+          title: Carrier Id
+          type: integer
+      - in: query
+        name: from
+        required: false
+        schema:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: From
+      - in: query
+        name: to
+        required: false
+        schema:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: To
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CarrierParts'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Carrier Parts
+  /components/{serial}/assembly:
+    get:
+      description: "\xA75.3's single-component recall: a supplier finds a defect months later and gives\
+        \ you\none serial.\n\nOnly answerable because components are individually serialised (\xA73.3).\
+        \ A component that\nhas been read at a feeder and not yet built into anything answers with a null\
+        \ assembly \u2014\na real state, and one a 404 would have misreported as an unknown component."
+      operationId: componentAssembly
+      parameters:
+      - in: path
+        name: serial
+        required: true
+        schema:
+          title: Serial
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ComponentAssembly'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Component Assembly
   /coverage:
     get:
       description: Where the data is, and where it is not, over a half-open window.
@@ -1539,6 +1865,127 @@ paths:
                 $ref: '#/components/schemas/LineStatus'
           description: Successful Response
       summary: Line Status
+  /lots/{lot_code}/parts:
+    get:
+      description: "Which assemblies contain a component from this lot \u2014 \xA73.5 scenario 7's containment.\n\
+        \n404 when no lot carries the code, which is not the same as a lot that has gone into\nnothing\
+        \ yet. `lots` is a list because the code is unique per lane and not per line."
+      operationId: lotParts
+      parameters:
+      - in: path
+        name: lot_code
+        required: true
+        schema:
+          title: Lot Code
+          type: string
+      - in: query
+        name: from
+        required: false
+        schema:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: From
+      - in: query
+        name: to
+        required: false
+        schema:
+          anyOf:
+          - format: date-time
+            type: string
+          - type: 'null'
+          title: To
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LotParts'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Lot Parts
+  /parts/affected:
+    get:
+      description: "The containment scope: which parts a condition touched, and where each of them went.\n\
+        \nThe criteria conjoin and any of them may be omitted; a window on its own is \"every part\nmade\
+        \ in this window\", which is where a shift-wide containment starts.\n\n**`station` is answered\
+        \ from that station's own per-part record, or refused.** The head\nof the line records a creation\
+        \ instant, the inspection station a verdict instant and the\ntail a disposition instant \u2014\
+        \ and the press records two numbers against the serial and no\ntime at all. Asked for the press,\
+        \ this returns 422 rather than reaching for a\nneighbouring station's instant: a containment list\
+        \ built on \"the part was probably there\naround then\" is a list someone acts on, and \xA73.4a\
+        \ is explicit that the association is an\ninference the moment a buffer sits between the two stations.\n\
+        \n404 for a station the line does not have, 422 for one that records no instant, and an\nempty\
+        \ scope for criteria that simply matched nothing. Three different answers, because\nthey call\
+        \ for three different next steps (\xA76.5)."
+      operationId: affectedParts
+      parameters:
+      - in: query
+        name: station
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Station
+      - in: query
+        name: carrier
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Carrier
+      - in: query
+        name: lot
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lot
+      - in: query
+        name: defect_class
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Defect Class
+      - in: query
+        name: from
+        required: true
+        schema:
+          format: date-time
+          title: From
+          type: string
+      - in: query
+        name: to
+        required: true
+        schema:
+          format: date-time
+          title: To
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AffectedParts'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Affected Parts
   /parts/{serial}:
     get:
       description: "\xA714's trace: genealogy, what each station recorded, the verdict and the disposition.\n\

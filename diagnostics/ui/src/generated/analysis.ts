@@ -28,6 +28,56 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/carriers/{carrier_id}/parts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Carrier Parts
+         * @description Which assemblies rode this carrier.
+         *
+         *     §3.1 keeps the carriers in a closed loop, so a carrier comes round again — this is a
+         *     list over however much history the window admits, never a list of one pass. That is also
+         *     what makes carrier wear detectable at all: a carrier that passed once would leave no
+         *     statistical signal to find.
+         */
+        get: operations["carrierParts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/components/{serial}/assembly": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Component Assembly
+         * @description §5.3's single-component recall: a supplier finds a defect months later and gives you
+         *     one serial.
+         *
+         *     Only answerable because components are individually serialised (§3.3). A component that
+         *     has been read at a feeder and not yet built into anything answers with a null assembly —
+         *     a real state, and one a 404 would have misreported as an unknown component.
+         */
+        get: operations["componentAssembly"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/coverage": {
         parameters: {
             query?: never;
@@ -138,6 +188,64 @@ export interface paths {
          *     something to clamp away.
          */
         get: operations["lineStatus"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/lots/{lot_code}/parts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Lot Parts
+         * @description Which assemblies contain a component from this lot — §3.5 scenario 7's containment.
+         *
+         *     404 when no lot carries the code, which is not the same as a lot that has gone into
+         *     nothing yet. `lots` is a list because the code is unique per lane and not per line.
+         */
+        get: operations["lotParts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/parts/affected": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Affected Parts
+         * @description The containment scope: which parts a condition touched, and where each of them went.
+         *
+         *     The criteria conjoin and any of them may be omitted; a window on its own is "every part
+         *     made in this window", which is where a shift-wide containment starts.
+         *
+         *     **`station` is answered from that station's own per-part record, or refused.** The head
+         *     of the line records a creation instant, the inspection station a verdict instant and the
+         *     tail a disposition instant — and the press records two numbers against the serial and no
+         *     time at all. Asked for the press, this returns 422 rather than reaching for a
+         *     neighbouring station's instant: a containment list built on "the part was probably there
+         *     around then" is a list someone acts on, and §3.4a is explicit that the association is an
+         *     inference the moment a buffer sits between the two stations.
+         *
+         *     404 for a station the line does not have, 422 for one that records no instant, and an
+         *     empty scope for criteria that simply matched nothing. Three different answers, because
+         *     they call for three different next steps (§6.5).
+         */
+        get: operations["affectedParts"];
         put?: never;
         post?: never;
         delete?: never;
@@ -320,6 +428,22 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * AffectedParts
+         * @description The containment scope: which parts this condition touched, split by where they went.
+         *
+         *     `unplaceable` is the count of parts that match every criterion but the window, because
+         *     the instant the window would be applied to is null for them — an assembly created
+         *     before the gateway's history horizon has no creation instant. They are reported rather
+         *     than dropped: a containment list silently short is worse than one that says it is.
+         */
+        AffectedParts: {
+            criteria: components["schemas"]["AppliedCriteria"];
+            parts: components["schemas"]["PartsByOutcome"];
+            /** Unplaceable */
+            unplaceable: number;
+            window: components["schemas"]["Window"];
+        };
+        /**
          * Alarm
          * @description One alarm and its whole lifecycle (§4.1).
          *
@@ -372,6 +496,32 @@ export interface components {
             window: components["schemas"]["Window"];
         };
         /**
+         * AppliedCriteria
+         * @description What `/parts/affected` was actually asked, echoed back.
+         *
+         *     `anchor` is the one a reader must see: the window is applied to a *per-part* instant,
+         *     and which instant that is depends on the criteria. With a station it is that station's
+         *     own record for the part; without one it is `assemblies.created_at`, the instant the
+         *     part entered the line. §3.4a forbids reconstructing either by joining the time series,
+         *     so a station whose record carries no instant cannot be asked for at all rather than
+         *     being answered with a neighbouring station's.
+         */
+        AppliedCriteria: {
+            /**
+             * Anchor
+             * @enum {string}
+             */
+            anchor: "created" | "inspected" | "left";
+            /** Carrier */
+            carrier: number | null;
+            /** Defect Class */
+            defect_class: string | null;
+            /** Lot Code */
+            lot_code: string | null;
+            /** Station */
+            station: string | null;
+        };
+        /**
          * BufferLevelPoint
          * @description One `buffer_levels` row. §4.1 publishes one only when a carrier moves through the
          *     buffer, so a flat stretch here is a line that moved nothing, not a sampling interval.
@@ -408,6 +558,41 @@ export interface components {
             capacity: number;
             /** Level */
             level: number | null;
+        };
+        /**
+         * CarrierParts
+         * @description Which assemblies rode this carrier. §3.1 keeps the carriers in a closed loop, so a
+         *     carrier returns — this is a list over a window, never a list of one pass.
+         */
+        CarrierParts: {
+            /** Carrier Id */
+            carrier_id: number;
+            parts: components["schemas"]["PartsByOutcome"];
+            window: components["schemas"]["Window"] | null;
+        };
+        /**
+         * ComponentAssembly
+         * @description §5.3's single-component recall: a supplier names one serial months later.
+         *
+         *     `assembly_serial` null is a real answer and not a miss — the component was read at a
+         *     feeder and has not been built into anything yet. The component being unknown is a 404,
+         *     and the two must not look alike (§6.5).
+         */
+        ComponentAssembly: {
+            /** Assembly Created At */
+            assembly_created_at: string | null;
+            /** Assembly Serial */
+            assembly_serial: string | null;
+            /** Carrier Id */
+            carrier_id: number | null;
+            /** Component Serial */
+            component_serial: string;
+            disposition: components["schemas"]["Disposition"] | null;
+            /** Lane */
+            lane: number | null;
+            lot: components["schemas"]["LotRef"] | null;
+            /** Read At */
+            read_at: string | null;
         };
         /**
          * ComponentOrigin
@@ -713,6 +898,45 @@ export interface components {
             stations: components["schemas"]["StationStatus"][];
         };
         /**
+         * LotParts
+         * @description Which assemblies contain a component from this lot.
+         *
+         *     `lots` is a list because a lot code is unique per *lane*, not per line: the same code
+         *     loaded on both feeders is two rows and two populations, and answering as though it were
+         *     one would merge them.
+         */
+        LotParts: {
+            /** Lot Code */
+            lot_code: string;
+            /** Lots */
+            lots: components["schemas"]["LotRef"][];
+            parts: components["schemas"]["PartsByOutcome"];
+            window: components["schemas"]["Window"] | null;
+        };
+        /**
+         * LotRef
+         * @description One `component_lots` row.
+         *
+         *     `depleted_at` is absent and is never coming: 003 never writes it, and a lot is depleted
+         *     at the first draw of the next lot on its lane, which is a query over `loaded_at`.
+         *     Exposed, it would read as "no lot has ever been depleted".
+         */
+        LotRef: {
+            /** Id */
+            id: number;
+            /** Lane */
+            lane: number;
+            /**
+             * Loaded At
+             * Format: date-time
+             */
+            loaded_at: string;
+            /** Lot Code */
+            lot_code: string;
+            /** Supplier */
+            supplier: string;
+        };
+        /**
          * ObservedSpan
          * @description What the window actually holds, across every stream the analysis reads.
          *
@@ -756,6 +980,39 @@ export interface components {
             process_curves: components["schemas"]["ProcessCurve"][];
             /** Process Values */
             process_values: components["schemas"]["ProcessValue"][];
+        };
+        /**
+         * PartGroup
+         * @description One outcome of a containment scope: how many, and enough serials to act on.
+         *
+         *     `count` is exact and `serials` is capped, so a containment list can be trusted as a
+         *     number even where it is too long to be read as a list. `truncated` is what stops the
+         *     capped list being mistaken for the whole of it — the failure mode that matters here is
+         *     a short list read as complete at three in the morning.
+         */
+        PartGroup: {
+            /** Count */
+            count: number;
+            /** Serials */
+            serials: string[];
+            /** Truncated */
+            truncated: boolean;
+        };
+        /**
+         * PartsByOutcome
+         * @description §5.3's split, and the reason `/parts/affected` exists.
+         *
+         *     *"340 serials, 62 rejected, 278 shipped and need checking."* `rejected` is already
+         *     contained; `shipped` is the number someone has to act on tonight; `on_the_line` is
+         *     neither yet, because the part has no disposition row and is still between stations.
+         *     Collapsing the three into a total is what makes a containment answer useless.
+         */
+        PartsByOutcome: {
+            on_the_line: components["schemas"]["PartGroup"];
+            rejected: components["schemas"]["PartGroup"];
+            shipped: components["schemas"]["PartGroup"];
+            /** Total */
+            total: number;
         };
         /**
          * PatternReport
@@ -1200,6 +1457,71 @@ export interface operations {
             };
         };
     };
+    carrierParts: {
+        parameters: {
+            query?: {
+                from?: string | null;
+                to?: string | null;
+            };
+            header?: never;
+            path: {
+                carrier_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CarrierParts"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    componentAssembly: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                serial: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ComponentAssembly"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     coverage: {
         parameters: {
             query: {
@@ -1313,6 +1635,76 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LineStatus"];
+                };
+            };
+        };
+    };
+    lotParts: {
+        parameters: {
+            query?: {
+                from?: string | null;
+                to?: string | null;
+            };
+            header?: never;
+            path: {
+                lot_code: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LotParts"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    affectedParts: {
+        parameters: {
+            query: {
+                station?: string | null;
+                carrier?: number | null;
+                lot?: string | null;
+                defect_class?: string | null;
+                from: string;
+                to: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AffectedParts"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

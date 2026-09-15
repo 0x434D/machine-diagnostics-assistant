@@ -19,6 +19,7 @@ from analysis import (
     routes_signals,
     routes_stops,
     routes_time,
+    routes_traceability,
 )
 
 app = FastAPI(title="machine-agent analysis", version="0.1.0")
@@ -30,4 +31,9 @@ app.include_router(routes_signals.router)
 app.include_router(routes_line.router)
 app.include_router(routes_inspection.router)
 app.include_router(routes_patterns.router)
+# **Before `routes_parts`, and it has to be.** Starlette matches routes in registration
+# order, and `/parts/{serial}` matches `/parts/affected` with `serial="affected"` — so the
+# containment endpoint registered after it would be unreachable, answering 404 for a part
+# named "affected" instead. Nothing in either module hints at the coupling; this line is it.
+app.include_router(routes_traceability.router)
 app.include_router(routes_parts.router)
