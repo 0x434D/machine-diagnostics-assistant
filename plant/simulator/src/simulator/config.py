@@ -384,8 +384,9 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # contact point sits far outside the part-to-part spread it has to be seen through,
     # and it leaves the knee at 10.6 mm of the 12.5 mm stroke -- comfortably short of
     # the stop `curve.force_distance` refuses to reach without clamping. Measured
-    # consequence, in test_scenarios: the joining work falls 17.1 % while
-    # JoiningForcePeak does not move at all.
+    # consequence, in test_scenarios: the joining work falls 17.0 % while the mean
+    # JoiningForcePeak moves 2.32 N -- 0.06 of the stream's own part-to-part spread,
+    # against the 10.7 sigma scenario 3's drift moves it.
     undersized_component_mm: float = 0.6
     # Scenario 8: the same fault on one part instead of one lot, and far larger, because
     # a single bad component has one part to be visible in rather than five hundred. At

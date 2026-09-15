@@ -62,6 +62,11 @@ COPY --from=build --chown=10001:10001 /src /src
 # must run as whoever owns the bind-mounted PKI. Nothing but this container's own
 # history database is ever written here, and no key material is.
 RUN install -d -m 1777 /data
+# The same arrangement for the same reason, for §3.6's ground-truth volume. Two
+# directories rather than one, because they are two volumes: the diagnostics stack is
+# meant to read the plant's history and must never reach this one, and a subdirectory of
+# /data would make that separation a convention instead of a mount.
+RUN install -d -m 1777 /gt
 ENV PATH="/opt/venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1
 WORKDIR /src

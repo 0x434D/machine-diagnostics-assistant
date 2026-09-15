@@ -108,6 +108,14 @@ services:
     volumes:
       - ../pki:/pki:ro
       - plant-history:/data
+      # §3.6's ground truth, and the one volume in this repository that has to stay
+      # unreachable from the other stack: it carries what was injected and what is
+      # genuinely wrong with every part, so a diagnostics container that could read it
+      # would be graded against an answer it had access to, and every evaluation number
+      # in the project would be worthless. A second named volume rather than a directory
+      # under plant-history, because a directory convention is not a boundary -- this one
+      # is enforced by nothing mounting it, and test_compose_invariants pins both halves.
+      - plant-ground-truth:/gt
     ports:
       # Identical inside and out. A published 14840:4840 would make the host dial a
       # port the server never advertises, which is §12's BadTcpEndpointUrlInvalid trap
@@ -160,6 +168,7 @@ services:
 
 volumes:
   plant-history:
+  plant-ground-truth:
 
 networks:
   plant-net:
