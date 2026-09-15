@@ -35,6 +35,7 @@ from simulator.ground_truth import (
     recording,
     run_id_for,
 )
+from simulator.identity import LANES
 from simulator.inspection_client import DEFECT_CLASSES, InspectionClient
 from simulator.scenarios import scenario
 
@@ -205,6 +206,12 @@ async def test_every_part_the_line_inspected_has_its_true_defect_state(
     The plant's own declaration, not the classifier's -- the stand-in service above
     reports every part good, and the log still records the ones that are not. A log
     written from the verdict would score the classifier against itself.
+
+    **And each defect carries the lane its component came from**, which exists nowhere
+    else: `truth_for` drops the lane because the classifier scores a class and not a
+    component, and every assembly draws from both lanes, so no record downstream can ever
+    recover it. §3.5's scenario 5 is "clean lane 2"; without this, a later milestone
+    grading that answer would be grading a guess against something nothing wrote down.
     """
     settings = _fast()
     path = tmp_path / "gt.jsonl"
@@ -216,14 +223,25 @@ async def test_every_part_the_line_inspected_has_its_true_defect_state(
     assert _records(path, RUN)[0]["scenario"] == NO_SCENARIO
     assert not _records(path, INJECTION)
 
+    lanes: set[int] = set()
     for part in parts:
-        assert isinstance(part["defects"], list)
-        assert set(map(str, part["defects"])) <= set(DEFECT_CLASSES)
+        defects = part["defects"]
+        assert isinstance(defects, list)
         assert 0 <= int(str(part["carrier_id"])) < settings.carrier_count
+        for defect in defects:
+            assert isinstance(defect, dict)
+            assert str(defect["class"]) in DEFECT_CLASSES
+            lanes.add(int(str(defect["lane"])))
     defective = [part for part in parts if part["defects"]]
     assert defective, (
         "not one part in the log carries a defect while the baseline scrap rate is "
         f"{settings.reject_rate:.1%}: the truth is not reaching the log"
+    )
+    assert lanes <= set(LANES)
+    assert lanes == set(LANES), (
+        f"every defect in the log came off lane(s) {sorted(lanes)}: §4.1 gives S1 lanes "
+        f"{LANES} and the draw is per (lane, class), so a log that only ever names one "
+        "is a log whose lane is a constant rather than a fact"
     )
 
 

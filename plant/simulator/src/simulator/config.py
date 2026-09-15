@@ -319,6 +319,20 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     lot_size: int = 500
     lot_code_prefix: str = "L-"
     supplier_count: int = 3
+    # **How far into its first lot each lane beyond the first starts**, as a fraction of
+    # `lot_size` per lane index. Without it the two lanes roll their lots on the *same*
+    # part -- both draw one component per assembly, both hit `lot_size` together -- so
+    # lane 1's k-th lot and lane 2's k-th lot cover exactly the same parts, and "which
+    # lot" and "which lane" become one question with one answer. §3.5's scenario 7
+    # contaminates one lane's *lot* and scenario 5 contaminates one *lane*; coextensive
+    # windows collapse the pair, which is the same collapse `LotSchedule`'s shared code
+    # counter already exists to prevent one level up.
+    #
+    # 0.5 is the maximum separation for two lanes: lane 2 rolls over halfway through
+    # every one of lane 1's lots. The cost, and it is real: the lot a lane starts
+    # part-way through supplies fewer than `lot_size` components, which is what a lane
+    # that was already running when the line started genuinely looks like.
+    lot_stagger_fraction: float = 0.5
 
     # §4.1's three fill levels -- S1's two feeder lanes and S4's outfeed. Each is a
     # sawtooth: drawn down (or filled up) by production, reset when an operator

@@ -167,26 +167,29 @@ class InspectionClient:
             model_version=result["model_version"],
         )
 
-    def truth_for(
+    def truth_by_lane(
         self, part_id: str, carrier_id: int, joining_work: float, sim_ts: datetime
-    ) -> list[str]:
-        """Which defect classes this part genuinely carries (§3.6's true defect state).
+    ) -> tuple[tuple[int, str], ...]:
+        """Every `(lane, defect class)` this part genuinely carries, in draw order.
 
-        Public because it is the plant's own declaration about the part and nothing else
-        in the system can recompute it: §3.6 puts the true defect state of every part in
-        the ground-truth log, and the log is written beside the line rather than by
-        asking the classifier what it thought.
+        **The lane-carrying form, and the only place it exists.** The draw is per
+        `(lane, class)` because a defect on a component is attributable to the lane that
+        component came from, and `truth_for` below then throws the lane away -- correctly,
+        because the classifier scores a class and not a component, and §3.4's vector has
+        no room for it. The lane is not recoverable from anything downstream: every
+        assembly draws one component from each lane, so a part record alone can never say
+        which of the two a defect came from.
+
+        So this is what §3.6's log records, and it is the difference between a later
+        milestone being able to score "clean lane 2" and grading a guess against an answer
+        nothing wrote down. The log is the plant's private record on a volume nothing else
+        mounts, so putting the lane in it costs no contract.
 
         **The draws come from a stream no fault can reach and the thresholds are what a
         fault moves.** That is §3.5's "baseline scrap drawn from a distribution
         unrelated to any injected fault", in the only form that can be checked: a run
         with a scenario makes exactly the same draws as a run without one, so a
         scenario's signal is never partly its own noise.
-
-        Ordered by lane and then by class, and returned in `DEFECT_CLASSES` order so
-        that two lanes carrying the same class name produce one entry: the classifier
-        scores a class, not a component, and a duplicate would make one defect look like
-        two on §3.4's vector.
 
         `joining_work` is the area under this part's own press trace (`curve.work_of`),
         and it is what makes `GAP` a consequence of the press rather than a declaration
@@ -196,7 +199,7 @@ class InspectionClient:
         draws = self._noise.scrap_draws(part_id, TRUTH_DRAWS_PER_PART)
         propensity = self._noise.class_propensity(carrier_id, TRUTH_DRAWS_PER_PART)
         gap_scale = self._gap_scale(joining_work)
-        present: set[str] = set()
+        present: list[tuple[int, str]] = []
         for index, (lane, name) in enumerate(
             (lane, name) for lane in LANES for name in DEFECT_CLASSES
         ):
@@ -213,7 +216,26 @@ class InspectionClient:
             # part must be certainly gapped, and a threshold above 1 that was not clamped
             # would still only mean "certain" while reading as a rate.
             if draws[index] < min(1.0, threshold):
-                present.add(name)
+                present.append((lane, name))
+        return tuple(present)
+
+    def truth_for(
+        self, part_id: str, carrier_id: int, joining_work: float, sim_ts: datetime
+    ) -> list[str]:
+        """Which defect classes this part genuinely carries (§3.6's true defect state).
+
+        Public because it is the plant's own declaration about the part and nothing else
+        in the system can recompute it, and it is what goes down the truth side channel.
+
+        Returned in `DEFECT_CLASSES` order, so that two lanes carrying the same class name
+        produce one entry: the classifier scores a class, not a component, and a duplicate
+        would make one defect look like two on §3.4's vector. `truth_by_lane` is where the
+        lane survives.
+        """
+        present = {
+            name
+            for _, name in self.truth_by_lane(part_id, carrier_id, joining_work, sim_ts)
+        }
         return [name for name in DEFECT_CLASSES if name in present]
 
     def _gap_scale(self, joining_work: float) -> float:

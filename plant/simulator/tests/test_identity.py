@@ -91,14 +91,53 @@ def test_a_lot_is_exhausted_before_the_next_one_starts() -> None:
 
 def test_a_lot_supplies_exactly_lot_size_components() -> None:
     """The number M2c's scenario 7 containment list is scored against. One off here is
-    one part in the wrong containment list, which is the failure §1 measures."""
+    one part in the wrong containment list, which is the failure §1 measures.
+
+    Asked on lane 1, which starts at the beginning of a lot. The lanes beyond the first
+    are staggered so that the two do not roll together (`Settings.lot_stagger_fraction`),
+    so the one lot they start part-way through is short by exactly that offset -- which
+    is what a lane that was already running when the line started looks like, and which
+    the test below measures.
+    """
     size = 5
     lots = schedule(Settings(lot_size=size))
-    drawn = [lots.draw(2, T0 + i * TAKT) for i in range(2 * size)]
+    drawn = [lots.draw(1, T0 + i * TAKT) for i in range(2 * size)]
     per_lot = {lot_code: 0 for lot_code in {c.lot_code for c in drawn}}
     for component in drawn:
         per_lot[component.lot_code] += 1
     assert sorted(per_lot.values()) == [size, size]
+
+
+def test_the_two_lanes_do_not_roll_their_lots_on_the_same_part() -> None:
+    """**Without this, "which lot" and "which lane" are one question with one answer.**
+
+    Both lanes supply every assembly, so left unstaggered they deplete together and lane
+    1's k-th lot covers exactly the parts lane 2's k-th lot covers. §3.5's scenario 7
+    contaminates one lane's *lot* and scenario 5 contaminates one *lane*, and coextensive
+    windows collapse the pair -- the same collapse the shared lot-code counter already
+    prevents one level up.
+
+    Asserted as "no lot on lane 1 covers the same parts as any lot on lane 2", which is
+    the property, rather than as an offset, which is the mechanism.
+    """
+    settings = Settings()
+    lots = schedule(settings)
+    parts_by_lot: dict[tuple[int, str], set[int]] = {}
+    for index in range(3 * settings.lot_size):
+        at = T0 + index * TAKT
+        for lane in LANES:
+            component = lots.draw(lane, at)
+            parts_by_lot.setdefault((lane, component.lot_code), set()).add(index)
+
+    first = [parts for (lane, _), parts in parts_by_lot.items() if lane == LANES[0]]
+    second = [parts for (lane, _), parts in parts_by_lot.items() if lane != LANES[0]]
+    assert first and second
+    for one in first:
+        assert one not in second, (
+            "a lot on each lane covers exactly the same parts, so a defect correlating "
+            "with one of them correlates with both and scenario 7 cannot be told from "
+            "scenario 5"
+        )
 
 
 def test_the_lot_a_component_came_from_is_recoverable_from_its_read_time() -> None:

@@ -176,7 +176,7 @@ class GroundTruthLog:
         part_id: str,
         carrier_id: int,
         at: datetime,
-        defects: Sequence[str],
+        defects: Sequence[tuple[int, str]],
     ) -> None:
         """What is genuinely wrong with one part, as the plant declared it.
 
@@ -184,6 +184,15 @@ class GroundTruthLog:
         this is written beside the line: §3.6 wants it so that false accepts and false
         rejects can be scored, and a log that recorded what the vision system said would
         score the classifier against itself.
+
+        **Each defect carries the lane its component came from**, which is the one fact
+        about a defect that exists nowhere else: `truth_for` drops the lane because the
+        classifier scores a class and not a component, and every assembly draws from both
+        lanes, so no part record downstream can ever recover it. §3.5's scenario 5 is
+        "clean lane 2", and without this a later milestone grading that answer would be
+        grading a guess against something nothing wrote down. Not deduplicated by class
+        for the same reason: two lanes both carrying `scratch` is two defects on one part,
+        even though the vision system can only ever see one.
 
         The carrier is here because §3.5's scenario 4 concentrates on one, so "which
         carrier was this part riding" is part of the truth rather than something to be
@@ -196,7 +205,7 @@ class GroundTruthLog:
                 "part_id": part_id,
                 "carrier_id": carrier_id,
                 "at": at.isoformat(),
-                "defects": list(defects),
+                "defects": [{"lane": lane, "class": name} for lane, name in defects],
             }
         )
 
@@ -250,8 +259,9 @@ def recording(log: GroundTruthLog, client: InspectionClient) -> ProduceFn:
     reads the client's own copy of the defect vocabulary. The same shape as
     `hmi.RecentParts.watching`, which wraps the same call for the same reason.
 
-    `truth_for` is asked twice per part, once here and once inside `produce`. It is a
-    pure function of its arguments, so the two answers are the same by construction, and
+    The truth is drawn twice per part, once here and once inside `produce`. Both are
+    pure functions of their arguments -- and of the same draws, since `truth_for` is
+    `truth_by_lane` with the lane dropped -- so the two answers agree by construction, and
     the alternative -- returning the truth alongside the verdict -- would put ground truth
     inside the object that travels to S3, into the OPC UA event and onto the HMI's strip.
     That is the one thing §4.5 forbids, and a duplicated draw of twelve uniforms is not a
@@ -268,7 +278,7 @@ def recording(log: GroundTruthLog, client: InspectionClient) -> ProduceFn:
             part_id,
             carrier_id,
             at,
-            client.truth_for(part_id, carrier_id, joining_work, at),
+            client.truth_by_lane(part_id, carrier_id, joining_work, at),
         )
         return await client.produce(part_id, carrier_id, joining_work, at)
 

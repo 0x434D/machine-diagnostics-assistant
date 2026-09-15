@@ -52,9 +52,9 @@ CLASS_RATE_RISES: Final = "class_rate_rises"
 """The named defect classes are more frequent inside the fault's window than before it,
 and the classes **not** named are not."""
 CLASS_CONCENTRATES: Final = "class_concentrates"
-"""The named classes rise on the one carrier or lane in `scope` and not line-wide --
-which is the difference between scenario 4 and a drift, and needs a significance test
-against the pool's own spread rather than an `ORDER BY`."""
+"""The named classes rise on the one carrier in `scope` and not line-wide -- which is the
+difference between scenario 4 and a drift, and needs a significance test against the
+pool's own spread rather than an `ORDER BY`."""
 CONFIDENCE_DECAYS: Final = "confidence_decays"
 """Every named class's score falls, together, while the verdicts do not change."""
 SCRAP_RATE_FLAT: Final = "scrap_rate_flat"
@@ -71,12 +71,40 @@ ONE_PART_ONLY: Final = "one_part_only"
 exists to stop one bad component being reported as a bad lot."""
 
 
+EXPECTATIONS: Final = frozenset(
+    {
+        SUSPENDED_IN_ORDER,
+        BLOCKED_IN_ORDER,
+        CLASS_RATE_RISES,
+        CLASS_CONCENTRATES,
+        CONFIDENCE_DECAYS,
+        SCRAP_RATE_FLAT,
+        STREAM_STABLE,
+        STREAM_FALLS,
+        ONE_PART_ONLY,
+    }
+)
+OBSERVABLES: Final = frozenset({STATE_CHANGES, INSPECTION_RESULTS, JOINING_FORCE_PEAK})
+SCOPES: Final = frozenset({"carrier"})
+"""The three closed sets, enforced in `Consequence.__post_init__`.
+
+Enforced rather than documented: a consequence naming an expectation nothing knows how
+to check is a claim in the ground-truth log that every later assertion would skip, which
+is a silent pass -- and a scenario is exactly the kind of thing that grows a new
+expectation spelled slightly differently. `SCOPES` holds one member and `Consequence.
+scope` carries the reason it is not two.
+"""
+
+
 @dataclass(frozen=True)
 class Consequence:
     """One thing a fault must make observable, in the form Task 7 asserts it in.
 
     Every field is JSON, because this is written to the ground-truth log verbatim
     (§3.6) and read back by a test in another milestone.
+
+    Raises ValueError for an `observable`, an `expect` or a `scope` outside the three
+    closed sets above.
     """
 
     observable: str
@@ -87,12 +115,54 @@ class Consequence:
     """The stations or defect classes it is about, **in the order the claim is made in**
     where the order is part of the claim."""
     scope: str = ""
-    """`carrier=7`, `lane=2`, or empty for line-wide. A string rather than a pair of
-    optional fields, because it is one fact -- which part of the line this is about --
-    and two nullable fields would make "neither" and "both" expressible."""
+    """`carrier=7`, or empty for line-wide.
+
+    **It names a partition of the plant's own output, and `carrier` is the only one there
+    is.** The carrier id is on every `InspectionResultEvent`, so "these classes rose on
+    carrier 7 and not elsewhere" has a contrast group and can be asserted. `lane` is not:
+    every assembly draws one component from each lane, so the exposed set for either lane
+    is *every part* and a consequence reading "`gap` rose on lane 1" has nothing to
+    compare against. It was written that way in the first draft of this file for
+    scenarios 5, 7 and 8, and it would have had a later milestone scoring an answer
+    against a claim the plant's output cannot support.
+
+    **Which lane a fault is on is still recorded** -- in the injection's own `params`,
+    and per defect in the ground-truth log, where `InspectionClient.truth_by_lane` puts
+    it. It is a fact about the cause, not an observable, and the two belong in different
+    fields.
+
+    A string rather than a pair of optional fields, because it is one fact -- which part
+    of the line this is about -- and two nullable fields would make "neither" and "both"
+    expressible.
+    """
     within_seconds: float | None = None
     """How long the whole consequence may take to appear, where that is part of the
-    claim. Derived from the line's own geometry by the scenario, never a round number."""
+    claim. Derived from the line's own geometry rather than chosen, so that changing the
+    buffer capacity or the takt moves it -- see `_propagation_seconds`."""
+
+    def __post_init__(self) -> None:
+        if self.observable not in OBSERVABLES:
+            raise ValueError(
+                f"{self.observable!r} is not somewhere a consequence can be observed; "
+                f"the ground-truth log points at {sorted(OBSERVABLES)}"
+            )
+        if self.expect not in EXPECTATIONS:
+            raise ValueError(
+                f"{self.expect!r} is not an expectation anything knows how to check; "
+                f"§3.5's eight use {sorted(EXPECTATIONS)}. A new one is a new assertion "
+                "in Task 7, not a new string here"
+            )
+        if self.scope:
+            key, _, value = self.scope.partition("=")
+            if key not in SCOPES or not value.isdigit():
+                raise ValueError(
+                    f"{self.scope!r} is not a partition of the plant's output; the only "
+                    f"one is {sorted(SCOPES)} (as `carrier=7`). `lane=2` was here and is "
+                    "the case this refuses: every assembly draws from both lanes, so a "
+                    "lane has no contrast group and the consequence cannot be checked "
+                    "against anything. Which lane a fault is on belongs in the fault's "
+                    "params and in the ground-truth log's per-defect lane"
+                )
 
 
 @dataclass(frozen=True)
@@ -136,12 +206,16 @@ def _propagation_seconds(settings: Settings) -> float:
     """How long a stoppage at one end of the line takes to reach the other.
 
     One buffer's worth of parts has to be consumed before the station below it starves,
-    at the line's takt, and there are one fewer buffers than stations. Doubled, and the
-    reason is measured rather than cautious: §3.5's micro-stops add up to
-    `micro_stop_max_seconds` to any cycle, and a station can take several of them while
-    a chain is propagating. Derived from the line's own geometry because
-    `buffer_capacity` is what §3.1 says sets this delay -- a hard 90 s here would be a
-    second, silent copy of three settings.
+    at the line's takt, and there are one fewer buffers than stations -- 90 s at the
+    shipped values. Doubled as a **margin**, not as a second measurement: §3.5's
+    micro-stops add up to `micro_stop_max_seconds` to any cycle and a station can take
+    several while a chain propagates, so the claim has to hold on an unlucky run too. The
+    chain measured at the shipped settings completes in 45.6 s against the 180 s this
+    returns, which is the size of the margin rather than a prediction of it.
+
+    Derived from the line's own geometry because `buffer_capacity` is what §3.1 says sets
+    this delay -- a hard 180 s here would be a second, silent copy of three settings, and
+    it would go on claiming 180 s after the buffers were made twice as deep.
     """
     stations = len(settings.station_takt_seconds)
     return 2.0 * (stations - 1) * settings.buffer_capacity * settings.takt_seconds
@@ -318,18 +392,20 @@ def _lane_contamination(settings: Settings) -> Scenario:
                         INSPECTION_RESULTS,
                         CLASS_RATE_RISES,
                         ("missing_part", "contamination"),
-                        scope=f"lane={lane}",
                     ),
                 ),
             ),
         ),
         note=(
             "The two classes rise and the other four do not, which is what separates "
-            "this from a line-wide rise. **Attributing them to lane 2 from a part record "
-            "alone is not possible and M3 must know it**: every assembly draws one "
-            "component from each lane, so every part contains lane 2, and both lanes' "
-            "lots cover exactly the same parts. The lane is in the plant's truth; the "
-            "evidence for it is not in the verdict."
+            "this from a line-wide rise, and it is the whole of what the plant's output "
+            "supports. **Attributing them to lane 2 from a part record alone is not "
+            "possible**: every assembly draws one component from each lane, so every "
+            "part contains lane 2 and there is no contrast group. The lane is recorded "
+            "in this fault's params and against every defect in the ground-truth log "
+            "(`InspectionClient.truth_by_lane`), so the answer is scoreable even though "
+            "it is not derivable -- which is the difference between a hard question and "
+            "an unanswerable one."
         ),
     )
 
@@ -386,12 +462,7 @@ def _bad_lot(settings: Settings) -> Scenario:
                     until,
                 ),
                 (
-                    Consequence(
-                        INSPECTION_RESULTS,
-                        CLASS_RATE_RISES,
-                        (GAP,),
-                        scope=f"lane={lane}",
-                    ),
+                    Consequence(INSPECTION_RESULTS, CLASS_RATE_RISES, (GAP,)),
                     # The assertion the scenario exists for. Its symptom is scenario 3's
                     # symptom; the force is what tells them apart, and a scenario that
                     # also drifted the force would have quietly become scenario 3.
@@ -403,7 +474,11 @@ def _bad_lot(settings: Settings) -> Scenario:
             "The window is the lot's window at the line's nominal takt, which the run's "
             "own jitter and micro-stops move by a little; the lot is named by lane and "
             "index rather than by code, because a lot that has not loaded yet has no "
-            "code and §3.5's literal `L-4471` is never issued at the shipped seed."
+            "code and §3.5's literal `L-4471` is never issued at the shipped seed. The "
+            "two lanes deplete their lots at different parts (`lot_stagger_fraction`), "
+            "so this lot covers a part set no lot on the other lane covers -- without "
+            "that, the defects would correlate with both lanes' lots equally and the "
+            "lot would carry no more information than the period."
         ),
     )
 
@@ -427,14 +502,7 @@ def _defective_component(settings: Settings) -> Scenario:
                     # happens inside it -- one component, which is the whole of row 8.
                     _seconds(start + min(settings.station_takt_seconds.values())),
                 ),
-                (
-                    Consequence(
-                        INSPECTION_RESULTS,
-                        ONE_PART_ONLY,
-                        (GAP,),
-                        scope=f"lane={lane}",
-                    ),
-                ),
+                (Consequence(INSPECTION_RESULTS, ONE_PART_ONLY, (GAP,)),),
             ),
         ),
         note=(

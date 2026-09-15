@@ -630,6 +630,24 @@ async def test_s2_records_the_curve_and_draws_the_distance_from_the_stop() -> No
 
 
 @pytest.mark.asyncio
+async def test_s3_refuses_a_part_s2_never_pressed() -> None:
+    """The sibling of S4's refusal below, and it guards a number two of §3.5's scenarios
+    turn on: the `gap` a part carries is scaled by the work its own press left in it
+    (`Settings.gap_work_exponent`).
+
+    Raising rather than substituting the nominal is the whole of it. A silent nominal
+    would score every unpressed part against a press that did not happen, and both
+    scenario 3 and scenario 7 would go on producing nothing on a line that looked fine --
+    which is exactly the shape of failure this milestone found twice already.
+    """
+    station, _ = build_one(InspectionStation)
+    unpressed = loaded()
+    unpressed.joining_work = None
+    with pytest.raises(ValueError, match="no joining work"):
+        await station.run_cycle(T0, Carrier(0), unpressed)
+
+
+@pytest.mark.asyncio
 async def test_s4_refuses_a_part_whose_serial_it_never_saw() -> None:
     """M2a's S4 refuses a part with no disposition. Identity is held to the same
     standard: sorting a part nobody can name is a quiet wrong answer, and §14's

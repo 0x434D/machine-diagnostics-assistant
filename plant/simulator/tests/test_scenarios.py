@@ -14,6 +14,9 @@ log (§3.6), so a claim this file weakened would be a claim the log still makes.
 
 from __future__ import annotations
 
+import base64
+import itertools
+import json
 import statistics
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -29,7 +32,11 @@ from simulator.inspection_client import DEFECT_CLASSES, GAP, InspectionClient
 from simulator.packml import State
 from simulator.render import render_part
 from simulator.scenarios import (
+    CLASS_CONCENTRATES,
+    CLASS_RATE_RISES,
+    INSPECTION_RESULTS,
     JOINING_FORCE_PEAK,
+    Consequence,
     Scenario,
     all_scenarios,
     scenario,
@@ -233,6 +240,30 @@ def test_every_scenario_names_a_carrier_and_a_lane_the_line_actually_has() -> No
                 )
 
 
+def test_a_consequence_nothing_can_check_is_refused() -> None:
+    """The module's own claim -- "a consequence nothing knows how to check is a failure
+    rather than a silent pass" -- made true here rather than in Task 7.
+
+    Without the refusal it is a claim about a milestone that has not been written: a
+    consequence naming an expectation Task 7 does not dispatch on is written to the
+    ground-truth log, skipped by every later assertion, and reads as a scenario that
+    passed.
+
+    **`lane=2` is the case worth naming.** It was in the first draft of `scenarios.py`
+    for three of the eight, and it is not a partition of anything the plant emits: every
+    assembly draws one component from each lane, so the exposed set for either lane is
+    every part and there is no contrast group to check against.
+    """
+    Consequence(INSPECTION_RESULTS, CLASS_CONCENTRATES, ("scratch",), scope="carrier=7")
+
+    with pytest.raises(ValueError, match="knows how to check"):
+        Consequence(INSPECTION_RESULTS, "class_rate_rose")
+    with pytest.raises(ValueError, match="can be observed"):
+        Consequence("part_dispositions", CLASS_RATE_RISES)
+    with pytest.raises(ValueError, match="partition of the plant's output"):
+        Consequence(INSPECTION_RESULTS, CLASS_RATE_RISES, scope="lane=2")
+
+
 def test_the_eight_are_eight_and_each_expects_something_observable() -> None:
     """§3.5's table has eight rows. A scenario with no consequence is an injection
     nothing can be asserted about, which is the shape M2c exists not to ship."""
@@ -281,9 +312,12 @@ async def test_a_starved_feeder_starves_s2_s3_and_s4_in_that_order() -> None:
         "starved:B2_3",
         "starved:B3_4",
     ], f"the three did not end starved on the buffer above them: {reached}"
-    assert [delay for _, delay in reached] == sorted(delay for _, delay in reached), (
-        f"the three did not starve in order: {reached}"
-    )
+    # **Strictly** increasing, not merely non-decreasing: three stations suspending at
+    # one instant is exactly the line-with-no-buffers case this test exists to exclude,
+    # and `sorted()` would pass on it. The measured spacings are 19.0 / 41.4 / 45.6 s.
+    assert all(
+        earlier[1] < later[1] for earlier, later in itertools.pairwise(reached)
+    ), f"the three did not starve in order: {reached}"
     assert reached[-1][1] <= consequence.within_seconds, (
         f"the chain took {reached[-1][1]} s and the ground-truth log claims "
         f"{consequence.within_seconds} s: {reached}"
@@ -320,9 +354,12 @@ async def test_a_blocked_outfeed_backs_the_blockage_up_to_s1() -> None:
         "blocked:B2_3",
         "blocked:B1_2",
     ], f"the three did not end blocked on the buffer below them: {reached}"
-    assert [delay for _, delay in reached] == sorted(delay for _, delay in reached), (
-        f"the blockage did not reach the three in order: {reached}"
-    )
+    # Strictly increasing, for the reason scenario 1's is: a blockage that reached all
+    # three at one instant is a line whose buffers hold nothing. Measured: 29.5 / 36.5 /
+    # 49.3 s.
+    assert all(
+        earlier[1] < later[1] for earlier, later in itertools.pairwise(reached)
+    ), f"the blockage did not reach the three in order: {reached}"
     assert reached[-1][1] <= consequence.within_seconds
     assert run.settled("S4_Outfeed").reason == "blocked:outfeed"
 
@@ -409,17 +446,28 @@ async def test_a_bad_lot_gaps_parts_while_the_force_stream_stays_put() -> None:
     so a scenario that also drifted the force would have quietly become scenario 3 and
     this is the assertion that says it did not.
 
-    Measured across the bad lot's window: the mean `JoiningForcePeak` moves from
-    4214.09 N to 4211.77 N, a shift of 2.32 N against the stream's own part-to-part
-    spread of 39.5 N -- **0.06 sigma, against scenario 3's 10.7**. It is not exactly
-    zero and the reason is worth knowing: the peak is the largest sample of a noisy
-    trace, and a part met later is clamped for fewer of them, so the maximum of the
-    noise over the clamped stretch is drawn from a slightly smaller sample. The shift is
-    an order statistic, it is two hundred times below the drift it has to be
-    distinguished from, and it is far below the noise it sits in.
+    Two measurements of the same stream, and the **paired** one is the claim:
 
-    Meanwhile the joining work falls 14688.9 -> 12198.7 N.mm (17.0 %) and the `gap` rate
-    inside the window goes from nothing to 2.8 %.
+    * before and after, on the scenario's own run -- 4214.09 N to 4211.77 N, a shift of
+      2.32 N against a part-to-part spread of 39.49 N, **0.059 sigma**;
+    * part for part against the clean run, which is the fault's own contribution with
+      the noise differenced out -- **-1.260 N, 0.032 sigma** over 500 parts, against
+      scenario 3's 10.7. **A factor of 335.**
+
+    The first is larger because it still carries the drift of two five-hundred-part
+    windows; it is the conservative number and both are asserted.
+
+    It is not exactly zero, and the account is arithmetic rather than a shrug: the peak
+    is the **largest sample of a noisy trace**, and a part met 0.6 mm later reaches the
+    clamp 0.6 mm later, so the plateau holds 8 of the 51 samples instead of 11.
+    E[max of 11 N(0, 8)] - E[max of 8] = **1.324 N**, which is the measured paired shift
+    to within the run's own noise. An order statistic, below the noise it sits in.
+
+    Before the window the paired difference is **exactly 0.000000 N** -- `faults`'
+    identity property, at the whole-line level.
+
+    Meanwhile the joining work falls 14688.9 -> 12198.7 N.mm (17.0 %), and 10 parts are
+    gapped that the clean run did not gap, with none un-gapped.
     """
     settings = Settings()
     item = scenario(7, settings)
@@ -436,6 +484,28 @@ async def test_a_bad_lot_gaps_parts_while_the_force_stream_stays_put() -> None:
         f"the force moved {shift:.2f} N across the bad lot against a {spread:.2f} N "
         "part-to-part spread: this scenario has become scenario 3, and the one thing "
         "that distinguishes it is gone"
+    )
+
+    # The paired form: the same part, pressed with and without the fault. Every draw
+    # except the contact point is identical between the two runs, so this differences the
+    # noise out and what is left is the fault's own contribution to the published peak.
+    clean_peaks = dict(clean.stream(station, signal))
+    bad_peaks = dict(bad.stream(station, signal))
+    shared = sorted(set(clean_peaks) & set(bad_peaks))
+    assert len(shared) > len(inside), "the two runs did not press the same parts"
+    paired = abs(
+        statistics.fmean(
+            bad_peaks[t] - clean_peaks[t] for t in shared if at <= t < until
+        )
+    )
+    assert paired < 0.1 * spread, (
+        f"the fault itself moves the published peak by {paired:.2f} N against a "
+        f"{spread:.2f} N spread: the contact point is leaking into JoiningForcePeak, "
+        "which is the confusion between scenarios 3 and 7 that `curve` exists to prevent"
+    )
+    # And outside the window it moves it by nothing at all, byte for byte.
+    assert all(bad_peaks[t] == clean_peaks[t] for t in shared if t < at), (
+        "a fault that has not fired changed the press"
     )
 
     # The work is where an undersized component *is* visible, and it is curve-only:
@@ -608,6 +678,70 @@ def test_a_fouled_lens_renders_a_frame_with_less_contrast_in_it() -> None:
         f"a frame rendered at clarity {clarity} carries {fouled / clean:.3f} of a clean "
         "frame's contrast: the renderer's veil and the statistic have drifted apart, "
         "and scenario 6's decay would no longer be proportional to the fouling"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_fouling_scenario_reaches_the_frame_the_client_actually_sends() -> None:
+    """**The join between the fault and the image, which nothing else covers.**
+
+    That the renderer responds to `clarity` is tested above, and that the classifier
+    responds to contrast is tested in the inspection package. Neither notices if the
+    `clarity=` argument in `InspectionClient.produce` is deleted -- both stay green while
+    scenario 6 goes inert on a real line. That is the defect this milestone found for
+    scenarios 1 and 2, one layer down: the modifier moves a number and nothing consumes
+    it.
+
+    So this drives a client with `OPTICS_FOULING` active and measures the frame it
+    actually posts to `/inspect`, which is the only thing the classifier ever sees.
+    Measured over the fouling scenario's own factor: 66.36 grey levels of RMS contrast
+    before the injection against 36.6 once the ramp has run, 0.55 of it.
+    """
+    settings = Settings()
+    item = scenario(6, settings)
+    at, _ = _window(item)
+    ramp = settings.optics_fouling_ramp_seconds
+    origin = new_clock(settings).history_start
+    faults = item.fault_set(origin)
+
+    posted: list[bytes] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.startswith("/truth/"):
+            return httpx.Response(200, json={"status": "ok"})
+        body = json.loads(request.content)
+        posted.append(base64.b64decode(body["image_b64"]))
+        return httpx.Response(
+            200,
+            json={
+                "disposition": "good",
+                "defect_class": None,
+                "confidence": 0.9,
+                "confidences": {name: 0.03 for name in DEFECT_CLASSES},
+                "model_version": "test-1",
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = InspectionClient(settings, http, faults=faults)
+        nominal = settings.press_nominal_work
+        for index in range(10):
+            await client.produce(
+                f"A-{index:08d}", index % 18, nominal, origin + timedelta(seconds=1.0)
+            )
+        clean = statistics.fmean(_rms_contrast(frame) for frame in posted)
+
+        posted.clear()
+        fouled_at = origin + timedelta(seconds=at + ramp + 60.0)
+        for index in range(10):
+            await client.produce(f"A-{index:08d}", index % 18, nominal, fouled_at)
+        fouled = statistics.fmean(_rms_contrast(frame) for frame in posted)
+
+    clarity = item.injections[0].fault.params["factor"]
+    assert abs(fouled / clean - clarity) < 0.05, (
+        f"the frames the client posted carry {fouled / clean:.3f} of a clean frame's "
+        f"contrast while the fault is scaling clarity to {clarity}: the fouling is not "
+        "reaching the render, so scenario 6 would decay nothing on a real line"
     )
 
 

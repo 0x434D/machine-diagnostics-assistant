@@ -142,9 +142,19 @@ class LotSchedule:
         self._drawn: dict[int, int] = {}
         self._read: dict[int, int] = {}
         self._last_draw: dict[int, datetime] = {}
-        for lane in LANES:
+        for index, lane in enumerate(LANES):
             self._lots[lane] = [self._load(lane, started_at)]
-            self._drawn[lane] = 0
+            # **Staggered, so the two lanes do not roll their lots on the same part.**
+            # Both lanes supply every assembly, so left at zero they deplete together and
+            # lane 1's k-th lot covers exactly the parts lane 2's k-th lot covers -- which
+            # makes "which lot" and "which lane" one question, and collapses §3.5's
+            # scenario 7 (one lane's lot) into scenario 5 (one lane). `Settings.
+            # lot_stagger_fraction` carries the rest of the reasoning.
+            #
+            # A lane that starts part-way through its first lot is a lane that was already
+            # running when the line started, so that lot supplies fewer than `lot_size`
+            # components and every lot after it supplies exactly `lot_size`.
+            self._drawn[lane] = self._stagger(index)
             self._read[lane] = 0
 
     def draw(self, lane: int, at: datetime) -> Component:
@@ -215,6 +225,20 @@ class LotSchedule:
             f"lane {lane} was drawing from no lot at {at}: the schedule starts at "
             f"{self._lots[lane][0].loaded_at}"
         )
+
+    def _stagger(self, index: int) -> int:
+        """How many components of its first lot lane `index` is treated as having
+        already drawn. Zero for the first lane, so one lane's lots always start at the
+        instant the line does and a scenario can name a window on it.
+
+        Taken modulo `lot_size`, so a fraction of 1.0 or more is a full lot rather than a
+        lane that starts already depleted -- `draw` would otherwise roll it over on its
+        very first component, before any part had been built from it.
+        """
+        offset = round(
+            index * self._settings.lot_size * self._settings.lot_stagger_fraction
+        )
+        return offset % self._settings.lot_size
 
     def _check_lane(self, lane: int) -> None:
         if lane not in self._lots:
