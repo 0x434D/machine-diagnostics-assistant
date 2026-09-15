@@ -10,7 +10,7 @@ from typing import Literal
 from pydantic import BaseModel
 
 from analysis import windows
-from analysis.patterns import Dimension
+from analysis.patterns import Correction, Dimension
 from analysis.propagation import Category, Termination
 from analysis.significance import Verdict
 
@@ -648,7 +648,7 @@ class PatternReport(BaseModel):
     coverage: Coverage
     alpha: float
     minimum_sample: int
-    correction: str
+    correction: Correction
     # The score at or above which a part is counted as carrying a defect class, repeated
     # from `/inspection/stats` for the same reason it is reported there: the defect-class
     # dimension is a count of parts over this threshold, and the number changes what the

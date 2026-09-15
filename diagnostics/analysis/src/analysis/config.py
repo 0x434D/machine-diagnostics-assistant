@@ -6,6 +6,7 @@ from datetime import timedelta
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from analysis.patterns import Correction
 from analysis.propagation import DEFAULT_LEAD_IN
 from analysis.significance import DEFAULT_SIGNIFICANCE
 from analysis.stops import DEFAULT_INTERRUPTION_FLOOR, DEFAULT_MICRO_STOP_THRESHOLD
@@ -75,6 +76,18 @@ class Settings(BaseSettings):
     # could not look, which is not the same answer as nothing being there.
     significance_alpha: float = DEFAULT_SIGNIFICANCE.alpha
     significance_minimum_sample: int = DEFAULT_SIGNIFICANCE.minimum_sample
+
+    # Which multiplicity correction `/inspection/patterns` applies, and it is a number in
+    # the sense §10.3 means: it changes what the service *claims*, not how fast it says it.
+    # Twelve carriers tested at α=0.05 report a finding on a clean line more often than not
+    # without one, and the three settings differ in what a report of several findings means
+    # -- Benjamini-Hochberg bounds the share of the reported findings that are false, where
+    # Bonferroni bounds the chance of any false finding at all. `patterns.py`'s docstring
+    # carries the measurement behind the default; this is the dial.
+    #
+    # `NONE` is here because it is what the other two were measured against, not because a
+    # deployment should use it.
+    pattern_correction: Correction = Correction.BENJAMINI_HOCHBERG
 
     # Within how much of `now` the newest row must lie for `/line/status` to call itself
     # live. Ten takts at §3.1's 6 s: long enough that an ordinary micro-stop does not read

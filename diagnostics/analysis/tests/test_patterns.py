@@ -118,6 +118,7 @@ def _observation(dimension: Dimension, value: str, *, outcome: bool) -> Observat
     return Observation(
         carrier=values[Dimension.CARRIER],
         lane=values[Dimension.LANE],
+        lot=values[Dimension.LOT],
         defect_class=values[Dimension.DEFECT_CLASS],
         time_bucket=values[Dimension.TIME_BUCKET],
         outcome=outcome,

@@ -55,10 +55,25 @@ from analysis.significance import (
 
 
 class Dimension(Enum):
-    """The four §5.5 names. Each is one field of an `Observation`."""
+    """§5.5's four names, and the one §3.5 scenario 7 cannot be answered without.
+
+    Each is one field of an `Observation`.
+
+    **`LOT` is not in §5.5's list and has to be.** Scenario 7 is a run of rising `gap`
+    defects where the joining force is *perfectly stable*: the symptom points straight at a
+    press drift, and the only thing separating that wrong answer from the right one is that
+    the defects correlate with the supplier lot rather than with the force. Without a lot
+    dimension there is nothing for that correlation to be measured in, and the scenario's
+    whole proof has nothing to stand on.
+
+    It is a legitimate dimension and not a special case: a part's lot membership is a
+    per-part fact, reached through `genealogy` to `components.lot_id`, and never a time
+    join — which is exactly what §3.5's staggered lot boundaries exist to make checkable.
+    """
 
     CARRIER = "carrier"
     LANE = "lane"
+    LOT = "lot"
     DEFECT_CLASS = "defect_class"
     TIME_BUCKET = "time_bucket"
 
@@ -80,6 +95,7 @@ class Observation:
     outcome: bool
     carrier: str | None = None
     lane: str | None = None
+    lot: str | None = None
     defect_class: str | None = None
     time_bucket: str | None = None
 
@@ -89,6 +105,8 @@ class Observation:
                 return self.carrier
             case Dimension.LANE:
                 return self.lane
+            case Dimension.LOT:
+                return self.lot
             case Dimension.DEFECT_CLASS:
                 return self.defect_class
             case Dimension.TIME_BUCKET:

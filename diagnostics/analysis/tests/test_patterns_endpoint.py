@@ -14,6 +14,7 @@ from collections.abc import Callable
 
 import pytest
 from analysis.config import Settings
+from analysis.patterns import Correction
 from fastapi.testclient import TestClient
 
 WINDOW = {"from": "2026-09-12T01:00:00Z", "to": "2026-09-12T02:00:00Z"}
@@ -47,6 +48,7 @@ def test_every_dimension_section_five_five_names_is_reported(
     assert [row["dimension"] for row in body["dimensions"]] == [
         "carrier",
         "lane",
+        "lot",
         "defect_class",
         "time_bucket",
     ]
@@ -71,7 +73,11 @@ def test_the_lane_dimension_is_refused_rather_than_answered_not_significant(
 
     assert lane["comparable"] is False
     assert _patterns(lane) == []
-    assert "contrast group" in str(lane["not_comparable"])
+    # §3.5's own words, quoted rather than paraphrased, so that the next reader can see the
+    # specification already settled this and does not "fix" it into a silent negative.
+    reason = str(lane["not_comparable"])
+    assert "distinction the line cannot make" in reason
+    assert "evidence the plant does not yet carry" in reason
 
 
 @pytest.mark.usefixtures("seeded_db")
@@ -192,3 +198,97 @@ def test_the_report_carries_the_coverage_of_the_window_it_tested(
     body = client.get("/inspection/patterns", params=WINDOW).json()
 
     assert body["coverage"]["fully_covered"] is False
+
+
+@pytest.mark.usefixtures("seeded_db")
+def test_the_lot_dimension_reads_the_genealogy_and_not_the_clock(
+    client: TestClient,
+) -> None:
+    """**The dimension §5.5 does not list and §3.5 scenario 7 cannot be answered without.**
+
+    Scenario 7 is a run of rising `gap` defects with a *perfectly stable* joining force. The
+    symptom points straight at a press drift, and the only thing separating that wrong
+    answer from the right one is that the defects correlate with the supplier lot. Nothing
+    can measure that correlation unless the lot is a dimension.
+
+    The three counts below are the falsifier. `LOT-A1` and `LOT-A2` each went into 300 parts
+    and `LOT-B1` into all 600, because a part contains one component from each lane and is
+    one trial for each lot it contains. A read path that worked out "which lot was current
+    when this part was made" could not produce that shape at all — the two lanes' boundaries
+    are staggered on purpose (§3.5), and `LOT-A2`'s first parts were created before it was
+    loaded.
+    """
+    lot = _dimension(client.get("/inspection/patterns", params=WINDOW).json(), "lot")
+
+    assert lot["comparable"] is True
+    trials = {row["value"]: row["trials"] for row in _patterns(lot)}
+    assert trials == {"LOT-A1": 300, "LOT-A2": 300, "LOT-B1": 600}
+    # Every lot at the same 5 % share, which is what a line where the lot explains nothing
+    # looks like — and the answer this endpoint has to be able to give.
+    assert {row["verdict"] for row in _patterns(lot)} == {"not_significant"}
+
+
+@pytest.mark.usefixtures("seeded_db_with_unaccounted_rejects")
+def test_a_part_whose_lot_is_unknown_is_counted_rather_than_dropped(
+    client: TestClient,
+) -> None:
+    """Two rejects here have no genealogy at all, so no lot can be attributed to them.
+
+    Counted as unattributed rather than left out of the query: a dimension quietly computed
+    over fewer parts than the window holds is the one shape the sample gate cannot protect
+    against, because it reads as a clean and well-powered answer.
+    """
+    lot = _dimension(client.get("/inspection/patterns", params=WINDOW).json(), "lot")
+
+    assert lot["unattributed"] == 2
+
+
+def test_the_multiplicity_correction_is_configuration(
+    analysis_url: str, tuned_client: Callable[[Settings], TestClient]
+) -> None:
+    """§10.3: it is a number that changes what the service claims.
+
+    Benjamini-Hochberg bounds the share of the reported findings that are false; Bonferroni
+    bounds the chance of any false finding at all; `none` is what the other two were
+    measured against and is what this asserts, because with no correction every adjusted
+    p-value is its own raw one and the comparison is exact rather than directional.
+    """
+    uncorrected = tuned_client(
+        Settings(
+            database_url=analysis_url,
+            significance_minimum_sample=10,
+            pattern_correction=Correction.NONE,
+        )
+    )
+    body = uncorrected.get("/inspection/patterns", params=WINDOW).json()
+    carrier = _dimension(body, "carrier")
+
+    assert body["correction"] == "none"
+    tested = [row for row in _patterns(carrier) if row["p_value"] is not None]
+    assert tested
+    assert all(row["adjusted_p_value"] == row["p_value"] for row in tested)
+
+
+def test_the_corrected_report_is_never_stronger_than_the_uncorrected_one(
+    analysis_url: str, tuned_client: Callable[[Settings], TestClient]
+) -> None:
+    """Fifteen carriers tested at once is fifteen chances to find something. The correction
+    is what stops that becoming a finding on a line where nothing is wrong, and the price is
+    paid in every adjusted p-value being at or above its raw one."""
+    corrected = tuned_client(
+        Settings(
+            database_url=analysis_url,
+            significance_minimum_sample=10,
+            pattern_correction=Correction.BENJAMINI_HOCHBERG,
+        )
+    )
+    carrier = _dimension(
+        corrected.get("/inspection/patterns", params=WINDOW).json(), "carrier"
+    )
+
+    tested = [row for row in _patterns(carrier) if row["p_value"] is not None]
+    assert tested
+    assert all(
+        float(str(row["adjusted_p_value"])) >= float(str(row["p_value"]))
+        for row in tested
+    )

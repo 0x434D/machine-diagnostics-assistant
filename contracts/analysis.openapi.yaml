@@ -333,6 +333,16 @@ components:
       - supplier
       title: ComponentOrigin
       type: object
+    Correction:
+      description: 'NONE is not a default anyone should deploy; it is what the other two are measured
+
+        against, and what a caller testing a single value by hand does not need.'
+      enum:
+      - none
+      - bonferroni
+      - benjamini_hochberg
+      title: Correction
+      type: string
     Coverage:
       description: "\xA74.4: without gap markers, missing data is indistinguishable from a quiet machine.\n\
         \n`fully_covered` is carried rather than left to a reader comparing `covered_fraction`\nagainst\
@@ -475,10 +485,20 @@ components:
       title: DerivationLink
       type: object
     Dimension:
-      description: "The four \xA75.5 names. Each is one field of an `Observation`."
+      description: "\xA75.5's four names, and the one \xA73.5 scenario 7 cannot be answered without.\n\
+        \nEach is one field of an `Observation`.\n\n**`LOT` is not in \xA75.5's list and has to be.**\
+        \ Scenario 7 is a run of rising `gap`\ndefects where the joining force is *perfectly stable*:\
+        \ the symptom points straight at a\npress drift, and the only thing separating that wrong answer\
+        \ from the right one is that\nthe defects correlate with the supplier lot rather than with the\
+        \ force. Without a lot\ndimension there is nothing for that correlation to be measured in, and\
+        \ the scenario's\nwhole proof has nothing to stand on.\n\nIt is a legitimate dimension and not\
+        \ a special case: a part's lot membership is a\nper-part fact, reached through `genealogy` to\
+        \ `components.lot_id`, and never a time\njoin \u2014 which is exactly what \xA73.5's staggered\
+        \ lot boundaries exist to make checkable."
       enum:
       - carrier
       - lane
+      - lot
       - defect_class
       - time_bucket
       title: Dimension
@@ -989,8 +1009,7 @@ components:
           title: Alpha
           type: number
         correction:
-          title: Correction
-          type: string
+          $ref: '#/components/schemas/Correction'
         coverage:
           $ref: '#/components/schemas/Coverage'
         defect_class_threshold:
@@ -1749,15 +1768,16 @@ paths:
   /inspection/patterns:
     get:
       description: "Every \xA75.5 dimension over the window, each value against the rest of its pool.\n\
-        \nTwo observation sets, because two of the dimensions count different things. Carrier and\ntime\
-        \ bucket are one trial per part with \"was it rejected\" as the outcome. Defect class is\none\
-        \ trial per part *per class* with \"did it reach the threshold on this class\" as the\noutcome\
-        \ \u2014 \xA73.4's six scores are independent, a part can carry several, and dividing a\npart\
-        \ between the classes it carries would invent a constraint the classifier does not\nhave. Both\
-        \ use the part as the denominator, which is the same denominator\n`/inspection/stats?group_by=defect_class`\
-        \ counts against.\n\nCoverage rides along for the reason it rides along everywhere: a window the\
-        \ gateway was\ndown for produces a smaller sample, and a smaller sample is exactly what turns\
-        \ a real\neffect into `not_enough_data`."
+        \nThree observation sets, because the dimensions do not all count the same thing. Carrier\nand\
+        \ time bucket are one trial per part with \"was it rejected\" as the outcome. Lot is one\ntrial\
+        \ per part *per lot it was built from* \u2014 a part contains two, one per feeder lane \u2014\n\
+        with the same outcome. Defect class is one trial per part *per class* with \"did it reach\nthe\
+        \ threshold on this class\" as the outcome \u2014 \xA73.4's six scores are independent, a part\
+        \ can carry several, and dividing a\npart between the classes it carries would invent a constraint\
+        \ the classifier does not\nhave. Both use the part as the denominator, which is the same denominator\n\
+        `/inspection/stats?group_by=defect_class` counts against.\n\nCoverage rides along for the reason\
+        \ it rides along everywhere: a window the gateway was\ndown for produces a smaller sample, and\
+        \ a smaller sample is exactly what turns a real\neffect into `not_enough_data`."
       operationId: inspectionPatterns
       parameters:
       - in: query

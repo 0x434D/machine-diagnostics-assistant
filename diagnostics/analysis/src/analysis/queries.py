@@ -798,6 +798,45 @@ def defect_class_observations(
         ]
 
 
+def lot_observations(conn: Connection, window: Window) -> list[Observation]:
+    """One trial per part **per lot it was built from**: was this part rejected.
+
+    The same per-part denominator the defect-class dimension uses, applied to the other
+    dimension that is not a partition of parts. An assembly draws one component from each
+    feeder lane, so it contains two lots and is one trial for each of them — never half a
+    trial for both, which would make the sample size a property of how many lanes the line
+    has.
+
+    **Reached through the genealogy on the serial, and that is the whole point.** §3.5's two
+    lanes have deliberately staggered lot boundaries, so a lot window belongs to one lane and
+    "which lot was current when this part was made" gives a different — wrong — answer from
+    "which lot was this part built from". Scenario 7 is a run of rising `gap` defects with a
+    *perfectly stable* joining force: the symptom points at a press drift, and the only thing
+    that separates that wrong answer from the right one is this correlation. A time join
+    would not merely be imprecise here, it would destroy the evidence.
+
+    DISTINCT, because two components of one part drawn from the same lot are one trial for
+    that lot and not two.
+
+    LEFT JOIN throughout, so a part whose components carry no lot — one read before the
+    gateway's history horizon, or an assembly with no genealogy at all — comes back with a
+    null and `find_patterns` counts it as unattributed. An inner join would drop it, and a
+    dimension quietly computed over fewer parts than the window holds is the one shape a
+    sample gate cannot protect against: it reads as a clean, well-powered answer.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT DISTINCT r.assembly_serial, l.lot_code, (r.result = 'reject') "
+            "FROM read.inspection_results r "
+            "LEFT JOIN read.genealogy g ON g.assembly_serial = r.assembly_serial "
+            "LEFT JOIN read.components c ON c.serial = g.component_serial "
+            "LEFT JOIN read.component_lots l ON l.id = c.lot_id "
+            "WHERE r.source_ts >= %s AND r.source_ts < %s",
+            (window.from_ts, window.to_ts),
+        )
+        return [Observation(lot=row[1], outcome=row[2]) for row in cur.fetchall()]
+
+
 def history_bounds(window: Window, history: timedelta) -> tuple[datetime, datetime]:
     """The interval a propagation read must cover for stops inside `window`.
 

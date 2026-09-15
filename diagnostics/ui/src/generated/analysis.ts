@@ -109,10 +109,11 @@ export interface paths {
          * Inspection Patterns
          * @description Every §5.5 dimension over the window, each value against the rest of its pool.
          *
-         *     Two observation sets, because two of the dimensions count different things. Carrier and
-         *     time bucket are one trial per part with "was it rejected" as the outcome. Defect class is
-         *     one trial per part *per class* with "did it reach the threshold on this class" as the
-         *     outcome — §3.4's six scores are independent, a part can carry several, and dividing a
+         *     Three observation sets, because the dimensions do not all count the same thing. Carrier
+         *     and time bucket are one trial per part with "was it rejected" as the outcome. Lot is one
+         *     trial per part *per lot it was built from* — a part contains two, one per feeder lane —
+         *     with the same outcome. Defect class is one trial per part *per class* with "did it reach
+         *     the threshold on this class" as the outcome — §3.4's six scores are independent, a part can carry several, and dividing a
          *     part between the classes it carries would invent a constraint the classifier does not
          *     have. Both use the part as the denominator, which is the same denominator
          *     `/inspection/stats?group_by=defect_class` counts against.
@@ -619,6 +620,13 @@ export interface components {
             supplier: string | null;
         };
         /**
+         * Correction
+         * @description NONE is not a default anyone should deploy; it is what the other two are measured
+         *     against, and what a caller testing a single value by hand does not need.
+         * @enum {string}
+         */
+        Correction: "none" | "bonferroni" | "benjamini_hochberg";
+        /**
          * Coverage
          * @description §4.4: without gap markers, missing data is indistinguishable from a quiet machine.
          *
@@ -709,10 +717,23 @@ export interface components {
         };
         /**
          * Dimension
-         * @description The four §5.5 names. Each is one field of an `Observation`.
+         * @description §5.5's four names, and the one §3.5 scenario 7 cannot be answered without.
+         *
+         *     Each is one field of an `Observation`.
+         *
+         *     **`LOT` is not in §5.5's list and has to be.** Scenario 7 is a run of rising `gap`
+         *     defects where the joining force is *perfectly stable*: the symptom points straight at a
+         *     press drift, and the only thing separating that wrong answer from the right one is that
+         *     the defects correlate with the supplier lot rather than with the force. Without a lot
+         *     dimension there is nothing for that correlation to be measured in, and the scenario's
+         *     whole proof has nothing to stand on.
+         *
+         *     It is a legitimate dimension and not a special case: a part's lot membership is a
+         *     per-part fact, reached through `genealogy` to `components.lot_id`, and never a time
+         *     join — which is exactly what §3.5's staggered lot boundaries exist to make checkable.
          * @enum {string}
          */
-        Dimension: "carrier" | "lane" | "defect_class" | "time_bucket";
+        Dimension: "carrier" | "lane" | "lot" | "defect_class" | "time_bucket";
         /**
          * DimensionPatterns
          * @description One dimension's findings, or the reason there can be none.
@@ -1026,8 +1047,7 @@ export interface components {
         PatternReport: {
             /** Alpha */
             alpha: number;
-            /** Correction */
-            correction: string;
+            correction: components["schemas"]["Correction"];
             coverage: components["schemas"]["Coverage"];
             /** Defect Class Threshold */
             defect_class_threshold: number;
