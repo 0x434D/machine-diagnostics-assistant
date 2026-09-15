@@ -18,16 +18,20 @@ import base64
 import itertools
 import json
 import statistics
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 import httpx
 import pytest
-from conftest import RecordingNodes, build_running_line, new_clock
-from simulator.alarms import AlarmSystem
-from simulator.clock import SimulatedClock
+from conftest import (
+    consequence_claiming,
+    fault_window,
+    new_clock,
+    paired_runs,
+    rms_contrast,
+    run_line,
+    scenario_run,
+)
 from simulator.config import Settings
-from simulator.faults import NO_FAULTS, FaultSet
 from simulator.identity import LANES
 from simulator.inspection_client import DEFECT_CLASSES, GAP, InspectionClient
 from simulator.packml import State
@@ -40,203 +44,9 @@ from simulator.scenarios import (
     JOINING_FORCE_PEAK,
     STATION_ABORTS,
     Consequence,
-    Scenario,
     all_scenarios,
     scenario,
 )
-from simulator.stations.base import PartOutcome
-
-
-@dataclass(frozen=True)
-class Part:
-    """One part as the plant declared it: when it was inspected, what it rode, what the
-    press left in it, and what it genuinely carries."""
-
-    at: datetime
-    serial: str
-    carrier_id: int
-    joining_work: float
-    defects: frozenset[str]
-
-
-@dataclass(frozen=True)
-class Change:
-    at: datetime
-    station: str
-    state: State
-    reason: str
-
-
-@dataclass(frozen=True)
-class Run:
-    origin: datetime
-    parts: tuple[Part, ...]
-    changes: tuple[Change, ...]
-    nodes: dict[str, RecordingNodes]
-    alarms: AlarmSystem
-    """The line's own alarm system, as the run left it. §3.5 row 3 ends in an alarm and
-    a shutdown, and neither is recoverable from the parts or the state changes alone --
-    an `Aborted` row says a station shut down and not what it shut down for."""
-
-    def elapsed(self, at: datetime) -> float:
-        return (at - self.origin).total_seconds()
-
-    def within(self, lo: float, hi: float) -> tuple[Part, ...]:
-        return tuple(p for p in self.parts if lo <= self.elapsed(p.at) < hi)
-
-    def carrying(self, defect: str) -> frozenset[str]:
-        """The serials that genuinely carry `defect`. Serials rather than counts,
-        because the sharp comparison between two runs is which parts changed."""
-        return frozenset(p.serial for p in self.parts if defect in p.defects)
-
-    def stream(self, station: str, signal: str) -> tuple[tuple[float, float], ...]:
-        """`(elapsed seconds, value)` for one historised stream."""
-        return tuple(
-            (self.elapsed(at), float(value))
-            for name, at, value in self.nodes[station].writes
-            if name == signal
-        )
-
-    def settled(self, station: str) -> Change:
-        """The last state change this station made -- the condition it ended the run in,
-        and when it entered it.
-
-        **The last and not the first, and that is the whole difference between asserting
-        a chain and asserting the noise floor.** A running line suspends on its own
-        buffers a few percent of the time, so "the first time S2 starved" is answered by
-        an ordinary micro-stop somewhere in the warmup. A propagation chain is the one
-        that does not clear: each station stops and stays stopped, and the instants they
-        stopped at are the chain in order.
-
-        Raises AssertionError if the station never changed state, which means the run
-        never started it.
-        """
-        for change in reversed(self.changes):
-            if change.station == station:
-                return change
-        raise AssertionError(f"{station} never changed state in this run")
-
-
-async def _run(
-    seconds: float,
-    *,
-    faults: FaultSet = NO_FAULTS,
-    settings: Settings | None = None,
-    clock: SimulatedClock | None = None,
-) -> Run:
-    """Run a real four-station line for `seconds` of simulated time.
-
-    The verdict is the plant's own truth rather than the inspection service's, and the
-    reason is the line this milestone must not cross: §3.5's scenarios are about what the
-    plant did to the parts, and putting the classifier's own two error rates (D7) in
-    front of every measurement here would mean asserting the plant's behaviour through
-    something else's noise. The classifier is exercised where it belongs -- scenario 6's
-    half of it is in the inspection package's own suite.
-    """
-    settings = settings or Settings()
-    clock = clock or new_clock(settings)
-    parts: list[Part] = []
-    changes: list[Change] = []
-
-    async with httpx.AsyncClient() as http:
-        client = InspectionClient(settings, http, faults=faults)
-
-        async def produce(
-            part_id: str, carrier_id: int, joining_work: float, at: datetime
-        ) -> PartOutcome:
-            defects = client.truth_for(part_id, carrier_id, joining_work, at)
-            parts.append(
-                Part(at, part_id, carrier_id, joining_work, frozenset(defects))
-            )
-            return PartOutcome(
-                disposition="reject" if defects else "good",
-                defect_class=defects[0] if defects else None,
-                defect_classes=tuple(DEFECT_CLASSES),
-                confidences=tuple(
-                    0.8 if name in defects else 0.03 for name in DEFECT_CLASSES
-                ),
-                confidence=0.9,
-                image=b"PNG" if defects else None,
-                model_version="test-1",
-            )
-
-        line, clock, nodes = await build_running_line(
-            settings, faults=faults, produce=produce, clock=clock
-        )
-        horizon = clock.history_start + timedelta(seconds=seconds)
-        while (due := line.next_due) is not None and due < horizon:
-            before = dict(line.station_states)
-            outcome = await line.step()
-            assert outcome is not None
-            for code, (state, reason) in line.station_states.items():
-                if before[code] != (state, reason):
-                    changes.append(Change(outcome.at, code, state, reason))
-
-    return Run(clock.history_start, tuple(parts), tuple(changes), nodes, line.alarms)
-
-
-async def _paired(
-    number: int, seconds: float, settings: Settings | None = None
-) -> tuple[Run, Run]:
-    """The same run with the scenario and without it, on one origin.
-
-    **The comparison this file rests on.** A fault moves a threshold and never a draw
-    (`faults`' identity property), so the two runs make the same draws about the same
-    parts at the same instants -- and the difference between them is the scenario and
-    nothing else. A rate measured against its own before-window carries the sampling
-    noise of two small windows; the difference between these two carries none.
-    """
-    settings = settings or Settings()
-    clock = new_clock(settings)
-    injected = scenario(number, settings).fault_set(clock.history_start)
-    return (
-        await _run(seconds, settings=settings, clock=clock),
-        await _run(seconds, faults=injected, settings=settings, clock=clock),
-    )
-
-
-async def _scenario_run(number: int, seconds: float, settings: Settings) -> Run:
-    """One run carrying scenario `number`, on an origin its offsets are placed on."""
-    clock = new_clock(settings)
-    return await _run(
-        seconds,
-        faults=scenario(number, settings).fault_set(clock.history_start),
-        settings=settings,
-        clock=clock,
-    )
-
-
-def _consequence(item: Scenario, expect: str) -> Consequence:
-    """The one consequence of `item` that claims `expect`.
-
-    Raises AssertionError if the scenario claims it more than once or not at all, which
-    is what makes this a lookup rather than a search: a test written against a claim the
-    log no longer makes has to fail rather than quietly assert a neighbour.
-    """
-    found = [
-        consequence
-        for injection in item.injections
-        for consequence in injection.consequences
-        if consequence.expect == expect
-    ]
-    assert len(found) == 1, f"scenario {item.number} claims {expect} {len(found)} times"
-    return found[0]
-
-
-def _window(item: Scenario) -> tuple[float, float | None]:
-    """The single injection's fault window, as `(at, until)` seconds.
-
-    Every one of §3.5's eight injects exactly one fault today. The assertion is what
-    makes that visible rather than assumed: a scenario that grew a second injection
-    would otherwise be asserted against its first one's window in silence.
-    """
-    assert len(item.injections) == 1
-    fault = item.injections[0].fault
-    return (
-        fault.at.total_seconds(),
-        None if fault.until is None else fault.until.total_seconds(),
-    )
-
 
 # --- what a scenario may name ---------------------------------------------------------
 
@@ -345,11 +155,11 @@ async def test_a_starved_feeder_starves_s2_s3_and_s4_in_that_order() -> None:
     """
     settings = Settings()
     item = scenario(1, settings)
-    at, _ = _window(item)
+    at, _ = fault_window(item)
     consequence = item.injections[0].consequences[0]
     assert consequence.within_seconds is not None
 
-    run = await _scenario_run(
+    run = await scenario_run(
         1, at + consequence.within_seconds + settings.takt_seconds, settings
     )
 
@@ -389,11 +199,11 @@ async def test_a_blocked_outfeed_backs_the_blockage_up_to_s1() -> None:
     """
     settings = Settings()
     item = scenario(2, settings)
-    at, _ = _window(item)
+    at, _ = fault_window(item)
     consequence = item.injections[0].consequences[0]
     assert consequence.within_seconds is not None
 
-    run = await _scenario_run(
+    run = await scenario_run(
         2, at + consequence.within_seconds + settings.takt_seconds, settings
     )
 
@@ -426,7 +236,7 @@ async def test_a_clean_line_never_names_a_condition_outside_itself() -> None:
     plant that reports them on a clean run. Measured over four simulated hours: the only
     reasons the line gives are the ordinary buffer ones.
     """
-    run = await _run(4.0 * 3600)
+    run = await run_line(4.0 * 3600)
     assert run.parts, "the line produced nothing, so this proves nothing"
     reasons = {change.reason for change in run.changes if change.reason}
     assert "starved:feeder" not in reasons
@@ -469,9 +279,9 @@ async def test_a_drifting_clamp_lowers_the_peak_and_gaps_parts_that_were_not() -
     """
     settings = Settings()
     item = scenario(3, settings)
-    at, _ = _window(item)
+    at, _ = fault_window(item)
     ramp = settings.joining_force_drift_ramp_seconds
-    clean, drifted = await _paired(3, at + ramp + 3600.0, settings)
+    clean, drifted = await paired_runs(3, at + ramp + 3600.0, settings)
 
     station, signal = JOINING_FORCE_PEAK.split(".")
     before = [
@@ -527,16 +337,16 @@ async def test_the_drift_ends_in_an_alarm_and_a_shutdown_at_s2() -> None:
     """
     settings = Settings()
     item = scenario(3, settings)
-    at, _ = _window(item)
+    at, _ = fault_window(item)
     # Found by what each claims rather than by position: the row's consequences have
     # already been added to once and dropped from once, and an index would have gone on
     # asserting whatever happened to sit at it.
-    raised = _consequence(item, ALARM_RAISED)
-    aborts = _consequence(item, STATION_ABORTS)
+    raised = consequence_claiming(item, ALARM_RAISED)
+    aborts = consequence_claiming(item, STATION_ABORTS)
     assert raised.within_seconds is not None
     assert aborts.within_seconds is not None
 
-    run = await _scenario_run(
+    run = await scenario_run(
         3, at + raised.within_seconds + settings.takt_seconds, settings
     )
 
@@ -604,9 +414,9 @@ async def test_a_bad_lot_gaps_parts_while_the_force_stream_stays_put() -> None:
     """
     settings = Settings()
     item = scenario(7, settings)
-    at, until = _window(item)
+    at, until = fault_window(item)
     assert until is not None
-    clean, bad = await _paired(7, until + 600.0, settings)
+    clean, bad = await paired_runs(7, until + 600.0, settings)
 
     station, signal = JOINING_FORCE_PEAK.split(".")
     outside = [v for elapsed, v in bad.stream(station, signal) if elapsed < at]
@@ -671,9 +481,9 @@ async def test_the_bad_lots_window_is_the_lot_the_line_really_drew_from() -> Non
     501-1000. The other 1.8 % is the accumulated takt drift over five hundred parts.
     """
     settings = Settings()
-    at, until = _window(scenario(7, settings))
+    at, until = fault_window(scenario(7, settings))
     assert until is not None
-    run = await _run(until + settings.takt_seconds)
+    run = await run_line(until + settings.takt_seconds)
 
     fed = [
         int(value)
@@ -704,14 +514,14 @@ async def test_one_defective_component_is_one_bad_part() -> None:
     """
     settings = Settings()
     item = scenario(8, settings)
-    at, until = _window(item)
+    at, until = fault_window(item)
     assert until is not None
     assert until - at < min(settings.station_takt_seconds.values()), (
         "the window is wider than a station takt, so more than one part could be "
         "pressed inside it"
     )
 
-    clean, one = await _paired(8, at + 900.0, settings)
+    clean, one = await paired_runs(8, at + 900.0, settings)
     gained = one.carrying(GAP) - clean.carrying(GAP)
     assert len(gained) == 1, (
         f"{len(gained)} parts gained a gap from one defective component: {sorted(gained)}"
@@ -802,7 +612,7 @@ def test_a_fouled_lens_renders_a_frame_with_less_contrast_in_it() -> None:
             )
             for index in range(20)
         ]
-        return statistics.fmean(_rms_contrast(frame) for frame in frames)
+        return statistics.fmean(rms_contrast(frame) for frame in frames)
 
     clean = contrast(1.0)
     fouled = contrast(clarity)
@@ -832,7 +642,7 @@ async def test_a_fouling_scenario_reaches_the_frame_the_client_actually_sends() 
     """
     settings = Settings()
     item = scenario(6, settings)
-    at, _ = _window(item)
+    at, _ = fault_window(item)
     ramp = settings.optics_fouling_ramp_seconds
     origin = new_clock(settings).history_start
     faults = item.fault_set(origin)
@@ -862,13 +672,13 @@ async def test_a_fouling_scenario_reaches_the_frame_the_client_actually_sends() 
             await client.produce(
                 f"A-{index:08d}", index % 18, nominal, origin + timedelta(seconds=1.0)
             )
-        clean = statistics.fmean(_rms_contrast(frame) for frame in posted)
+        clean = statistics.fmean(rms_contrast(frame) for frame in posted)
 
         posted.clear()
         fouled_at = origin + timedelta(seconds=at + ramp + 60.0)
         for index in range(10):
             await client.produce(f"A-{index:08d}", index % 18, nominal, fouled_at)
-        fouled = statistics.fmean(_rms_contrast(frame) for frame in posted)
+        fouled = statistics.fmean(rms_contrast(frame) for frame in posted)
 
     clarity = item.injections[0].fault.params["factor"]
     assert abs(fouled / clean - clarity) < 0.05, (
@@ -876,21 +686,6 @@ async def test_a_fouling_scenario_reaches_the_frame_the_client_actually_sends() 
         f"contrast while the fault is scaling clarity to {clarity}: the fouling is not "
         "reaching the render, so scenario 6 would decay nothing on a real line"
     )
-
-
-def _rms_contrast(frame: bytes) -> float:
-    """The simulator's own reading of `inspection.classifier.contrast_of`.
-
-    Duplicated for the reason `simulator.render` duplicates `inspection.render`: the two
-    packages are separate uv workspace members and may not import each other (§10.7).
-    Three lines, and the inspection suite is what pins the copy that matters.
-    """
-    import io
-
-    from PIL import Image, ImageStat
-
-    with Image.open(io.BytesIO(frame)) as image:
-        return float(ImageStat.Stat(image.convert("L")).stddev[0])
 
 
 # --- 4 is measured in test_noise ------------------------------------------------------

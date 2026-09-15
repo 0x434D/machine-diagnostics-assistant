@@ -40,11 +40,28 @@ dependencies = [
 # exactly the vacuous check this project keeps finding -- a commented-out `field-net`
 # would satisfy a grep. `docker compose config` would parse it properly but would put
 # a container runtime inside `make check`, which the handbook keeps out of the gate.
+#
+# psycopg and testcontainers are test-only for the same kind of reason, one milestone
+# later: §3.5's eight scenarios claim consequences in §5.2's tables, and
+# test_scenario_consequences.py asserts them there -- in a real PostgreSQL carrying the
+# gateway's own migrations, because the claim is "this is readable from the history" and
+# a fake would assert that the query is the one written rather than that it is right.
+# The alternative, a hand-rolled row shape, is the fixture-three-migrations-behind defect
+# that diagnostics/analysis/tests/conftest.py's docstring records paying for. The plant
+# stack itself still speaks to no database: nothing here is a runtime dependency, and
+# `docker compose config` is still kept out of the gate -- what is in it is the same
+# Postgres container the analysis suite already starts in `make check`.
+#
+# Both are pinned to the exact versions the diagnostics workspace already resolves, so
+# the repository holds one opinion about each rather than two. `pool` is dropped from
+# psycopg's extras: these tests open one connection per run and never pool.
 dev = [
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
     "pyyaml==6.0.3",
     "types-pyyaml==6.0.12.20260906",
+    "psycopg[binary]==3.3.5",
+    "testcontainers[postgres]==4.13.2",
 ]
 
 [build-system]
