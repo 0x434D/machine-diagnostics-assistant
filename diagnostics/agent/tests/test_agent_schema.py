@@ -100,6 +100,19 @@ def downgrade() -> None:
 '''
 
 
+def probe_versions(tmp_path: Path) -> str:
+    """A second version directory holding one revision, and the path Alembic reads both from.
+
+    Written here rather than committed so that what it contains is visible in the test that
+    depends on it: `CREATE TABLE` with no schema on the name, which is the statement 005's
+    warning is about.
+    """
+    probe = tmp_path / "versions"
+    probe.mkdir()
+    (probe / "probe_unqualified_create_table.py").write_text(PROBE_REVISION)
+    return os.pathsep.join([str(AGENT / "alembic" / "versions"), str(probe)])
+
+
 def as_role(url: str, user: str, password: str) -> str:
     """The same database, reached as another role.
 
@@ -348,10 +361,7 @@ def test_an_unqualified_create_table_from_a_migration_lands_in_the_agent_schema(
 
     Remove `ALTER ROLE agent SET search_path = agent` from 001 and this test is what fails.
     """
-    probe = tmp_path / "versions"
-    probe.mkdir()
-    (probe / "probe_unqualified_create_table.py").write_text(PROBE_REVISION)
-    locations = os.pathsep.join([str(AGENT / "alembic" / "versions"), str(probe)])
+    locations = probe_versions(tmp_path)
 
     upgrade(agent_url, "probe", version_locations=locations)
     try:
@@ -365,5 +375,62 @@ def test_an_unqualified_create_table_from_a_migration_lands_in_the_agent_schema(
         # would fail `test_the_four_tables_are_owned_by_the_agent_role` for a reason that
         # belongs to this test rather than to that one.
         downgrade(agent_url, BOOTSTRAP_REVISION, version_locations=locations)
+
+    assert landed == [("agent", "agent")]
+
+
+def test_a_migration_run_with_the_owners_credentials_still_lands_in_the_agent_schema(
+    agent_url: str, owner_url: str, tmp_path: Path
+) -> None:
+    """The half a role-level setting cannot reach, and the one review found open.
+
+    `ALTER ROLE agent SET search_path = agent` defends sessions of that role. The bootstrap
+    is two commands that differ in one environment variable, and the owner's is the first of
+    them — so an operator retrying a failed migration with the credential they still have in
+    their shell, or a CI job that only holds the owner's, runs every revision with the
+    database's own `ingest, public` and puts the agent's next table in the gateway's schema.
+    Measured before the fix: `LANDED-AS-OWNER: [('ingest', 'test')]`, migration reporting
+    success.
+
+    `env.py` now pins the search path on the connection, which outranks both defaults, so the
+    landing schema is a property of the migration environment rather than of who was handed
+    which credential. This is the test that says so: the same revision, the same unqualified
+    statement, the owner's connection.
+
+    It does not land *owned* by `agent` — that is the revision's job (0001's
+    `ALTER TABLE ... OWNER TO agent`, and the template says so), and the failure when a
+    revision forgets is the service being refused at its first write. Loud, unlike this one.
+    """
+    locations = probe_versions(tmp_path)
+
+    upgrade(owner_url, "probe", version_locations=locations)
+    try:
+        with psycopg.connect(agent_url) as conn:
+            landed = conn.execute(
+                "SELECT schemaname FROM pg_tables WHERE tablename = 'trap_probe'"
+            ).fetchall()
+    finally:
+        downgrade(owner_url, BOOTSTRAP_REVISION, version_locations=locations)
+
+    assert landed == [("agent",)]
+
+
+def test_an_unqualified_statement_from_the_service_lands_in_the_agent_schema(
+    agent_url: str,
+) -> None:
+    """What the `ALTER ROLE` in 0001 is for, now that migrations no longer rest on it.
+
+    The service reaches this database on its own connection, not through Alembic, and every
+    statement it writes from M4 onwards resolves against that session's search path. Remove
+    the `ALTER ROLE` from 0001 and this is the test that fails — the pin in `env.py` covers
+    migrations and nothing else.
+    """
+    with psycopg.connect(agent_url) as conn:
+        conn.execute("CREATE TABLE service_probe (id integer PRIMARY KEY)")
+        landed = conn.execute(
+            "SELECT schemaname, tableowner FROM pg_tables WHERE tablename ="
+            " 'service_probe'"
+        ).fetchall()
+        conn.rollback()
 
     assert landed == [("agent", "agent")]

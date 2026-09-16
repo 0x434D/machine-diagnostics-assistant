@@ -1,19 +1,34 @@
 """How the agent's migrations reach the database, and as whom.
 
-Three things here exist because `agent.*` shares an instance with the gateway's schemas.
+Everything here exists because `agent.*` shares an instance with the gateway's schemas.
 
-**Who connects is the mechanism.** `005_m3_read_layer.sql` sets `search_path = ingest,
-public` on the *database*, which applies to every role that connects, and its own warning
-says what that costs a second owner: an unqualified `CREATE TABLE` from a migration lands in
-the gateway's schema. Revision 0001 answers it with `ALTER ROLE agent SET search_path =
-agent` — a role-level setting overrides a database-level one — and that only bites for
-sessions authenticated as `agent`. So the migration runner is `agent` rather than the owner
-from 0002 onwards — 0001 is the one revision it cannot apply, being the one that creates it.
-`alembic.ini` carries the two commands that follow from that.
+**Every migration run lands in `agent`, whoever is connected.** `005_m3_read_layer.sql`
+sets `search_path = ingest, public` on the *database*, which applies to every role that
+connects, and its own warning says what that costs a second owner: an unqualified
+`CREATE TABLE` from a migration lands in the gateway's schema, and nothing fails until the
+gateway's fixtures truncate it. Revision 0001 answers it with `ALTER ROLE agent SET
+search_path = agent` — a role-level setting overrides a database-level one — but a role
+setting can only defend sessions of that role, and the owner has to apply 0001 because a role
+cannot create itself. So the documented bootstrap is two commands differing in one
+environment variable, and 005's failure is one typo away from being reachable again: run the
+owner's line at `head` and revision 0002 creates its table in `ingest`.
 
-**The version table lives in `agent`.** It is a table like any other and unqualified it
-would land wherever the search path points, which for the owner's bootstrap connection is
-`ingest`. Alembic's bookkeeping about the agent's schema belongs in the agent's schema.
+`pin_search_path` closes that by construction. The landing schema stops depending on who
+connects, on which revision is being applied, and on whether the person applying it read
+`alembic.ini` — every revision this environment applies, including ones nobody has written
+yet, lands in `agent`. The `ALTER ROLE` in 0001 stays and is not redundant: it covers every
+`agent` session that is *not* a migration — the service's own connections, and anyone with a
+psql prompt — which this module never sees.
+
+What neither closes is ownership. A revision applied with the owner's credentials creates
+tables owned by the owner, so each revision hands what it creates to `agent` the way 0001
+does. That failure is loud where the other was silent: the service is refused at its first
+write rather than reading a table the gateway is truncating.
+
+**The version table lives in `agent`, named rather than left to the pin.** It is a table
+like any other, and Alembic's bookkeeping about the agent's schema belongs in the agent's
+schema — not wherever a search path happens to point on the day someone edits one of these
+two statements.
 
 **Which is why the schema is created here and not in 0001.** Alembic creates its version
 table before the first revision runs, so the schema holding it cannot be created by a
@@ -57,18 +72,24 @@ def database_url() -> str:
     return Settings().database_url.replace("postgresql://", "postgresql+psycopg://", 1)
 
 
+def pin_search_path(connection: Connection) -> None:
+    """Put this connection's unqualified names in `agent`, whichever role holds it.
+
+    The session setting outranks both the database default 005 set and the role default 0001
+    sets, so this is the one statement that makes where a revision lands a property of the
+    migration rather than of the credentials it was handed. It is deliberately not a
+    convention for each revision to remember — a line in a template reaches the revisions
+    generated from it, and 0001 was written by hand.
+    """
+    connection.execute(text("SET search_path TO agent"))
+
+
 def ensure_schema(connection: Connection) -> None:
     """Create `agent` if it is absent, so Alembic has somewhere to put its version table.
 
     Checked rather than `CREATE SCHEMA IF NOT EXISTS`: in the steady state this runs on a
     connection as `agent`, which holds no CREATE on the database and would be refused for a
     schema that is already there.
-
-    The commit is not optional and not about this statement. SQLAlchemy opens a transaction
-    on the first query, and Alembic joins whatever transaction it finds rather than starting
-    one — so a check left open here makes the migrations that follow part of it, and they
-    are rolled back when this connection closes. Nothing fails: the upgrade logs every
-    revision it ran and the database has none of them.
     """
     if (
         connection.execute(
@@ -77,7 +98,6 @@ def ensure_schema(connection: Connection) -> None:
         is None
     ):
         connection.execute(text("CREATE SCHEMA agent"))
-    connection.commit()
 
 
 def provision_role_password(connection: Connection) -> None:
@@ -116,7 +136,14 @@ def provision_role_password(connection: Connection) -> None:
 def run_migrations_online() -> None:
     engine = create_engine(database_url())
     with engine.connect() as connection:
+        pin_search_path(connection)
         ensure_schema(connection)
+        # One commit for both, and it is about neither of them. SQLAlchemy opens a
+        # transaction on the first statement and Alembic joins whatever transaction it finds
+        # rather than starting its own — so anything left open here swallows every revision
+        # that follows, and they are rolled back when this connection closes. Nothing fails:
+        # the upgrade logs every revision it ran and the database has none of them.
+        connection.commit()
         context.configure(
             connection=connection,
             version_table_schema=SCHEMA,
