@@ -176,6 +176,7 @@ lint-python: lock-check
 # Per package, not over the workspace: each package has a tests/ with the same module names
 # in it, and a single run sees one name defined twice and stops before checking anything.
 	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini analysis
+	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini auth
 	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini agent
 	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini knowledge
 	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini mcp
@@ -527,6 +528,7 @@ contract:
 test-python: lock-check
 	$(call pytest-package,plant,simulator)
 	$(call pytest-package,plant,inspection)
+	$(call pytest-package,diagnostics,auth)
 	$(call pytest-package,diagnostics,knowledge)
 	$(call pytest-package,diagnostics,analysis)
 	$(call pytest-package,diagnostics,agent)

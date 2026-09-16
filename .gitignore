@@ -10,6 +10,10 @@
 pki/*
 !pki/.gitkeep
 secrets/
+# The development issuer's keypair (scripts/mint-token.py). It stands where Zitadel will
+# until there is an issuer to stand there; `*.pem` above already covers the two files, and
+# the directory is named here so the intent is visible where someone would look for it.
+.dev-issuer/
 
 # Build and dependency output
 .venv/

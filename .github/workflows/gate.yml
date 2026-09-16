@@ -48,6 +48,7 @@ jobs:
               - 'plant/**'
               - 'diagnostics/analysis/**'
               - 'diagnostics/agent/**'
+              - 'diagnostics/auth/**'
               - 'diagnostics/knowledge/**'
               - 'diagnostics/mcp/**'
               - 'diagnostics/pyproject.toml'
