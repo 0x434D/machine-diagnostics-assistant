@@ -17,7 +17,13 @@ from agent.routing import (
     route,
     specificity,
 )
-from knowledge.documents import QUESTION_TYPES, Facets, KnowledgeError, load
+from knowledge.documents import (
+    QUESTION_TYPES,
+    Facets,
+    KnowledgeError,
+    KnowledgeIndex,
+    load,
+)
 
 KNOWLEDGE = Path(__file__).resolve().parents[3] / "knowledge"
 ROUTING_SOURCE = Path(__file__).resolve().parents[1] / "src" / "agent" / "routing.py"
@@ -407,3 +413,80 @@ def test_the_reservation_consumes_the_budget_rather_than_adding_to_it() -> None:
     retrieved = [d for d in selection.documents if not d.always_load]
     assert len(retrieved) == 5
     assert len(selection.reserved) == 1
+
+
+# --- the guards that are inert against today's tree ---
+
+
+def _tree(tmp_path: Path, **documents: str) -> KnowledgeIndex:
+    for name, text in documents.items():
+        (tmp_path / f"{name}.md").write_text(text)
+    return load(tmp_path)
+
+
+def test_an_always_load_document_that_also_declares_scope_is_not_selected_twice(
+    tmp_path: Path,
+) -> None:
+    """The `always_load` guard in the ranking filter, made live.
+
+    Inert against the tree as it stands, because the two method documents declare no
+    `applies_to` at all and so score zero anyway — remove the guard and every routing test
+    still passes. The day a method document declares scope, it would be selected once
+    guaranteed and once ranked, and the duplicate would eat a retrieval slot with nothing
+    failing. This is the test that would notice.
+    """
+    index = _tree(
+        tmp_path,
+        method=(
+            "---\nid: CORE-99\ntitle: Method\nalways_load: true\n"
+            "applies_to:\n  question_types: [status]\n  stations: [S2]\n---\n\nmethod\n"
+        ),
+        detail=(
+            "---\nid: S2\ntitle: A workcell\napplies_to:\n"
+            "  stations: [S2]\n  question_types: [status]\n---\n\ndetail\n"
+        ),
+    )
+    asked = Facets(question_types=frozenset({"status"}), stations=frozenset({"S2"}))
+
+    selection = route(index, asked)
+
+    assert selection.ids.count("CORE-99") == 1
+    assert "CORE-99" not in {document.id for document in selection.dropped}
+
+
+def test_an_always_load_document_shaped_like_a_procedure_is_not_reserved_as_well(
+    tmp_path: Path,
+) -> None:
+    """The same guard in `procedures`. It is already in, so reserving it would double it."""
+    index = _tree(
+        tmp_path,
+        method=(
+            "---\nid: CORE-99\ntitle: Method\nalways_load: true\n"
+            "applies_to:\n  question_types: [status]\n---\n\nmethod\n"
+        ),
+        procedure=(
+            "---\nid: SOP-99\ntitle: A procedure\napplies_to:\n"
+            "  question_types: [status]\n---\n\nprocedure\n"
+        ),
+    )
+    asked = Facets(question_types=frozenset({"status"}))
+
+    selection = route(index, asked)
+
+    assert [document.id for document in procedures(index, asked)] == ["SOP-99"]
+    assert selection.ids.count("CORE-99") == 1
+
+
+def test_the_character_property_measures_what_the_cap_governs() -> None:
+    """`always_load` is exempt from the budget, so the total is not the budgeted size."""
+    loaded = load(KNOWLEDGE)
+    budget = RetrievalBudget(documents=4, characters=DEFAULT_BUDGET.characters)
+
+    selection = route(
+        loaded, Facets(question_types=frozenset({"stop_investigation"})), budget
+    )
+
+    method = sum(document.size for document in loaded.always_load)
+    assert selection.budgeted_characters <= budget.characters
+    assert selection.total_characters == selection.budgeted_characters + method
+    assert method > 0
