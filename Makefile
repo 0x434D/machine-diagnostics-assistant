@@ -1,7 +1,7 @@
 SHELL := /bin/bash
 .PHONY: preflight lock-check fmt lint test check verify ci ci-scheduled contract m1-report \
         m2a-r5 m2a-demo m2a-propagation backfill-counts authenticity m2c-demo \
-        m1-demo browse ask verify-no-gaps \
+        m1-demo browse ask verify-no-gaps plant-listening \
         lint-python test-python check-python \
         lint-dotnet test-dotnet check-dotnet audit-dotnet \
         lint-frontend test-frontend check-frontend \
@@ -233,8 +233,7 @@ lint-python: lock-check
 m1-demo: preflight
 	@echo "== 1. plant: boot, build history, go live"
 	docker compose -f plant/compose.yml up -d --build
-	@until docker compose -f plant/compose.yml exec -T line-simulator \
-	    python -c "import urllib.request" >/dev/null 2>&1; do sleep 2; done
+	@$(MAKE) plant-listening
 	@echo "== 2. a foreign client browses the address space"
 	$(MAKE) browse
 	@echo "== 3. diagnostics: connect, wait for the plant's phase, backfill, go live"
@@ -267,6 +266,28 @@ m1-demo: preflight
 	@$(MAKE) verify-no-gaps
 	@echo "== 7. the numbers"
 	$(MAKE) m1-report
+
+# The plant's OPC UA endpoint, waited for rather than assumed.
+#
+# `import urllib.request` succeeds from the container's first instant and says nothing about
+# the server, so the three demos that used it as their gate were browsing a port that was not
+# listening yet -- and one of them died on ConnectionRefused. A gate has to be the thing the
+# next step needs: a socket on 4840 that accepts.
+#
+# The host is the service name and not localhost, and that is the one-name boundary rather
+# than a detail: the endpoint URL, the bind address and the discovery advertisement are one
+# name, so the server listens on `line-simulator` and on nothing else. A probe to localhost
+# waits out its whole budget against a plant that is up and serving.
+#
+# One copy, called by all three. It was three copies, and all three were wrong the same way.
+PLANT_PROBE = docker compose -f plant/compose.yml exec -T line-simulator \
+	python -c "import socket; socket.create_connection(('line-simulator', 4840), 2).close()" >/dev/null 2>&1
+
+plant-listening:
+	@for i in $$(seq 1 300); do $(PLANT_PROBE) && break; sleep 2; done; \
+	 $(PLANT_PROBE) \
+	   || { echo "the plant's OPC UA endpoint never opened"; \
+	        docker compose -f plant/compose.yml logs --tail 40 line-simulator; exit 1; }
 
 # A client that is not our gateway, proving the boundary is a real OPC UA server rather than
 # gateway-specific glue.
@@ -393,10 +414,9 @@ m2a-propagation:
 m2c-demo: preflight
 	@echo "== 1. plant: scenario $${PLANT_SCENARIO:-3} of §3.5's eight, from the first part"
 	PLANT_SCENARIO=$${PLANT_SCENARIO:-3} docker compose -f plant/compose.yml up -d --build
-	@until docker compose -f plant/compose.yml exec -T line-simulator \
-	    python -c "import urllib.request" >/dev/null 2>&1; do sleep 2; done
+	@$(MAKE) plant-listening
 	@echo "== 2. what the scenario says it will do, before anything has happened"
-# The gate above says the container execs Python; it does not say the log exists.
+# The gate above says 4840 accepts; it does not say the log exists.
 # `server.main` opens the ground-truth log after the status file, the historian and the
 # server context, so a cold start reliably lost this step to a missing file while the
 # re-run seconds later got through. Wait for the artefact the next line points at, which
@@ -498,8 +518,7 @@ m2c-demo: preflight
 m2a-demo: preflight
 	@echo "== 1. plant: four stations, three buffers, 25 historised streams, 33 h of history"
 	docker compose -f plant/compose.yml up -d --build
-	@until docker compose -f plant/compose.yml exec -T line-simulator \
-	    python -c "import urllib.request" >/dev/null 2>&1; do sleep 2; done
+	@$(MAKE) plant-listening
 	@echo "== 2. the screen the line is built with (§15)"
 	@until curl -sf -o /dev/null "localhost:$${PLANT_HMI_PORT:-5174}/"; do sleep 2; done
 	@echo "   http://localhost:$${PLANT_HMI_PORT:-5174} -- and what to watch for:"
