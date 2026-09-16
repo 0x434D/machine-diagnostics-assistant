@@ -44,7 +44,7 @@ from time import perf_counter
 import httpx
 from knowledge.documents import KnowledgeBase
 
-from agent.answer import Answer, Clarification, Finding, Method
+from agent.answer import Answer, Clarification, Contradiction, Finding, Method
 from agent.citations import keep
 from agent.classify import Classification, classify, corrections
 from agent.compose import compose
@@ -204,17 +204,57 @@ async def stream(
 
     # --- 5  the tool loop ---------------------------------------------------------------
     system = _system(selection)
+    loaded = frozenset(selection.ids)
     messages: list[dict[str, object]] = [{"role": "user", "content": question}]
     called: list[str] = []
     failures = 0
+    retried = False
+    turns = 0
 
     for _ in range(settings.tool_budget):
+        turns += 1
         reply = await provider.call(system, messages, TOOL_DEFINITIONS)
 
         if reply.final is not None:
+            # --- 6  verify citations -----------------------------------------------------
             yield Progress("verifying every citation against the database")
-            yield await _deliver(
-                reply.final, selection, called, caveats, provider, analysis, settings
+            stated = [
+                Finding.model_validate(finding)
+                for finding in _sequence(reply.final.get("findings"))
+            ]
+            checked = await keep(stated, analysis, window=window, loaded=loaded)
+            if checked.failed and not retried:
+                # §6.5: the failed ids go back to the model for exactly one retry. Logged
+                # at the same moment, because "the failure is logged so its frequency is
+                # measurable" is the half that turns this from a repair into a measurement.
+                retried = True
+                LOG.warning(
+                    "citations failed verification", extra={"failed": checked.failed}
+                )
+                messages.append(
+                    {"role": "user", "content": _correction(checked.failed)}
+                )
+                yield Progress("asking for the unverifiable citations to be corrected")
+                continue
+
+            if checked.note is not None:
+                # The rate M7 scores citation integrity on is the rate of claims that were
+                # *removed*, not of claims that failed once and were fixed — so the line
+                # that counts is here, after the retry rather than instead of it.
+                LOG.warning(
+                    "citations removed from the answer",
+                    extra={"failed": checked.failed, "removed": checked.removed},
+                )
+
+            yield _deliver(
+                reply.final,
+                checked.kept,
+                [*caveats, *([checked.note] if checked.note else [])],
+                selection,
+                called,
+                turns,
+                provider,
+                settings,
             )
             return
 
@@ -260,7 +300,14 @@ async def stream(
             failures += 1
             if failures >= settings.tool_failure_limit:
                 yield _aborted(
-                    failures, call.name, result, selection, called, caveats, provider
+                    failures,
+                    call.name,
+                    result,
+                    selection,
+                    called,
+                    turns,
+                    caveats,
+                    provider,
                 )
                 return
 
@@ -347,11 +394,21 @@ async def _window(
 
 
 def _observed(coverage: Mapping[str, object]) -> int:
+    """How much the window holds, from a field the contract makes required.
+
+    Raises when it is absent rather than defaulting. A default of zero would be read as
+    "nothing was recorded" and route to "I have no data for that window" — a confident
+    wrong answer produced by a defence, which is the failure this system exists to refuse.
+    Loud is the correct behaviour for a response that does not match its own contract.
+    """
     observed = coverage.get("observed")
-    if not isinstance(observed, dict):
-        return 0
-    events = observed.get("events")
-    return int(events) if isinstance(events, int) else 0
+    events = observed.get("events") if isinstance(observed, dict) else None
+    if isinstance(events, int) and not isinstance(events, bool):
+        return events
+    raise RuntimeError(
+        f"/coverage answered without observed.events, which its contract requires: "
+        f"{coverage}"
+    )
 
 
 async def _no_data(
@@ -454,6 +511,7 @@ def _aborted(
     result: Mapping[str, object],
     selection: Selection,
     called: list[str],
+    turns: int,
     caveats: list[str],
     provider: Provider,
 ) -> Answer:
@@ -474,52 +532,77 @@ def _aborted(
         method=Method(
             sops_used=list(selection.ids),
             tools_called=called,
-            budget_used=len(called),
+            budget_used=turns,
             provider=provider.name,
         ),
         caveats=caveats,
     )
 
 
-async def _deliver(
+def _deliver(
     final: Mapping[str, object],
+    verified: Sequence[Finding],
+    caveats: Sequence[str],
     selection: Selection,
     called: list[str],
-    caveats: list[str],
+    turns: int,
     provider: Provider,
-    analysis: AnalysisClient,
     settings: Settings,
 ) -> Answer:
-    """Stages 6, 6.5 and 7: verify, compose, deliver.
+    """Stages 6.5 and 7: compose what verification left, and deliver it.
 
-    Verification runs *before* composition, not after. §6.5 removes the claims whose ids do
-    not resolve, and a claim removed from `findings` but left standing in the prose is the
-    removal made invisible in the one field the reader actually reads. The composer's own
-    summary needs no second pass: its citations are inherited from findings that have
-    already resolved, so it is verified by construction rather than by a check that could
-    never fail.
+    Verification runs in `stream` and *before* composition, not after. §6.5 removes the
+    claims whose ids do not resolve, and a claim removed from `findings` but left standing
+    in the prose is the removal made invisible in the one field the reader actually reads.
+    The composer's own summary needs no second pass either: its citations are inherited from
+    findings that have already resolved, so it is verified by construction rather than by a
+    check that could never fail.
     """
-    stated = [
-        Finding.model_validate(finding) for finding in _sequence(final.get("findings"))
-    ]
     caveats = [*caveats, *(str(caveat) for caveat in _sequence(final.get("caveats")))]
-
-    verified, notes = await keep(stated, analysis)
-    caveats.extend(notes)
-
     findings, markdown = compose(
         verified, caveats, summary_after=settings.summary_after_findings
     )
+
+    # §6.5 makes disagreement a field rather than a sentence, and an invalid one raises here
+    # rather than shipping: a contradiction with no reasoning is a second unexplained verdict
+    # standing beside the first, and the reader cannot choose between them.
+    disagreement = final.get("contradiction")
+    contradiction = (
+        Contradiction.model_validate(disagreement)
+        if isinstance(disagreement, dict)
+        else None
+    )
+
     return Answer(
         findings=findings,
         answer_markdown=markdown,
         method=Method(
             sops_used=list(selection.ids),
             tools_called=called,
-            budget_used=len(called),
+            budget_used=turns,
             provider=provider.name,
         ),
-        caveats=caveats,
+        caveats=list(caveats),
+        contradiction=contradiction,
+    )
+
+
+def _correction(failed: Sequence[str]) -> str:
+    """§6.5's one retry, in the words it gives: *"stop:19 does not exist, correct or remove
+    the claim"*.
+
+    A plain turn rather than a forged tool result. §6.5 describes this going back "as a tool
+    result", and a tool result needs a tool call to answer: writing one would put a
+    `tool_use` block in the transcript claiming the model called something it never called.
+    A transcript that lies about what the model did is the same quiet dishonesty every other
+    guard in this pipeline exists to prevent, and the mechanism — the failure, itemised,
+    back into the context for one more turn — is identical either way.
+    """
+    return (
+        f"These citations do not resolve against the database: {', '.join(failed)}. "
+        f"Correct them or "
+        f"remove the claims that rest on them, then answer again. Do not cite a procedure "
+        f"that was not given to you above."
     )
 
 

@@ -2,6 +2,10 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 
+// Vite's `?raw` suffix (declared by the `vite/client` types already in tsconfig.app.json)
+// reads the generated file as text rather than importing its erased-at-runtime types, so
+// the check below runs against the union `json2ts` wrote, not a copy of it kept here.
+import generatedAnswerSource from "../generated/answer.ts?raw";
 import { CitationChip, RENDERERS } from "../CitationChip";
 import type { Part } from "../api";
 
@@ -104,7 +108,22 @@ test("a citation that does not resolve says so rather than showing nothing", asy
   ).toBeInTheDocument();
 });
 
-test("each citation kind has its own renderer", () => {
-  // §7.3: adding a citation type means adding a renderer, nothing more.
-  expect(Object.keys(RENDERERS)).toContain("part");
+test("a renderer exists for every kind the contract declares", () => {
+  // §7.3: adding a citation type means adding a renderer, nothing more — checked against
+  // the generated union itself rather than a copy of today's nine kinds, so a tenth kind
+  // added to contracts/answer.schema.json fails here on `pnpm test` rather than only in
+  // `tsc`'s far less specific "Record is missing these properties" error.
+  const declaration = /export type Kind = (.+);/.exec(generatedAnswerSource);
+  const union = declaration?.[1];
+  if (union === undefined) {
+    throw new Error("generated/answer.ts has no `Kind` union to check against");
+  }
+  const kinds = union
+    .split("|")
+    .map((literal) => literal.trim().replace(/"/g, ""));
+
+  expect(kinds.length).toBeGreaterThan(0);
+  for (const kind of kinds) {
+    expect(Object.keys(RENDERERS)).toContain(kind);
+  }
 });

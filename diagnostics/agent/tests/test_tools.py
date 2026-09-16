@@ -15,12 +15,13 @@ from typing import cast
 import httpx
 import pytest
 import yaml
-from agent.tools import OPERATIONS, TOOL_DEFINITIONS, AnalysisClient
+from agent.tools import OPERATIONS, TOOL_DEFINITIONS, AnalysisClient, Window
 
 CONTRACT = Path(__file__).resolve().parents[3] / "contracts" / "analysis.openapi.yaml"
 
 START = datetime(2026, 9, 12, 13, 30, tzinfo=UTC)
 END = datetime(2026, 9, 12, 14, 30, tzinfo=UTC)
+_WINDOW = Window(start=START, end=END, label="last hour", closed=True)
 
 
 def _contract_operation_ids() -> set[str]:
@@ -258,3 +259,63 @@ async def test_an_expression_the_calendar_does_not_know_resolves_to_nothing() ->
     client, _seen = _client(refuse)
 
     assert await client.resolve_time("the day before the audit") is None
+
+
+# --- §6.5's resolution, which reads errors differently from the tool loop ---------------
+
+
+async def _status(code: int) -> AnalysisClient:
+    def answer(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(code, json={"detail": "…"})
+
+    client, _seen = _client(answer)
+    return client
+
+
+async def test_a_missing_id_does_not_resolve() -> None:
+    client = await _status(404)
+
+    assert not await client.exists("get_part", {"serial": "A-9"}, _WINDOW)
+
+
+async def test_an_id_that_is_not_an_id_does_not_resolve() -> None:
+    """422 from `/stops/{identifier}` is "that is not a stop id", which is a no rather than
+    a fault — §5.3 keeps it distinct from a 404 for the caller, and both are "no" here."""
+    client = await _status(422)
+
+    assert not await client.exists("get_stop", {"identifier": "?"}, _WINDOW)
+
+
+async def test_a_failing_service_is_not_read_as_a_missing_id() -> None:
+    """The asymmetry this method exists for. `call` turns every error into something the
+    model can read, which is right when the model can work around it. Verification cannot
+    work around anything, and a 500 read as "does not resolve" would silently delete claims
+    that are **true** whenever the database hiccups."""
+    client = await _status(500)
+
+    with pytest.raises(RuntimeError, match="get_part"):
+        await client.exists("get_part", {"serial": "A-00000007"}, _WINDOW)
+
+
+async def test_a_window_report_that_did_not_arrive_is_not_evidence_of_absence() -> None:
+    client = await _status(503)
+
+    with pytest.raises(RuntimeError, match="list_alarms"):
+        await client.fetch("list_alarms", {}, _WINDOW)
+
+
+async def test_a_knowledge_document_resolves_by_id() -> None:
+    """§5.3's `GET /knowledge/{id}` — not one of the fifteen tools, and reachable here
+    because §6.5 has to check that a cited procedure exists at all."""
+    seen: list[httpx.Request] = []
+
+    def answer(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200 if request.url.path.endswith("SOP-01") else 404)
+
+    client, _ = _client(answer)
+
+    assert await client.knowledge_exists("SOP-01")
+    assert not await client.knowledge_exists("SOP-99")
+    assert seen[0].url.path == "/knowledge/SOP-01"

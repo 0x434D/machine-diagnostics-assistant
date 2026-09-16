@@ -507,10 +507,54 @@ class AnalysisClient:
             }
         return cast(dict[str, object], response.json())
 
-    async def part_exists(self, serial: str) -> bool:
-        """§6.5's resolution step. 404 and 200 are the whole answer; anything else is a
-        fault and is not treated as "the id does not resolve"."""
-        response = await self._get(f"/parts/{quote(serial, safe='')}")
+    async def exists(
+        self, name: str, arguments: Mapping[str, object], window: Window
+    ) -> bool:
+        """§6.5's resolution step: does this id open?
+
+        **404 and 422 mean "no"; anything else is a fault and propagates.** That asymmetry
+        with `call` above is the whole point of a second method. `call` turns every error
+        into something the model can read, which is right when the model can work around
+        it — but verification cannot work around anything, and a 500 read as "does not
+        resolve" would silently delete *true* claims during a database hiccup. §6.5's
+        removal must be caused by an invented id and by nothing else.
+        """
+        result = await self.call(name, arguments, window.start, window.end)
+        if not result.get("error"):
+            return True
+        status = result.get("status")
+        if status in (404, 422):
+            return False
+        raise RuntimeError(
+            f"resolving {name} {dict(arguments)} failed with {status}: "
+            f"{result.get('detail')}"
+        )
+
+    async def fetch(
+        self, name: str, arguments: Mapping[str, object], window: Window
+    ) -> dict[str, object]:
+        """A tool result for verification rather than for the model: any error is a fault.
+
+        The kinds whose referent has no endpoint of its own — an alarm id, a pattern cell —
+        are resolved by membership in a window's answer, and a window's answer that did not
+        arrive is not evidence of absence.
+        """
+        result = await self.call(name, arguments, window.start, window.end)
+        if result.get("error"):
+            raise RuntimeError(
+                f"resolving {name} {dict(arguments)} failed with "
+                f"{result.get('status')}: {result.get('detail')}"
+            )
+        return result
+
+    async def knowledge_exists(self, document_id: str) -> bool:
+        """§5.3's `GET /knowledge/{id}`, which is what makes a `sop` citation openable.
+
+        Not one of the fifteen tools and deliberately: §6.11 exposes the knowledge base as
+        a *resource*, and the agent already holds the documents routing gave it. It is
+        reachable here because §6.5 has to check that a cited document exists at all.
+        """
+        response = await self._get(f"/knowledge/{quote(document_id, safe='')}")
         if response.status_code == 404:
             return False
         response.raise_for_status()

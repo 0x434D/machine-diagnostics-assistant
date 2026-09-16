@@ -18,7 +18,9 @@ EIGHT = Citation(kind="part", id="A-00000008")
 def _finding(statement: str, *citations: Citation, basis: str = "measured") -> Finding:
     return Finding(
         statement=statement,
-        basis=basis,  # type: ignore[arg-type]
+        # `str` so the helper can be called with a basis per test; pydantic validates it
+        # against `Basis` anyway, so a wrong one fails at construction rather than passing.
+        basis=basis,  # type: ignore[arg-type]  # the Literal is enforced at runtime
         citations=list(citations),
     )
 

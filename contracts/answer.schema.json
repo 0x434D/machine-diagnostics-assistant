@@ -2,21 +2,101 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
     "Citation": {
-      "description": "\u00a77.3's typed citation. M1 emits only `part`; the other kinds arrive with the\nanalysis endpoints that resolve them.",
+      "description": "\u00a77.3's typed citation: a kind, and exactly the payload that kind's endpoint needs.\n\nOne model with a per-kind payload rather than nine classes in a discriminated union.\nThe union is the more literal encoding of \u00a77.3 and was weighed: it would give the\nfrontend nine generated types, of which M4 renders none \u2014 M6 builds the evidence panel\n\u2014 in exchange for nine constructors here. The validator below gives the same guarantee\nthe union would (a `stop` citation without an id cannot exist) in one place, and \u00a76.3\nasks for these checks to be structural, which this is.\n\n**`id` rather than \u00a77.3's three spellings.** The spec writes `id` for a stop, `value`\nfor a serial and `lot_code` for a lot. They are one concept \u2014 the single string that\nidentifies the referent \u2014 and three names for it would be three renderer paths and\nthree resolver signatures for no difference in meaning. The composite kinds keep their\nown fields, because those genuinely are composites.",
       "properties": {
         "kind": {
-          "const": "part",
+          "enum": [
+            "part",
+            "stop",
+            "alarm",
+            "signal",
+            "pattern",
+            "sop",
+            "serial",
+            "lot",
+            "containment"
+          ],
           "title": "Kind",
           "type": "string"
         },
         "id": {
-          "title": "Id",
-          "type": "string"
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Id"
+        },
+        "station": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Station"
+        },
+        "signal": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Signal"
+        },
+        "dimension": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dimension"
+        },
+        "key": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Key"
+        },
+        "serials": {
+          "anyOf": [
+            {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Serials"
         }
       },
       "required": [
-        "kind",
-        "id"
+        "kind"
       ],
       "title": "Citation",
       "type": "object"
@@ -44,6 +124,7 @@
       "type": "object"
     },
     "Contradiction": {
+      "description": "\u00a76.5's first-class disagreement with the computed propagation.\n\n> The agent receiving the propagation derivation may disagree with it [...] and must\n> then populate `contradiction` with its own root and its reasoning.\n\nPossible at all only because \u00a75.4 returns the chain as data rather than a verdict: a\nroot with no derivation behind it could be disagreed with but not argued against.\n\n**A contradiction without reasoning is invalid**, and refused here rather than left to\na prompt \u2014 for the same reason a `hypothesis` without `evidence_strength` is refused.\nA bare \"the root is elsewhere\" is not visible disagreement; it is a second unexplained\nverdict standing beside the first, and the reader has no way to choose between them.\nDP-11: \"Never quietly answer with a different root than the one you were handed \u2014\nsilent disagreement is indistinguishable from an error.\"",
       "properties": {
         "derived_root": {
           "title": "Derived Root",
@@ -109,6 +190,7 @@
       "type": "object"
     },
     "Method": {
+      "description": "\u00a76.3's record of how the answer was reached, and what it cost.\n\n`budget_used` counts **turns of the tool loop**, which is the thing \u00a76.1 step 5's budget\ncaps \u2014 not tool calls, which `tools_called` already lists and whose count is its length.\nOne field carrying two units is a number nobody can compare across two answers.",
       "properties": {
         "sops_used": {
           "items": {

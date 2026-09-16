@@ -61,7 +61,16 @@ def record(
     call: ToolCall,
     result: Mapping[str, object],
 ) -> None:
-    """Append the call and its result to the transcript, in the canonical shape."""
+    """Append the call and its result to the transcript, in the canonical shape.
+
+    The result rides on a **user** turn, which is what lets tool turns live under §5.2's
+    `messages.role` CHECK of ('user','assistant') without a migration. One thing is lost and
+    is worth knowing before M5 persists transcripts: at the database level a synthetic
+    tool-result turn is then indistinguishable from something an operator typed. Nothing
+    reads it that way today — only `results` below parses these, and it looks for
+    `tool_result` blocks — but a later reader counting "what the user said" would count
+    these, and that is a trap rather than a defect.
+    """
     messages.append(
         {
             "role": "assistant",

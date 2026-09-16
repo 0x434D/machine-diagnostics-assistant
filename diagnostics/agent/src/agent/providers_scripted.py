@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from datetime import UTC, datetime
 
 from agent.classify import CLASSIFY_TOOL
 from agent.provider import ProviderReply, ToolCall, results
@@ -65,6 +66,16 @@ _TRACE = ("serial", "lot ", "carrier", "which parts", "contain")
 _KNOWLEDGE = ("what does", "what is", "explain", "mean")
 _AMBIGUOUS = ("losing parts", "lose parts", "losing output")
 
+_ROUTED = re.compile(r"^## ([A-Za-z0-9._-]+) — ", re.MULTILINE)
+"""The document headings `pipeline._system` writes. This provider reads its own context the
+way a model reads its own context; nothing hands it the routing decision privately."""
+
+_INTERVENTION_STATES = ("held", "aborted")
+"""DP-11's shapes: a chain terminating at a station a *person* put into that state. `Held`
+is a cause candidate precisely because it requires an operator, which is the same property
+that makes "held because it faulted" and "held because somebody stopped it" identical to
+the computation."""
+
 _SERIAL = re.compile(r"\b([A-Z]-\d{8})\b")
 _STATION = re.compile(r"\bS(\d)\b", re.IGNORECASE)
 _ALARM = re.compile(r"\bA-\d{3,}\b", re.IGNORECASE)
@@ -81,7 +92,6 @@ class ScriptedProvider:
         messages: list[dict[str, object]],
         tools: list[dict[str, object]],
     ) -> ProviderReply:
-        del system
         question = _question(messages)
         names = [str(tool.get("name")) for tool in tools]
 
@@ -94,8 +104,15 @@ class ScriptedProvider:
                 ]
             )
 
-        seen = results(messages)
-        return _investigate(question, seen)
+        # §6.5 forbids citing a procedure that was never read, so the only procedures this
+        # provider can cite are the ones it can see — which are the ones in the system
+        # prompt routing built. Read from there rather than from a list here, so a document
+        # routing dropped under budget cannot be cited either.
+        return _investigate(question, results(messages), _documents(system))
+
+
+def _documents(system: str) -> frozenset[str]:
+    return frozenset(_ROUTED.findall(system))
 
 
 def _question(messages: Sequence[Mapping[str, object]]) -> str:
@@ -175,7 +192,11 @@ def _read(question: str) -> dict[str, object]:
     return arguments
 
 
-def _investigate(question: str, seen: Mapping[str, dict[str, object]]) -> ProviderReply:
+def _investigate(
+    question: str,
+    seen: Mapping[str, dict[str, object]],
+    documents: frozenset[str] = frozenset(),
+) -> ProviderReply:
     """One turn of the tool loop, decided by what is already in the transcript.
 
     Reading its own transcript is how this provider stands in for a model without being
@@ -193,7 +214,7 @@ def _investigate(question: str, seen: Mapping[str, dict[str, object]]) -> Provid
         detail = _answered(seen, "get_stop")
         if detail is None and chosen is not None:
             return _ask("get_stop", {"identifier": str(chosen.get("id"))})
-        return ProviderReply(final=_stop_final(detail))
+        return ProviderReply(final=_stop_final(detail, documents))
 
     if question_type == "status":
         status = _answered(seen, "line_status")
@@ -267,9 +288,19 @@ def _chosen(stops: Mapping[str, object]) -> Mapping[str, object] | None:
 
 
 def _finding(
-    statement: str, basis: str, citations: list[dict[str, str]]
+    statement: str,
+    basis: str,
+    citations: list[dict[str, object]],
+    evidence_strength: str | None = None,
 ) -> dict[str, object]:
-    return {"statement": statement, "basis": basis, "citations": citations}
+    finding: dict[str, object] = {
+        "statement": statement,
+        "basis": basis,
+        "citations": citations,
+    }
+    if evidence_strength is not None:
+        finding["evidence_strength"] = evidence_strength
+    return finding
 
 
 def _stats_final(stats: Mapping[str, object]) -> dict[str, object]:
@@ -348,7 +379,9 @@ def _stats_final(stats: Mapping[str, object]) -> dict[str, object]:
     return {"findings": findings, "caveats": caveats}
 
 
-def _stop_final(detail: Mapping[str, object] | None) -> dict[str, object]:
+def _stop_final(
+    detail: Mapping[str, object] | None, documents: frozenset[str] = frozenset()
+) -> dict[str, object]:
     if detail is None:
         return {
             "findings": [],
@@ -360,47 +393,182 @@ def _stop_final(detail: Mapping[str, object] | None) -> dict[str, object]:
 
     seconds = _float(stop.get("duration_seconds"))
     category = stop.get("category")
+    cite = _cite_stop(stop, documents, "SOP-01")
     findings = [
         _finding(
             f"The line stood for {seconds:.0f} s from {_clock(stop.get('from_ts'))} to "
             f"{_clock(stop.get('to_ts'))} UTC.",
             "measured",
-            [],
+            cite,
         )
     ]
 
     derivation = detail.get("derivation")
-    if isinstance(derivation, dict):
-        links = derivation.get("links")
-        root = links[0] if isinstance(links, list) and links else None
-        if isinstance(root, dict):
-            reason = root.get("reason")
-            findings.append(
-                _finding(
-                    f"The propagation chain terminates at {root.get('station')} in state "
-                    f"{root.get('state')}"
-                    + (f" ({reason})" if reason else "")
-                    + (
-                        f", which categorises the stop as {category}."
-                        if category
-                        else "."
-                    ),
-                    # §5.4's chain is bookkeeping over a graph and a timeline: it follows
-                    # necessarily from the state history rather than being read off it.
-                    "derived",
-                    [],
-                )
+    root = _root(derivation)
+    if root is not None:
+        reason = root.get("reason")
+        findings.append(
+            _finding(
+                f"The propagation chain terminates at {root.get('station')} in state "
+                f"{root.get('state')}"
+                + (f" ({reason})" if reason else "")
+                + (f", which categorises the stop as {category}." if category else "."),
+                # §5.4's chain is bookkeeping over a graph and a timeline: it follows
+                # necessarily from the state history rather than being read off it.
+                "derived",
+                cite,
             )
-        if derivation.get("unexplained"):
-            findings.append(
-                _finding(
-                    "One link in the chain is unexplained, so the root is where the "
-                    "evidence stops rather than where the cause is.",
-                    "derived",
-                    [],
-                )
+        )
+    if isinstance(derivation, dict) and derivation.get("unexplained"):
+        findings.append(
+            _finding(
+                "One link in the chain is unexplained, so the root is where the "
+                "evidence stops rather than where the cause is.",
+                "derived",
+                cite,
             )
-    return {"findings": findings, "caveats": []}
+        )
+
+    final: dict[str, object] = {"findings": findings, "caveats": []}
+    _contradict(final, detail, stop, root, documents)
+    return final
+
+
+def _root(derivation: object) -> Mapping[str, object] | None:
+    if not isinstance(derivation, dict):
+        return None
+    links = derivation.get("links")
+    if not isinstance(links, list) or not links:
+        return None
+    first = links[0]
+    return first if isinstance(first, dict) else None
+
+
+def _contradict(
+    final: dict[str, object],
+    detail: Mapping[str, object],
+    stop: Mapping[str, object],
+    root: Mapping[str, object] | None,
+    documents: frozenset[str],
+) -> None:
+    """DP-11, applied to the derivation §5.4 returned as data.
+
+    Possible only because the chain arrives as links rather than as a verdict — the
+    ordering *is* the argument, and an answer that only said "root: S3" could be disagreed
+    with but not argued against.
+
+    Two of DP-11's five checks are computable from this response and both must hold: the
+    terminating station is in a state a person puts it in and carries **no alarm of its
+    own**, and something else on the line was already disturbed **before** it. A cause
+    precedes its consequences; an intervention that starts second is a response to the
+    first thing, not the origin of it. The other three checks — acknowledgement timing,
+    restart-then-stop-again, whether the intervention explains the recovery — need more
+    than one stop's record and are left to a reader, which the reasoning says.
+    """
+    if root is None or str(root.get("state", "")).lower() not in _INTERVENTION_STATES:
+        return
+    station = str(root.get("station"))
+    if _has_alarm(detail, station):
+        # DP-11's own refutation: a station carrying its own alarm is a genuine cause
+        # candidate and the computation is right.
+        return
+    earlier = _earlier_disturbance(detail, station, str(root.get("from_ts")))
+    if earlier is None:
+        return
+
+    other = str(earlier.get("station"))
+    ordering = (
+        f"{other} entered {earlier.get('state')} at {_clock(earlier.get('from_ts'))} "
+        f"UTC, {station} was {root.get('state')} at {_clock(root.get('from_ts'))} UTC — "
+        f"{station} second, and with no alarm of its own in this stop."
+    )
+    final["contradiction"] = {
+        "derived_root": station,
+        "agent_root": other,
+        "reasoning": (
+            f"The chain terminates at {station}, but {station} was put into "
+            f"{root.get('state')} after {other} was already disturbed, and raised no alarm "
+            f"of its own. {ordering} A cause precedes its consequences, so this reads as an "
+            f"operator intervention the chain followed rather than the fault it started "
+            f"from. Acknowledgement timing and whether the line recovered when a different "
+            f"station was cleared would settle it, and are not in this record."
+        ),
+    }
+    findings = final["findings"]
+    if isinstance(findings, list):
+        findings.append(
+            _finding(
+                f"The computed root is {station}; on the ordering the root is {other}, and "
+                f"{station} is where a person stopped the line rather than where it broke.",
+                # §6.3: it required interpretation from the knowledge base, and DP-11 says
+                # so itself — "The contradiction is a `hypothesis`, and its evidence
+                # strength is that sequence."
+                "hypothesis",
+                _cite_stop(stop, documents, "DP-11"),
+                evidence_strength=ordering,
+            )
+        )
+
+
+def _has_alarm(detail: Mapping[str, object], station: str) -> bool:
+    alarms = detail.get("alarms")
+    if not isinstance(alarms, list):
+        return False
+    return any(
+        isinstance(alarm, dict) and alarm.get("station") == station for alarm in alarms
+    )
+
+
+def _earlier_disturbance(
+    detail: Mapping[str, object], station: str, since: str
+) -> Mapping[str, object] | None:
+    """The first episode at another station that began before this one did.
+
+    Parsed rather than compared as strings. Every instant the analysis service emits is UTC
+    with a `Z`, so the lexicographic comparison would agree today — and would start
+    disagreeing, silently and in the one direction that matters, the first time an offset
+    other than `Z` appeared in the same field.
+    """
+    timeline = detail.get("timeline")
+    if not isinstance(timeline, list):
+        return None
+    start = _instant(since)
+    earlier = [
+        episode
+        for episode in timeline
+        if isinstance(episode, dict)
+        and episode.get("station") != station
+        and _instant(str(episode.get("from_ts", ""))) < start
+    ]
+    if not earlier:
+        return None
+    return min(earlier, key=lambda episode: _instant(str(episode.get("from_ts", ""))))
+
+
+def _instant(value: str) -> datetime:
+    """An ISO-8601 instant, or the far future.
+
+    The far future rather than an exception: a timeline entry with no usable instant cannot
+    be shown to precede anything, which is the conservative reading — DP-11 is refused
+    rather than asserted on a timestamp nobody can order.
+    """
+    try:
+        return datetime.fromisoformat(value)  # 3.11+ reads the Z suffix
+    except ValueError:
+        return datetime.max.replace(tzinfo=UTC)
+
+
+def _cite_stop(
+    stop: Mapping[str, object], documents: frozenset[str], procedure: str
+) -> list[dict[str, object]]:
+    """The stop, and the procedure that says how to read it — if it was actually read."""
+    citations: list[dict[str, object]] = []
+    identifier = stop.get("id")
+    if identifier:
+        citations.append({"kind": "stop", "id": str(identifier)})
+    if procedure in documents:
+        citations.append({"kind": "sop", "id": procedure})
+    return citations
 
 
 def _status_final(status: Mapping[str, object]) -> dict[str, object]:

@@ -7,8 +7,13 @@
 
 export type Statement = string;
 export type Basis = "measured" | "derived" | "hypothesis";
-export type Kind = "part";
-export type Id = string;
+export type Kind = "part" | "stop" | "alarm" | "signal" | "pattern" | "sop" | "serial" | "lot" | "containment";
+export type Id = string | null;
+export type Station = string | null;
+export type Signal = string | null;
+export type Dimension = string | null;
+export type Key = string | null;
+export type Serials = string[] | null;
 export type Citations = Citation[];
 export type EvidenceStrength = string | null;
 export type Findings = Finding[];
@@ -41,14 +46,38 @@ export interface Finding {
   [k: string]: unknown;
 }
 /**
- * §7.3's typed citation. M1 emits only `part`; the other kinds arrive with the
- * analysis endpoints that resolve them.
+ * §7.3's typed citation: a kind, and exactly the payload that kind's endpoint needs.
+ *
+ * One model with a per-kind payload rather than nine classes in a discriminated union.
+ * The union is the more literal encoding of §7.3 and was weighed: it would give the
+ * frontend nine generated types, of which M4 renders none — M6 builds the evidence panel
+ * — in exchange for nine constructors here. The validator below gives the same guarantee
+ * the union would (a `stop` citation without an id cannot exist) in one place, and §6.3
+ * asks for these checks to be structural, which this is.
+ *
+ * **`id` rather than §7.3's three spellings.** The spec writes `id` for a stop, `value`
+ * for a serial and `lot_code` for a lot. They are one concept — the single string that
+ * identifies the referent — and three names for it would be three renderer paths and
+ * three resolver signatures for no difference in meaning. The composite kinds keep their
+ * own fields, because those genuinely are composites.
  */
 export interface Citation {
   kind: Kind;
-  id: Id;
+  id?: Id;
+  station?: Station;
+  signal?: Signal;
+  dimension?: Dimension;
+  key?: Key;
+  serials?: Serials;
   [k: string]: unknown;
 }
+/**
+ * §6.3's record of how the answer was reached, and what it cost.
+ *
+ * `budget_used` counts **turns of the tool loop**, which is the thing §6.1 step 5's budget
+ * caps — not tool calls, which `tools_called` already lists and whose count is its length.
+ * One field carrying two units is a number nobody can compare across two answers.
+ */
 export interface Method {
   sops_used?: SopsUsed;
   tools_called?: ToolsCalled;
@@ -56,6 +85,22 @@ export interface Method {
   provider?: Provider;
   [k: string]: unknown;
 }
+/**
+ * §6.5's first-class disagreement with the computed propagation.
+ *
+ * > The agent receiving the propagation derivation may disagree with it [...] and must
+ * > then populate `contradiction` with its own root and its reasoning.
+ *
+ * Possible at all only because §5.4 returns the chain as data rather than a verdict: a
+ * root with no derivation behind it could be disagreed with but not argued against.
+ *
+ * **A contradiction without reasoning is invalid**, and refused here rather than left to
+ * a prompt — for the same reason a `hypothesis` without `evidence_strength` is refused.
+ * A bare "the root is elsewhere" is not visible disagreement; it is a second unexplained
+ * verdict standing beside the first, and the reader has no way to choose between them.
+ * DP-11: "Never quietly answer with a different root than the one you were handed —
+ * silent disagreement is indistinguishable from an error."
+ */
 export interface Contradiction {
   derived_root: DerivedRoot;
   agent_root: AgentRoot;
