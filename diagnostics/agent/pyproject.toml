@@ -18,10 +18,13 @@ dependencies = [
     "psycopg[binary]==3.3.5",
     # §6.2's loader, shared with the analysis service and (M4 Task 7) the MCP server.
     "knowledge",
+    # §10.5's token rules, shared with those same two. M5 Task 2.
+    "auth",
 ]
 
 [tool.uv.sources]
 knowledge = { workspace = true }
+auth = { workspace = true }
 analysis = { workspace = true }
 
 [dependency-groups]

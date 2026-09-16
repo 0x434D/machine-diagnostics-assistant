@@ -29,6 +29,10 @@ dev = [
     # Starlette's own TestClient, for the middleware the MCP server mounts. It is httpx that
     # the TestClient needs; the same pin the other three packages already carry.
     "httpx==0.28.1",
+    # `testing.api_routes`, which the two FastAPI services' §1.8 proofs share. Dev-scope and
+    # deliberately: the MCP server's image has no FastAPI in it, and only a test suite ever
+    # imports `auth.testing`.
+    "fastapi==0.141.1",
 ]
 
 [build-system]

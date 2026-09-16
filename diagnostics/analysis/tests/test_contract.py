@@ -11,7 +11,6 @@ from pathlib import Path
 
 import yaml
 from analysis.app import app
-from fastapi.testclient import TestClient
 
 CONTRACT = Path(__file__).resolve().parents[3] / "contracts" / "analysis.openapi.yaml"
 
@@ -31,7 +30,10 @@ def _mapping(parent: dict[str, object], key: str) -> dict[str, object]:
 
 
 def test_the_served_schema_matches_the_committed_contract() -> None:
-    served = TestClient(app).get("/openapi.json").json()
+    """`app.openapi()` rather than a request to `/openapi.json`, because M5 stopped serving
+    that: an unauthenticated route enumerating every other route is not an exception §1.8
+    should have to carry, and this is the same document `make contract` writes."""
+    served = app.openapi()
     committed = _committed()
 
     paths = _mapping(committed, "paths")
@@ -43,7 +45,7 @@ def test_the_served_schema_matches_the_committed_contract() -> None:
 def test_the_response_shapes_match_too_not_only_the_paths() -> None:
     """Paths alone would let a field be added, removed or retyped without failing —
     which is exactly the drift the generated TypeScript would then encode as truth."""
-    served = TestClient(app).get("/openapi.json").json()
+    served = app.openapi()
 
     committed = _mapping(_mapping(_committed(), "components"), "schemas")
     assert committed == served["components"]["schemas"]

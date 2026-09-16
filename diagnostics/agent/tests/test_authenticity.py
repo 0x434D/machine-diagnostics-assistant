@@ -50,6 +50,7 @@ from analysis.app import app as analysis_app
 from analysis.config import Settings as AnalysisSettings
 from analysis.db import reset_pool
 from analysis.dependencies import now_dependency, settings_dependency
+from auth.testing import mint
 from psycopg import Connection, sql
 from psycopg.conninfo import make_conninfo
 from pydantic import ValidationError
@@ -298,6 +299,10 @@ async def ask(
         "authenticity",
         settings=Settings(analysis_url=url),
         provider=provider or ScriptedProvider(),
+        # The analysis service standing behind this refuses an unauthenticated request since
+        # M5 (§10.5), and the pipeline forwards the caller's token to it. Without one every
+        # tool call here would come back a 401 and §1.6's proof would be measuring the door.
+        token=mint(role="user"),
     )
 
 

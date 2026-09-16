@@ -37,6 +37,7 @@ ARG PACKAGE
 COPY diagnostics/pyproject.toml diagnostics/uv.lock ./
 COPY diagnostics/analysis/pyproject.toml analysis/
 COPY diagnostics/agent/pyproject.toml agent/
+COPY diagnostics/auth/pyproject.toml auth/
 COPY diagnostics/knowledge/pyproject.toml knowledge/
 COPY diagnostics/mcp/pyproject.toml mcp/
 RUN --mount=type=cache,target=/root/.cache/uv \

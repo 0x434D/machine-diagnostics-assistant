@@ -7,9 +7,13 @@ has no `docs` table on purpose.
 from __future__ import annotations
 
 from analysis.app import app
+from auth.testing import mint
 from fastapi.testclient import TestClient
 
-client = TestClient(app)
+# A `user` token, because §10.5 puts reading a cited procedure in both columns of its matrix
+# and these tests are about the document, not about who may see it. `conftest.py` configures
+# the key this was minted against.
+client = TestClient(app, headers={"Authorization": f"Bearer {mint(role='user')}"})
 
 
 def test_a_procedure_can_be_opened_by_the_id_a_citation_carries() -> None:

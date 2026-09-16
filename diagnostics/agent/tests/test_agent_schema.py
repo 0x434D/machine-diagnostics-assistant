@@ -34,6 +34,8 @@ from pathlib import Path
 
 import psycopg
 import pytest
+from agent.config import Settings
+from agent.sessions import remember
 from alembic import command
 from alembic.config import Config
 from psycopg import errors, sql
@@ -242,20 +244,47 @@ def test_the_agent_role_writes_its_own_tables(agent_url: str) -> None:
     assert stored == [("why did the line stop at 02:14?", ["CORE-01", "SOP-01"], False)]
 
 
-def test_a_session_carries_no_subject_until_there_is_an_issuer(agent_url: str) -> None:
-    """§5.2's `subject` is the OIDC `sub` claim and M5 is where the issuer arrives.
+async def test_a_session_carries_the_subject_off_the_token(agent_url: str) -> None:
+    """§5.2's `subject` is the OIDC `sub`, and M5 is where it starts arriving.
 
-    Nullable until then, and deliberately not defaulted to a placeholder: a column that
-    always holds `"anonymous"` cannot be told apart from one nobody ever wrote to.
+    Through `sessions.remember` rather than through an INSERT written here: what M5 claims
+    is that the `sub` on the token reaches this column, and an INSERT in a test proves only
+    that the column accepts text. This is the function `POST /ask` calls.
     """
+    session = await remember(
+        "operator-7",
+        datetime(2026, 9, 16, 9, 0, tzinfo=UTC),
+        Settings(database_url=agent_url),
+    )
+
     with psycopg.connect(agent_url) as conn:
         row = conn.execute(
-            "INSERT INTO agent.sessions (created_at) VALUES (%s) RETURNING subject",
-            (datetime(2026, 9, 16, 9, 0, tzinfo=UTC),),
+            "SELECT subject FROM agent.sessions WHERE id = %s", (session,)
         ).fetchone()
-        conn.commit()
 
-    assert row == (None,)
+    assert row == ("operator-7",)
+
+
+async def test_continuing_a_session_does_not_rewrite_whose_it_is(
+    agent_url: str,
+) -> None:
+    """A session belongs to whoever opened it. Without this, a second question naming an
+    existing id would quietly re-attribute every message already hanging off it."""
+    settings = Settings(database_url=agent_url)
+    opened = await remember(
+        "operator-7", datetime(2026, 9, 16, 9, 0, tzinfo=UTC), settings
+    )
+
+    continued = await remember(
+        "someone-else", datetime(2026, 9, 16, 9, 5, tzinfo=UTC), settings, opened
+    )
+
+    assert continued == opened
+    with psycopg.connect(agent_url) as conn:
+        row = conn.execute(
+            "SELECT subject FROM agent.sessions WHERE id = %s", (opened,)
+        ).fetchone()
+    assert row == ("operator-7",)
 
 
 def test_session_ids_are_not_guessable(agent_url: str) -> None:

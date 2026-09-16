@@ -28,6 +28,9 @@ dependencies = [
     # §6.2's loader, shared with the analysis service and the agent. This package is the
     # third consumer named in diagnostics/pyproject.toml, and the reason it was extracted.
     "knowledge",
+    # §10.5's token rules, shared with those same two. §14 names this server specifically:
+    # its tools are read-only and read-only is not public.
+    "auth",
 ]
 
 # The entry point `diagnostics/compose.yml` runs, and the one a developer runs from a
@@ -38,6 +41,7 @@ mcp-server = "mcp_server.server:main"
 
 [tool.uv.sources]
 knowledge = { workspace = true }
+auth = { workspace = true }
 analysis = { workspace = true }
 agent = { workspace = true }
 
@@ -46,6 +50,11 @@ dev = [
     "pytest==9.1.1",
     "pytest-asyncio==1.4.0",
     "types-pyyaml==6.0.12.20260906",
+    # The SDK's own HTTP client, and the only way to put a header on the transport a
+    # `Client` connects with -- which every test that drives this server has needed since
+    # M5 gave it a door. Already resolved here as the SDK's dependency, at this pin; a
+    # different distribution from `httpx` above rather than an upgrade of it.
+    "httpx2==2.12.0",
     # Test scope only, and deliberately: §6.11's parity claim is that neither binding can do
     # anything the other cannot, and the only honest way to assert that is against the other
     # binding's *live* surface. Comparing the generated tool list against the committed YAML

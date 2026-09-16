@@ -10,14 +10,13 @@ from __future__ import annotations
 
 import pytest
 from auth.requests import RequireToken, admin, presented, principal
+from auth.testing import AUDIENCE, ISSUER, PUBLIC_PEM, mint
 from starlette.applications import Starlette
 from starlette.exceptions import HTTPException
 from starlette.requests import Request
 from starlette.responses import PlainTextResponse
 from starlette.routing import Route
 from starlette.testclient import TestClient
-
-from .keys import AUDIENCE, ISSUER, PUBLIC_PEM, mint
 
 
 @pytest.fixture(autouse=True)

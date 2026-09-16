@@ -24,6 +24,7 @@ source = { editable = "agent" }
 dependencies = [
     { name = "alembic" },
     { name = "anthropic" },
+    { name = "auth" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "knowledge" },
@@ -44,6 +45,7 @@ dev = [
 requires-dist = [
     { name = "alembic", specifier = "==1.20.0" },
     { name = "anthropic", specifier = "==1.5.0" },
+    { name = "auth", editable = "auth" },
     { name = "fastapi", specifier = "==0.141.1" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "knowledge", editable = "knowledge" },
@@ -79,6 +81,7 @@ name = "analysis"
 version = "0.1.0"
 source = { editable = "analysis" }
 dependencies = [
+    { name = "auth" },
     { name = "fastapi" },
     { name = "knowledge" },
     { name = "psycopg", extra = ["binary", "pool"] },
@@ -97,6 +100,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "auth", editable = "auth" },
     { name = "fastapi", specifier = "==0.141.1" },
     { name = "knowledge", editable = "knowledge" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = "==3.3.5" },
@@ -227,6 +231,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "fastapi" },
     { name = "httpx" },
     { name = "pytest" },
 ]
@@ -240,6 +245,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "fastapi", specifier = "==0.141.1" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "pytest", specifier = "==9.1.1" },
 ]
@@ -695,6 +701,7 @@ name = "mcp-server"
 version = "0.1.0"
 source = { editable = "mcp" }
 dependencies = [
+    { name = "auth" },
     { name = "httpx" },
     { name = "knowledge" },
     { name = "mcp" },
@@ -706,6 +713,7 @@ dependencies = [
 dev = [
     { name = "agent" },
     { name = "analysis" },
+    { name = "httpx2" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "testcontainers" },
@@ -714,6 +722,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "auth", editable = "auth" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "knowledge", editable = "knowledge" },
     { name = "mcp", specifier = "==2.2.0" },
@@ -725,6 +734,7 @@ requires-dist = [
 dev = [
     { name = "agent", editable = "agent" },
     { name = "analysis", editable = "analysis" },
+    { name = "httpx2", specifier = "==2.12.0" },
     { name = "pytest", specifier = "==9.1.1" },
     { name = "pytest-asyncio", specifier = "==1.4.0" },
     { name = "testcontainers", extras = ["postgres"], specifier = "==4.13.2" },

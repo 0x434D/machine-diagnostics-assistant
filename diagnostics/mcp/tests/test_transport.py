@@ -14,7 +14,6 @@ from collections.abc import AsyncIterator
 import pytest
 import pytest_asyncio
 import uvicorn
-from mcp import Client
 from mcp_server import server
 from mcp_server.config import PROTOCOL_REVISION, Settings
 from mcp_server.diagnose import DIAGNOSE_TOOL
@@ -23,6 +22,8 @@ from mcp_types.version import (
     LATEST_MODERN_VERSION,
     MODERN_PROTOCOL_VERSIONS,
 )
+
+from .clients import authorised
 
 
 @pytest_asyncio.fixture
@@ -51,20 +52,22 @@ async def endpoint(settings: Settings) -> AsyncIterator[str]:
 
 
 async def test_a_client_reaches_the_tools_over_the_pinned_revision(
-    endpoint: str,
+    endpoint: str, bearer: str
 ) -> None:
     """§6.11's revision, adopted directly: a self-contained POST, no handshake.
 
     `mode` is the SDK's word for "adopt this protocol version without probing for it", so
     what this drives is the 2026-07-28 exchange and nothing else.
     """
-    async with Client(endpoint, mode=PROTOCOL_REVISION) as client:
+    async with authorised(endpoint, bearer) as client:
         listing = await client.list_tools()
 
     assert DIAGNOSE_TOOL in {tool.name for tool in listing.tools}
 
 
-async def test_the_handshake_era_reaches_exactly_the_same_tools(endpoint: str) -> None:
+async def test_the_handshake_era_reaches_exactly_the_same_tools(
+    endpoint: str, bearer: str
+) -> None:
     """The clients that exist today still send `initialize`, and are not refused.
 
     §6.11's claim is that the method transfers to an agent we did not build. A server that
@@ -72,22 +75,22 @@ async def test_the_handshake_era_reaches_exactly_the_same_tools(endpoint: str) -
     makes that claim unfalsifiable rather than true — so both eras are served, and this
     asserts they see one surface rather than two.
     """
-    async with Client(endpoint, mode=PROTOCOL_REVISION) as modern:
+    async with authorised(endpoint, bearer) as modern:
         pinned = {tool.name for tool in (await modern.list_tools()).tools}
-    async with Client(endpoint, mode="legacy") as handshake:
+    async with authorised(endpoint, bearer, mode="legacy") as handshake:
         legacy = {tool.name for tool in (await handshake.list_tools()).tools}
 
     assert pinned == legacy
 
 
-async def test_a_client_reads_an_sop_by_its_uri(endpoint: str) -> None:
+async def test_a_client_reads_an_sop_by_its_uri(endpoint: str, bearer: str) -> None:
     """The sentence §6.11 rests on: *an external agent can read `sop://SOP-01`*.
 
     Over the wire, because the URI survives a round trip is part of the claim: a scheme
     whose authority a client normalises would turn `SOP-01` into `sop-01` and resolve
     nothing.
     """
-    async with Client(endpoint, mode=PROTOCOL_REVISION) as client:
+    async with authorised(endpoint, bearer) as client:
         result = await client.read_resource("sop://SOP-01")
 
     contents = result.contents[0]

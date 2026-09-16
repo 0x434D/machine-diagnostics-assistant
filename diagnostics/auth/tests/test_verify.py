@@ -14,9 +14,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from auth.config import Settings
+from auth.testing import AUDIENCE, ISSUER, OTHER_PRIVATE_PEM, PUBLIC_PEM, mint
 from auth.tokens import verify
-
-from .keys import AUDIENCE, ISSUER, OTHER_PRIVATE_PEM, PUBLIC_PEM, mint
 
 
 @pytest.fixture

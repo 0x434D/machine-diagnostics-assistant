@@ -92,9 +92,9 @@ class AgentClient:
         self._client = client
 
     async def diagnose(
-        self, question: str, session_id: str | None = None
+        self, question: str, session_id: str | None = None, token: str | None = None
     ) -> types.CallToolResult:
-        answer = await self._ask(question, session_id)
+        answer = await self._ask(question, session_id, token)
         markdown = answer.get("answer_markdown")
         return types.CallToolResult(
             content=[
@@ -108,7 +108,9 @@ class AgentClient:
             structured_content=answer,
         )
 
-    async def _ask(self, question: str, session_id: str | None) -> dict[str, object]:
+    async def _ask(
+        self, question: str, session_id: str | None, token: str | None
+    ) -> dict[str, object]:
         """The answer event of the agent's SSE stream, as the object §6.3 defines.
 
         Raises if the stream ends without one. An empty answer is not a possible outcome of
@@ -120,17 +122,24 @@ class AgentClient:
         if session_id is not None:
             body["session_id"] = session_id
 
+        # The caller's token, forwarded: `POST /ask` refuses an unauthenticated request
+        # since M5, and the answer this returns is the asker's, recorded against the `sub`
+        # on their own token in §5.2's `sessions`.
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
         if self._client is not None:
-            return await self._stream(self._client, body)
+            return await self._stream(self._client, body, headers)
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            return await self._stream(client, body)
+            return await self._stream(client, body, headers)
 
     async def _stream(
-        self, client: httpx.AsyncClient, body: dict[str, object]
+        self,
+        client: httpx.AsyncClient,
+        body: dict[str, object],
+        headers: dict[str, str],
     ) -> dict[str, object]:
         event = ""
         async with client.stream(
-            "POST", f"{self._base_url}/ask", json=body
+            "POST", f"{self._base_url}/ask", json=body, headers=headers
         ) as response:
             response.raise_for_status()
             async for line in response.aiter_lines():
