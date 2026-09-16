@@ -70,6 +70,12 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      # The same three AUTH_* names the Python services above read, and the same block. The
+      # gateway validates the token in C# because it cannot import `diagnostics/auth` (§2.3),
+      # and that second implementation is held to the first by the shared fixtures in
+      # `diagnostics/auth/fixtures/tokens.json` -- but only if both are pointed at one issuer,
+      # which is what sharing this anchor rather than writing GATEWAY_AUDIENCE achieves.
+      <<: *auth
       # Restated here rather than left to GatewayOptions' defaults so the one name this
       # boundary is built around is visible in the file that joins the network.
       GATEWAY_ENDPOINT_URL: "opc.tcp://line-simulator:4840/plant"

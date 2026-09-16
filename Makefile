@@ -24,6 +24,33 @@ LOCKED := -p:RestoreLockedMode=true
 # custom tasks. Without this on the command line, those slip through silently.
 WARNASERROR := -warnaserror
 
+# --- The development issuer ----------------------------------------------------------------
+# §14 made every diagnostics endpoint refuse an unauthenticated request — the gateway's
+# /status and /reconcile, the agent's /ask, the analysis service's queries — and that includes
+# the calls the demo targets below make. M5 was ruled slim and builds no IdP, so
+# scripts/mint-token.py is the issuer: it keeps a gitignored keypair, generates it on first
+# use, prints the public key the services verify against, and mints the tokens to present.
+#
+# Both of the two below are shell command substitutions embedded in recipes, NOT make
+# variables that $(shell ...) would expand. A $(shell ...) here runs on every invocation of
+# this file, so `make check` would mint a token it has no use for on every commit.
+MINT := cd $(CURDIR)/diagnostics && uv run --frozen python $(CURDIR)/scripts/mint-token.py
+
+# Configures the stack with the key the demo's own tokens are signed by, overriding anything
+# in diagnostics/.env or the shell. That override is the point rather than a rudeness: this
+# demo mints from the development issuer, so a stack pointed at any other key would refuse
+# every request it makes.
+DEV_PUBLIC_KEY = AUTH_PUBLIC_KEY="$$($(MINT) --public-key)"
+
+# `user`, not `admin`. Every endpoint the demo calls is in §10.5's user column, and minting
+# the more privileged token would leave the demo unable to tell "open to an operator" from
+# "open to an administrator" — it should run as the person it is demonstrating for. An admin
+# action added to a demo step later fails loudly here, which is the correct outcome.
+#
+# Minted per call rather than once into a variable: a token costs ~0.17 s and these demos run
+# for minutes, so one held across the run is one that expires halfway through it.
+BEARER = -H "Authorization: Bearer $$($(MINT) --role user)"
+
 # --- CI tool pins -------------------------------------------------------------------------
 # Every tool the pipeline runs is pinned and invoked from here rather than from a marketplace
 # action, so that handbook §9's "CI contains no logic" holds literally: the pipeline is these
@@ -211,9 +238,9 @@ m1-demo: preflight
 	@echo "== 2. a foreign client browses the address space"
 	$(MAKE) browse
 	@echo "== 3. diagnostics: connect, wait for the plant's phase, backfill, go live"
-	docker compose -f diagnostics/compose.yml up -d --build
-	@until curl -sf localhost:$${GATEWAY_PORT:-8080}/status | grep -q '"state":"live"'; do \
-	    curl -s localhost:$${GATEWAY_PORT:-8080}/status; echo; sleep 5; done
+	$(DEV_PUBLIC_KEY) docker compose -f diagnostics/compose.yml up -d --build
+	@until curl -sf $(BEARER) localhost:$${GATEWAY_PORT:-8080}/status | grep -q '"state":"live"'; do \
+	    curl -s $(BEARER) localhost:$${GATEWAY_PORT:-8080}/status; echo; sleep 5; done
 	@echo "== 4. ask, and open the citation"
 # `up -d --build` recreates the agent and the UI too, and step 3 waits only for the gateway --
 # so the first run of this demo asked an agent that was still starting and died on an empty
@@ -224,10 +251,10 @@ m1-demo: preflight
 	@$(MAKE) ask
 	@echo "== 5. downstream outage: Postgres stops, the queue fills, nothing is lost"
 	docker compose -f diagnostics/compose.yml stop postgres
-	@sleep 30; curl -s localhost:$${GATEWAY_PORT:-8080}/status; echo
+	@sleep 30; curl -s $(BEARER) localhost:$${GATEWAY_PORT:-8080}/status; echo
 	docker compose -f diagnostics/compose.yml start postgres
-	@until [ "$$(curl -sf localhost:$${GATEWAY_PORT:-8080}/status | sed -n 's/.*"queueDepth":\([0-9]*\).*/\1/p')" = "0" ]; do \
-	    curl -s localhost:$${GATEWAY_PORT:-8080}/status; echo; sleep 5; done
+	@until [ "$$(curl -sf $(BEARER) localhost:$${GATEWAY_PORT:-8080}/status | sed -n 's/.*"queueDepth":\([0-9]*\).*/\1/p')" = "0" ]; do \
+	    curl -s $(BEARER) localhost:$${GATEWAY_PORT:-8080}/status; echo; sleep 5; done
 	@$(MAKE) verify-no-gaps
 	@echo "== 6. upstream outage: the plant stops, and the question is asked again anyway"
 	docker compose -f plant/compose.yml stop line-simulator
@@ -235,8 +262,8 @@ m1-demo: preflight
 	@echo "   ^ answered from history, with the plant shut down. That is the whole point."
 	docker compose -f plant/compose.yml start line-simulator
 	@echo "   ...and the outage window closes by HistoryRead, not by being forgotten."
-	@until curl -sf localhost:$${GATEWAY_PORT:-8080}/status | grep -q '"state":"live"'; do \
-	    curl -s localhost:$${GATEWAY_PORT:-8080}/status; echo; sleep 5; done
+	@until curl -sf $(BEARER) localhost:$${GATEWAY_PORT:-8080}/status | grep -q '"state":"live"'; do \
+	    curl -s $(BEARER) localhost:$${GATEWAY_PORT:-8080}/status; echo; sleep 5; done
 	@$(MAKE) verify-no-gaps
 	@echo "== 7. the numbers"
 	$(MAKE) m1-report
@@ -260,7 +287,7 @@ export ASK
 ask:
 	@port=$${AGENT_PORT:-8001}; \
 	 body=$$(curl -sfN --retry 10 --retry-delay 3 --retry-connrefused --retry-all-errors \
-	   -X POST "localhost:$$port/ask" -H 'Content-Type: application/json' \
+	   -X POST "localhost:$$port/ask" $(BEARER) -H 'Content-Type: application/json' \
 	   --data-binary "$$(python3 -c 'import json,os; print(json.dumps({"question": os.environ["ASK"]}))')") \
 	 || { echo "the agent did not answer on localhost:$$port"; exit 1; }; \
 	 printf '%s' "$$body" | sed -n 's/^data: //p' | tail -1 \
@@ -270,7 +297,7 @@ ask:
 # §1's second and third proofs both end here: is what is stored still everything the plant
 # produced. Exits non-zero on a hole, so it can be a demo step rather than a thing to read.
 verify-no-gaps:
-	@curl -sf "localhost:$${GATEWAY_PORT:-8080}/reconcile" \
+	@curl -sf $(BEARER) "localhost:$${GATEWAY_PORT:-8080}/reconcile" \
 	  | python3 -c 'import json,sys; r = json.load(sys.stdin); \
 	      print(json.dumps(r, indent=2)); \
 	      sys.exit(0 if r["reconciled"] else "RECONCILIATION FAILED")' \
@@ -315,7 +342,7 @@ backfill-counts:
 	 [ -n "$$from" ] && [ "$$from" != "$$to" ] \
 	   || { echo "backfill_windows is empty: nothing has been backfilled yet"; exit 1; }; \
 	 echo "   window $$from .. $$to"; \
-	 curl -sf "localhost:$${GATEWAY_PORT:-8080}/reconcile?from=$$from&to=$$to" \
+	 curl -sf $(BEARER) "localhost:$${GATEWAY_PORT:-8080}/reconcile?from=$$from&to=$$to" \
 	   | python3 -c 'import json,sys; r = json.load(sys.stdin); \
 	       rows = sorted(r["streams"], key=lambda s: s["stream"]); \
 	       [print("   {stream:24} read={rowsReturned:7} stored={rowsStored:7} lost={lost}".format(**s)) for s in rows]; \
@@ -388,9 +415,9 @@ m2c-demo: preflight
 	@echo "   with source=operator and no consequences: nobody wrote down what should follow"
 	@echo "   from a fault chosen at a keyboard."
 	@echo "== 4. diagnostics: topology, subscriptions, backfill, live"
-	docker compose -f diagnostics/compose.yml up -d --build
-	@until curl -sf localhost:$${GATEWAY_PORT:-8080}/status | grep -q '"state":"live"'; do \
-	    curl -s localhost:$${GATEWAY_PORT:-8080}/status; echo; sleep 5; done
+	$(DEV_PUBLIC_KEY) docker compose -f diagnostics/compose.yml up -d --build
+	@until curl -sf $(BEARER) localhost:$${GATEWAY_PORT:-8080}/status | grep -q '"state":"live"'; do \
+	    curl -s $(BEARER) localhost:$${GATEWAY_PORT:-8080}/status; echo; sleep 5; done
 	@echo "== 5. the consequences, out of §5.2's tables and nowhere else"
 	@echo "-- alarms: what S2 raised, when, and when it was cleared"
 	@docker compose -f diagnostics/compose.yml exec -T postgres psql -U postgres -d diagnostics \
@@ -429,7 +456,7 @@ m2c-demo: preflight
 	 [ -n "$$from" ] && [ "$$from" != "$$to" ] \
 	   || { echo "   inspection_results is empty: nothing has been ingested yet"; exit 1; }; \
 	 echo "   window $$from .. $$to"; \
-	 body=$$(curl -sf --get --data-urlencode "from=$$from" --data-urlencode "to=$$to" \
+	 body=$$(curl -sf $(BEARER) --get --data-urlencode "from=$$from" --data-urlencode "to=$$to" \
 	   "localhost:$${ANALYSIS_PORT:-8000}/inspection/stats") \
 	   || { echo "   /inspection/stats did not answer over that window"; exit 1; }; \
 	 printf '%s' "$$body" | python3 -m json.tool
@@ -486,9 +513,9 @@ m2a-demo: preflight
 	@echo "== 3. a foreign client browses the address space, buffers and all"
 	$(MAKE) browse
 	@echo "== 4. diagnostics: discover the topology, subscribe to 25 streams, backfill, go live"
-	docker compose -f diagnostics/compose.yml up -d --build
-	@until curl -sf localhost:$${GATEWAY_PORT:-8080}/status | grep -q '"state":"live"'; do \
-	    curl -s localhost:$${GATEWAY_PORT:-8080}/status; echo; sleep 5; done
+	$(DEV_PUBLIC_KEY) docker compose -f diagnostics/compose.yml up -d --build
+	@until curl -sf $(BEARER) localhost:$${GATEWAY_PORT:-8080}/status | grep -q '"state":"live"'; do \
+	    curl -s $(BEARER) localhost:$${GATEWAY_PORT:-8080}/status; echo; sleep 5; done
 	@echo "== 5a. the one thing this stack can check about its own storage"
 	@$(MAKE) verify-no-gaps
 	@echo "   ^ read this precisely. Reconciled means no recorded gap and no stream whose"
