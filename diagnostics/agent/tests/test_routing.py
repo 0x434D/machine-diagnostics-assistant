@@ -10,8 +10,14 @@ import re
 from pathlib import Path
 
 import pytest
-from agent.routing import DEFAULT_BUDGET, RetrievalBudget, route, specificity
-from knowledge.documents import Facets, KnowledgeError, load
+from agent.routing import (
+    DEFAULT_BUDGET,
+    RetrievalBudget,
+    procedures,
+    route,
+    specificity,
+)
+from knowledge.documents import QUESTION_TYPES, Facets, KnowledgeError, load
 
 KNOWLEDGE = Path(__file__).resolve().parents[3] / "knowledge"
 ROUTING_SOURCE = Path(__file__).resolve().parents[1] / "src" / "agent" / "routing.py"
@@ -260,11 +266,12 @@ def test_truncation_keeps_the_most_specific() -> None:
 def test_the_character_budget_also_truncates() -> None:
     loaded = load(KNOWLEDGE)
     asked = Facets(question_types=frozenset({"quality_investigation"}))
+    budget = RetrievalBudget(documents=100, characters=8_000)
 
-    selection = route(loaded, asked, RetrievalBudget(documents=100, characters=3_000))
+    selection = route(loaded, asked, budget)
 
     retrieved = [d for d in selection.documents if not d.always_load]
-    assert sum(d.size for d in retrieved) <= 3_000
+    assert sum(d.size for d in retrieved) <= budget.characters
     assert selection.dropped
 
 
@@ -281,3 +288,122 @@ def test_the_budget_is_configuration_not_a_literal_in_the_walk() -> None:
 def test_routing_refuses_a_facet_value_outside_the_vocabulary() -> None:
     with pytest.raises(KnowledgeError):
         Facets(question_types=frozenset({"stop_investigations"}))
+
+
+# --- the procedure for the question's own type, reserved ---
+
+
+def test_the_procedure_for_the_question_type_survives_a_budget_the_detail_would_fill() -> (
+    None
+):
+    """The failure §6.2 names, one level below `always_load`.
+
+    Measured before the reservation existed: for this question the procedure ranked
+    seventh on specificity, behind three alarm documents, a workcell document and two
+    pattern documents. At a budget of three it was the first thing lost — and a stop
+    investigation answered without the stop procedure is an improvisation that sounds
+    exactly as confident as the real thing.
+    """
+    loaded = load(KNOWLEDGE)
+    asked = Facets(
+        question_types=frozenset({"stop_investigation"}),
+        stations=frozenset({"S2"}),
+        alarm_codes=frozenset({"A-207"}),
+    )
+
+    ranked_only = [
+        document.id
+        for document in loaded.documents
+        if not document.always_load
+        and specificity(document.applies_to, asked)
+        > specificity(loaded.by_id["SOP-01"].applies_to, asked)
+    ]
+    assert len(ranked_only) >= 3, "the premise of this test no longer holds"
+
+    selection = route(loaded, asked, RetrievalBudget(documents=3, characters=24_000))
+
+    assert "SOP-01" in selection.ids
+    assert "SOP-01" in {document.id for document in selection.reserved}
+
+
+def test_the_procedure_survives_a_budget_of_one_document() -> None:
+    loaded = load(KNOWLEDGE)
+
+    selection = route(
+        loaded,
+        Facets(question_types=frozenset({"traceability"})),
+        RetrievalBudget(documents=1, characters=1),
+    )
+
+    assert "SOP-04" in selection.ids
+
+
+def test_every_investigation_type_gets_its_procedure_at_the_tightest_budget() -> None:
+    """One per investigation type, and none of the seven left without one."""
+    loaded = load(KNOWLEDGE)
+    tightest = RetrievalBudget(documents=1, characters=1)
+
+    for question_type in sorted(QUESTION_TYPES - {"knowledge"}):
+        selection = route(
+            loaded, Facets(question_types=frozenset({question_type})), tightest
+        )
+        assert selection.reserved, question_type
+
+
+def test_a_direct_knowledge_question_reserves_nothing_and_still_gets_the_method() -> (
+    None
+):
+    """The one type §6.2 answers by free-text search rather than by a procedure.
+
+    There is no document written for "what does this word mean", and reserving a slot for
+    one that does not exist would be a silent no-op. What must still hold is the level
+    above: the method arrives regardless.
+    """
+    loaded = load(KNOWLEDGE)
+
+    selection = route(
+        loaded,
+        Facets(question_types=frozenset({"knowledge"})),
+        RetrievalBudget(documents=1, characters=1),
+    )
+
+    assert selection.reserved == ()
+    assert {"CORE-01", "CORE-02"} <= set(selection.ids)
+
+
+def test_the_reservation_comes_from_the_front_matter_and_not_from_a_list() -> None:
+    """A document that declares a question type *and* something else is not a procedure."""
+    loaded = load(KNOWLEDGE)
+
+    reserved = procedures(
+        loaded, Facets(question_types=frozenset({"stop_investigation"}))
+    )
+
+    assert [document.id for document in reserved] == ["SOP-01"]
+    for document in reserved:
+        assert document.applies_to.declares_only_question_types
+
+
+def test_the_reserved_procedure_is_placed_after_the_method_and_before_the_detail() -> (
+    None
+):
+    loaded = load(KNOWLEDGE)
+
+    selection = route(loaded, Facets(question_types=frozenset({"status"})))
+
+    assert selection.ids[:3] == ("CORE-01", "CORE-02", "SOP-03")
+
+
+def test_the_reservation_consumes_the_budget_rather_than_adding_to_it() -> None:
+    """Reserved, not free: it takes a slot, so the ranked remainder gets one fewer."""
+    loaded = load(KNOWLEDGE)
+    asked = Facets(
+        question_types=frozenset({"quality_investigation"}),
+        defect_classes=frozenset({"misalignment"}),
+    )
+
+    selection = route(loaded, asked, RetrievalBudget(documents=5, characters=100_000))
+
+    retrieved = [d for d in selection.documents if not d.always_load]
+    assert len(retrieved) == 5
+    assert len(selection.reserved) == 1

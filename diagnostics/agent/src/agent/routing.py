@@ -7,15 +7,22 @@ Taken literally: nothing in this module names a document, a directory or a filen
 is the five front-matter keys, which live in `knowledge.documents` because they are also
 what a document is validated against.
 
-Three things happen, in this order, and the order is the design:
+Four things happen, in this order, and the order is the design:
 
 1. **Everything flagged `always_load` is in, unconditionally and first.** It is not scored,
-   not ranked and not subject to the budget. §6.2: *"the method never arrives through
+   not ranked and not evicted by the budget. §6.2: *"the method never arrives through
    search — a failed retrieval must not silently become a failed method."* A budget that
    could evict the method would be that same failure with a number in front of it.
-2. **What is left is scored by specificity** — see `specificity` for the definition and
+2. **The procedure for the question's own type is reserved a place**, on the same reasoning
+   one level down. `always_load` protects *how to work in general*; it does not protect the
+   procedure for **this** kind of question, and under budget pressure a ranking by
+   specificity keeps the supporting detail and drops the method — measured, before this
+   existed: for a stop question naming a workcell and an alarm code, the procedure ranked
+   seventh of eight and would have been the first thing lost. Which document that is comes
+   from the front-matter and not from here: see `procedures`.
+3. **What is left is scored by specificity** — see `specificity` for the definition and
    why it is that one.
-3. **The ranked remainder is truncated to the budget**, and what did not fit is returned
+4. **The ranked remainder is truncated to the budget**, and what did not fit is returned
    rather than dropped. §6.2 calls the budget a correctness measure and not an economy,
    because context dilution degrades these systems; a truncation nobody can see is a
    retrieval miss with extra steps.
@@ -34,12 +41,13 @@ class RetrievalBudget:
 
     Both defaults are read against the tree as it stands — a retrieved document averages
     just under 2.5 kB, so eight of them is a little under 20 kB, and the character cap
-    binds first only when the selection runs long on the larger prose. `Settings` carries
-    the dial, defaulted off this class for the same reason `analysis.config` reads its
-    numbers off the modules that define them: one number, and an environment variable that
-    moves it, rather than two that agree today.
+    binds first only when the selection runs long on the larger prose. The dial belongs in
+    `Settings` beside the tool budget; it is defaulted here for the same reason
+    `analysis.config` reads its numbers off the modules that define them, so that there is
+    one number and an environment variable that moves it rather than two that agree today.
 
-    Neither cap applies to `always_load`.
+    Neither cap applies to `always_load`. Reserved documents *consume* the budget — they
+    take a slot and their size counts — but are never evicted by it.
     """
 
     documents: int = 8
@@ -51,9 +59,15 @@ DEFAULT_BUDGET = RetrievalBudget()
 
 @dataclass(frozen=True)
 class Selection:
-    """What routing chose, and what it had to leave out."""
+    """What routing chose, and what it had to leave out.
+
+    `reserved` is called out separately because §6.5 checks a cited procedure against what
+    routing actually loaded, and "was it loaded" and "was it guaranteed" are different
+    questions about the same answer.
+    """
 
     documents: tuple[Document, ...]
+    reserved: tuple[Document, ...] = ()
     dropped: tuple[Document, ...] = ()
 
     @property
@@ -76,29 +90,61 @@ def route(
     stage 1, and whatever else it names. A question that declares nothing still gets the
     `always_load` documents, which is the whole point of the flag.
     """
+    reserved = procedures(index, asked)
+    reserved_ids = {document.id for document in reserved}
+
     ranked = sorted(
         (
             (specificity(document.applies_to, asked), document)
             for document in index.documents
-            if not document.always_load
+            if not document.always_load and document.id not in reserved_ids
         ),
         key=lambda scored: (-scored[0], scored[1].id),
     )
     matched = [document for score, document in ranked if score > 0]
 
+    room = budget.documents - len(reserved)
+    characters = budget.characters - sum(document.size for document in reserved)
+
     kept: list[Document] = []
     size = 0
     cut = len(matched)
     for position, document in enumerate(matched):
-        if len(kept) >= budget.documents or size + document.size > budget.characters:
+        if len(kept) >= room or size + document.size > characters:
             cut = position
             break
         kept.append(document)
         size += document.size
 
     return Selection(
-        documents=(*index.always_load, *kept),
+        documents=(*index.always_load, *reserved, *kept),
+        reserved=reserved,
         dropped=tuple(matched[cut:]),
+    )
+
+
+def procedures(index: KnowledgeIndex, asked: Facets) -> tuple[Document, ...]:
+    """The documents that declare themselves the procedure for this question's type.
+
+    Read off the front-matter, not decided here: a document that names a question type and
+    makes **no** claim about any workcell, defect class, dimension or alarm code is saying
+    it is about the *kind* of question rather than about anything the question mentions.
+    §6.2 sizes that directory as "one per investigation type", and the test suite asserts
+    that this reading picks out those documents and only those — which is a property of the
+    tree and is checked there rather than assumed here.
+
+    The alternative, weighting the question-type key above the others, was refused: a
+    per-key constant in this file deciding which documents win is a routing table with the
+    serial numbers filed off. A reservation is a different claim — that a question of a
+    given kind always gets the document written for that kind, the way `always_load`
+    always arrives — and it is one the documents make about themselves.
+    """
+    return tuple(
+        document
+        for document in index.documents
+        if not document.always_load
+        and document.applies_to.declares_only_question_types
+        and document.applies_to.question_types & asked.question_types
     )
 
 
