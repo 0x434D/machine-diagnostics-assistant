@@ -5,21 +5,26 @@
  */
 import { useEffect, useState } from "react";
 
-import { fetchPart, imageUrl, type Part } from "./api";
+import { describeFailure, fetchPart, imageUrl, type Part } from "./api";
+import { useAuth } from "./AuthContext";
 
 export function EvidencePanel({ serial }: { serial: string }) {
+  const { token } = useAuth();
   const [part, setPart] = useState<Part | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let current = true;
-    fetchPart(serial)
+    fetchPart(serial, token)
       .then((loaded) => current && setPart(loaded))
-      .catch((reason: unknown) => current && setError(String(reason)));
+      .catch((reason: unknown) => current && setError(describeFailure(reason)));
     return () => {
       current = false;
     };
-  }, [serial]);
+    // Re-fetches on a token change too: a panel opened before signing in shows its 401
+    // rather than nothing (below), and pasting a token afterwards should not require
+    // closing and reopening the chip to see the row it was always pointing at.
+  }, [serial, token]);
 
   if (error !== null) {
     return (

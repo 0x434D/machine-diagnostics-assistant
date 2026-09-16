@@ -7,13 +7,15 @@
  */
 import { useState, type ReactNode } from "react";
 
-import { ask, type Answer } from "./api";
+import { ask, describeFailure, type Answer } from "./api";
+import { useAuth } from "./AuthContext";
 import { CitationChip } from "./CitationChip";
 
 const EXAMPLE =
   "How many parts were rejected in the last hour, and what were the defects?";
 
 export function Chat() {
+  const { token } = useAuth();
   const [question, setQuestion] = useState(EXAMPLE);
   const [progress, setProgress] = useState<string[]>([]);
   const [answer, setAnswer] = useState<Answer | null>(null);
@@ -25,15 +27,25 @@ export function Chat() {
     setProgress([]);
     setAnswer(null);
     setError(null);
+
+    if (token === null) {
+      // §10.5: every diagnostics endpoint refuses an unauthenticated request, so sending
+      // one here is a round trip whose 401 is already known. Saying so up front is also
+      // what keeps a missing token from reading like the 401 case below -- both are "not
+      // signed in", but only one of them is worth a network call.
+      setError("Not signed in. Paste a token above before asking.");
+      return;
+    }
+
     setAsking(true);
     try {
       setAnswer(
-        await ask(question, (line) => setProgress((s) => [...s, line])),
+        await ask(question, token, (line) => setProgress((s) => [...s, line])),
       );
     } catch (reason: unknown) {
       // Shown, not logged. An answer box that silently stays empty is the quiet wrong
       // answer this system exists not to give.
-      setError(String(reason));
+      setError(describeFailure(reason));
     } finally {
       setAsking(false);
     }
