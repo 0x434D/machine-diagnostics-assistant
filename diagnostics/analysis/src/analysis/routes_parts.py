@@ -12,12 +12,12 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Response
 from psycopg import Connection
 
+from analysis import queries_traceability
 from analysis.config import Settings
 from analysis.db import connection
 from analysis.dependencies import settings_dependency
 from analysis.models import (
     ComponentOrigin,
-    Disposition,
     Inspection,
     Part,
     ProcessCurve,
@@ -71,7 +71,7 @@ def get_part(
             process_values=_process_values(conn, serial),
             process_curves=_process_curves(conn, serial),
             inspection=inspection,
-            disposition=_disposition(conn, serial),
+            disposition=queries_traceability.part_disposition(conn, serial),
         )
 
 
@@ -86,7 +86,8 @@ def _assembly(
     """
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT created_at, carrier_id FROM assemblies WHERE serial = %s", (serial,)
+            "SELECT created_at, carrier_id FROM read.assemblies WHERE serial = %s",
+            (serial,),
         )
         row = cur.fetchone()
     return None if row is None else (row[0], row[1])
@@ -103,9 +104,9 @@ def _genealogy(conn: Connection, serial: str) -> list[ComponentOrigin]:
         cur.execute(
             "SELECT g.component_serial, g.position, c.lane, c.read_at, "
             "       l.lot_code, l.supplier "
-            "FROM genealogy g "
-            "JOIN components c ON c.serial = g.component_serial "
-            "LEFT JOIN component_lots l ON l.id = c.lot_id "
+            "FROM read.genealogy g "
+            "JOIN read.components c ON c.serial = g.component_serial "
+            "LEFT JOIN read.component_lots l ON l.id = c.lot_id "
             "WHERE g.assembly_serial = %s "
             "ORDER BY g.position",
             (serial,),
@@ -127,8 +128,8 @@ def _process_values(conn: Connection, serial: str) -> list[ProcessValue]:
     with conn.cursor() as cur:
         cur.execute(
             "SELECT s.code, v.signal, v.value "
-            "FROM part_process_values v "
-            "JOIN stations s ON s.id = v.station_id "
+            "FROM read.part_process_values v "
+            "JOIN read.stations s ON s.id = v.station_id "
             "WHERE v.assembly_serial = %s "
             "ORDER BY s.code, v.signal",
             (serial,),
@@ -143,8 +144,8 @@ def _process_curves(conn: Connection, serial: str) -> list[ProcessCurve]:
     with conn.cursor() as cur:
         cur.execute(
             "SELECT s.code, c.signal, c.samples "
-            "FROM part_process_curves c "
-            "JOIN stations s ON s.id = c.station_id "
+            "FROM read.part_process_curves c "
+            "JOIN read.stations s ON s.id = c.station_id "
             "WHERE c.assembly_serial = %s "
             "ORDER BY s.code, c.signal",
             (serial,),
@@ -160,9 +161,9 @@ def _inspection(conn: Connection, serial: str) -> Inspection | None:
         cur.execute(
             "SELECT r.source_ts, s.code, r.result, r.defect_classes, r.confidences, "
             "       r.confidence, r.model_version, i.assembly_serial IS NOT NULL "
-            "FROM inspection_results r "
-            "JOIN stations s ON s.id = r.station_id "
-            "LEFT JOIN inspection_images i USING (assembly_serial) "
+            "FROM read.inspection_results r "
+            "JOIN read.stations s ON s.id = r.station_id "
+            "LEFT JOIN read.inspection_images i USING (assembly_serial) "
             "WHERE r.assembly_serial = %s",
             (serial,),
         )
@@ -183,21 +184,6 @@ def _inspection(conn: Connection, serial: str) -> Inspection | None:
     )
 
 
-def _disposition(conn: Connection, serial: str) -> Disposition | None:
-    with conn.cursor() as cur:
-        cur.execute(
-            "SELECT at, disposition, reason FROM part_dispositions "
-            "WHERE assembly_serial = %s",
-            (serial,),
-        )
-        row = cur.fetchone()
-
-    if row is None:
-        return None
-
-    return Disposition(at=row[0], disposition=row[1], reason=row[2])
-
-
 @router.get(
     "/parts/{serial}/image",
     operation_id="getPartImage",
@@ -211,7 +197,8 @@ def get_part_image(
     """Rejects only. A good part has no image and that is not a missing value (§3.4)."""
     with connection(settings) as conn, conn.cursor() as cur:
         cur.execute(
-            "SELECT bytes FROM inspection_images WHERE assembly_serial = %s", (serial,)
+            "SELECT bytes FROM read.inspection_images WHERE assembly_serial = %s",
+            (serial,),
         )
         row = cur.fetchone()
 
