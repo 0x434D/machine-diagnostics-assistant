@@ -7,15 +7,21 @@ proof and a passing one look identical from a green pipeline.
 
 Each proof below says where it runs, or which milestone it waits on and why.
 
-**Five of the nine are proved after M3, and four are not.** 1.1 to 1.4 were M1's; **M3 closes
-1.5**, the analysis, and closes nothing else. What remains: **1.6** (the agent does not invent)
-and **1.7** (the tool layer answers two callers alike) wait on **M4**, which is where a model
-and an MCP server first exist; **1.8** (identity) waits on **M5**, because there is no identity
-layer to prove anything about; **1.9** (traceability returns *exactly* the affected serials)
-waits on **M7**, because it is a scored answer and M7 is the harness that scores. M3 wrote
-1.9's query and that is all it could do — the comparison is against ground truth, which never
-reaches this stack. The one non-§1 row, `read_rows == pg_rows`, waits on a runner outside both
-stacks and is argued at the bottom of this file.
+**Seven of the nine are proved after M4, and two are not — and one of the seven is proved in
+half.** 1.1 to 1.4 were M1's; M3 closed **1.5**, the analysis. **M4 closes 1.7** outright and
+**1.6 only as far as anything without an API key can**: the mechanism that stops an invention
+reaching the reader is proved, and whether a *model* resists inventing is not, because
+everything M4 built runs against `ScriptedProvider`. That split is written out in full below
+and is the honest boundary of this milestone — read past it and this file starts claiming
+something §1 does not have. What remains: **1.8** (identity) waits on **M5**, because there is
+no identity layer to prove anything about — every diagnostics endpoint still answers
+unauthenticated requests, and what M5 has to supply is an identity on the request and a proof
+that an unauthenticated one is refused; **1.9** (traceability returns *exactly* the affected
+serials) waits on **M7**, because "exactly" is a score against ground truth — M2b proved the
+genealogy resolves and M3 wrote the query, and what is missing is the harness that compares
+the returned set against what the plant recorded, outside both stacks, since ground truth
+never reaches this one. The one non-§1 row, `read_rows == pg_rows`, waits on a runner outside
+both stacks and is argued at the bottom of this file.
 
 ## Provable today
 
@@ -323,14 +329,120 @@ one file moved to where its cost says it belongs. §8.4's argument is the whole 
 matter most … it is the suite most easily forgotten."* A proof that runs only when somebody
 deliberately looks is one nobody sees fail, which is the definition of forgotten.
 
+### M4 closes §1.7, and §1.6 as far as a milestone with no API key can
+
+| Claim | Proof | Runs as |
+|---|---|---|
+| §1.6 — the agent says *"I have no data for that window"* rather than inventing: an empty window yields no `measured` finding, a hypothesis with no evidence strength cannot ship, a citation Postgres cannot open is stripped after §6.5's one retry, a contradiction with no reasoning is refused, and an ingest gap is named beside the count | `diagnostics/agent/tests/test_authenticity.py` | `make verify` |
+| §1.7 — one question over both bindings agrees; one analysis query answers alike over MCP and REST; and an external client following the SOP it read by URI reaches the figures the pipeline stated | `diagnostics/mcp/tests/test_authenticity.py` | `make verify` |
+
+Both start a Postgres container, apply the gateway's own migrations, and serve the real
+services over loopback sockets — the analysis service as the `analysis` role over `read.*`,
+the agent over `POST /ask`, the MCP server over Streamable HTTP at the revision §6.11 pins.
+Nothing below either is a fake, and that is also why they are behind `make verify` rather than
+in the gate. The rule this file has applied since M2a is cost, not category: the propagation,
+traceability, consequence and analysis proofs are all in `make check` because they run in
+seconds against a container the gate already starts, and §1's own four are held back because
+they stop and restart containers. These two start one of their own, so they belong with the
+second group.
+
+Measured on the run that closed these rows: `make authenticity` green end to end, **16 proofs
+over four packages** — plant 4, analysis 4 (6 min 12 s, the container stops and restarts),
+agent 5 (3.4 s), MCP 3 (5.0 s). The two new files are seconds of assertions behind a container
+that takes most of a minute to start, which is the whole of why they are not in the gate.
+
+**`make verify` runs four packages now, and ran two before.** `agent/pyproject.toml` and
+`mcp/pyproject.toml` have registered the `authenticity` marker since the tasks that created
+them — declared, excluded from `addopts`, and run by nothing, which from a distance is
+indistinguishable from wiring. The two lines in the `verify` target are what M4 adds, and they
+could not have been added earlier: `pytest-marked` treats an empty selection as a failure,
+deliberately, so the wiring is only safe once the proofs exist.
+
+#### What §1.6 does **not** establish
+
+**Whether a model resists inventing when the data is thin.** There is no API key in this
+environment. Every one of the proofs above runs against `ScriptedProvider`, which is keyword
+matching wearing the interface of a model and says so in every answer it produces. A scripted
+provider cannot be asked whether a model would resist inventing; it can only be asked whether
+the guards hold when something invents on purpose — which is what these proofs ask, by
+injecting the invention themselves.
+
+So the claim M4 closes is: **a fabricated answer cannot reach the reader.** The claim it does
+not close is: **a model, handed thin data, does not fabricate.** The mechanism is proven; the
+judgement is not. §8.1's case classes are where the second one is scored, by a harness that
+can read the figures, against a provider that is a model — M7 for the harness, and a key for
+the model.
+
+*The pipeline, stage by stage, against the scripted provider:*
+
+| §6.1 stage | What a pass proves |
+|---|---|
+| 2 window · 3 coverage · 4 routing · 6 verification · 6.5 composition | **proven without a model.** Code decides all of it; the provider has no say and cannot change the outcome |
+| 1 classification · 5 tool choice | **mechanism proven, judgement unproven.** That an unclassifiable question falls back with a caveat, that every operation is reachable, that a tool error returns to the model — yes. That a *model* would read this sentence as `quality_investigation`, or reach for `inspection_patterns` here — no test in this project can say |
+
+That table is the pipeline author's own and the reviewer confirmed it; it is carried here
+verbatim rather than restated, because the boundary is the point. `agent/tests/test_pipeline.py`
+carries it too, beside the tests it describes.
+
+**Every guarantee here is of the form *a badly formed answer cannot ship*. None is of the form
+*a badly formed answer is not produced*.**
+
+#### What was falsified, against what
+
+Each break below was applied to the shipped code and the proof it targets re-run.
+
+| Break | Proof that failed |
+|---|---|
+| the coverage guard removed — stage 3 no longer short-circuits on an empty window | 1.6's empty window (the answer no longer opens *"I have no data for that window"*; the scripted provider's own `total == 0` branch still refused to count, which is the second line and not the one §1.6 names) |
+| `validate_basis` returns without checking `evidence_strength` | 1.6's hypothesis (`DID NOT RAISE`) |
+| `citations.keep` returns every finding unverified | 1.6's citation (the invented serial's claim shipped, and the composer summarised it) |
+| `Contradiction._check_reasoning` returns `self` | 1.6's contradiction (`DID NOT RAISE`) |
+| the ingest-gap caveat dropped from stage 3 | 1.6's gap |
+| `diagnose` returns a summary instead of the answer object | 1.7's agreement |
+| the MCP tool binding drops the window's `to` parameter | 1.7's query parity **and** 1.7's SOP walk |
+| `core/` excluded from the resource listing | 1.7's SOP walk (CORE-01 and CORE-02 unreachable — the two documents §6.2 never leaves to retrieval) |
+
+The seventh row is the one that shows the three §1.7 proofs are not one proof written out
+three times: a binding that loses a query parameter changes what an external client gets and
+changes nothing about whether `diagnose` and `POST /ask` agree.
+
+#### §1.7, stated at its real strength
+
+*"Drive the same question two ways and assert the answers agree"* is the weakest of the three
+and is written down as such. `diagnose` calls the agent's own `POST /ask` — deliberately, and
+`mcp_server/diagnose.py` argues why: there must be exactly one agent, with one configuration
+and one audit trail. So the two callers reach one pipeline in one process, and **agreement is
+close to guaranteed by construction.** It is not evidence that two implementations converged,
+because there is only one.
+
+What it does establish is that the binding hands the answer object over **unchanged** — every
+finding, every citation, every caveat, the method and the provider that produced it — rather
+than helpfully summarising it into a tool result, which is the one thing §6.3 exists to
+prevent and the easiest thing for a wrapper to break. Put beside `mcp/tests/test_parity.py`,
+which holds the served MCP tool list against the live OpenAPI operation set in **both**
+directions, that is the real content of the claim: one surface, two bindings, one answer.
+
+The other two proofs are not guaranteed by construction. An MCP `tools/call` and a REST `GET`
+share nothing below the transport, so a binding that dropped an argument or lost a field fails
+the second. And the third is §6.11's own sentence carried out rather than asserted: the client
+reads the procedure the answer says it followed — by URI, discovered from the resource
+listing rather than spelled here — carries out SOP-05's first two steps with the tools the
+server advertises, and finds that every number the pipeline put in front of a reader is a
+number it obtained for itself. That is SOP-05's own failure condition (*"a number in the prose
+that does not appear in any tool result"*) checked from outside, by a client that was given a
+document and a tool list and nothing else.
+
+**What §1.7 does not establish**, in the same words as above: that a *model* driving this
+binding would follow the procedure it read, or choose those tools. The binding is proven; the
+judgement of whatever binds to it is not.
+
 ## Not provable yet
 
-| § | Link | Waits on | Why not yet |
+| § | Link | Waits on | Why not yet, and what it needs |
 |---|---|---|---|
-| 1.6 | Agent | M4 | the claim is behavioural — the agent says "I have no data for that window" rather than inventing. M1 tests the empty-window *response*, which is the endpoint's contract, not the agent's judgement. The scripted provider cannot be asked whether a model would resist inventing |
-| 1.7 | Tool layer | M4 | there is no MCP server. "The same tools, the same results" needs two callers to compare |
-| 1.8 | Identity | M5 | there is no identity layer, so every diagnostics endpoint answers unauthenticated requests. The README says so in those words, and that is the whole of the current posture |
-| 1.9 | Traceability | M7 | **the genealogy it was waiting on exists.** M2b creates the serials, the supplier lots and the as-built links, and proves above that a serial resolves to its whole history without inference — which is the half §3.4a is about. What is left is the *scoring*: "returns exactly the affected serials" is an answer compared against ground truth, and M7 is the harness that compares. M3 is what writes the query |
+| 1.8 | Identity | M5 | there is no identity layer, so every diagnostics endpoint answers unauthenticated requests. The README says so in those words, and that is the whole of the current posture. What closes it: an identity on the request, `sessions.subject` carrying the OIDC `sub` it is already typed for, and a proof that an unauthenticated request is **refused** — the half a login screen does not give |
+| 1.9 | Traceability | M7 | **the genealogy and the query both exist.** M2b creates the serials, the supplier lots and the as-built links and proves above that a serial resolves to its whole history without inference; M3 writes the containment query. What is left is the word *exactly*: no miss and no false inclusion is a **score** against what the plant recorded, and ground truth never reaches this stack. What closes it: M7's harness, running outside both stacks, comparing the returned set against the scenario's own ledger |
+| 1.6's behavioural half | Agent | M7, and an API key | the mechanism is proved above and the judgement is not. §8.1's case classes are the scoring, and a provider that is a model is the thing being scored. Listed here rather than left out, because "1.6 is closed" would otherwise read as more than it is |
 | — | `read_rows == pg_rows` at 25 streams | a working `measurements/run_r1_r2.py` | it is a three-way comparison — the plant's ledger, what the backfill read, what Postgres stores — and only the runner outside both stacks can make it. See below |
 
 **Ground truth never reaches the diagnostics stack**, so every proof in this column is

@@ -39,6 +39,7 @@ mcp-server = "mcp_server.server:main"
 [tool.uv.sources]
 knowledge = { workspace = true }
 analysis = { workspace = true }
+agent = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -55,6 +56,16 @@ dev = [
     # rule in diagnostics/pyproject.toml holds where it matters -- at runtime and in the
     # image.
     "analysis",
+    # The same, for the agent, and for the same one reason: tests/test_authenticity.py
+    # answers §1.7 by driving one question over both bindings, and "the same results" is a
+    # claim about one agent answering twice. A faked agent behind `diagnose` would make the
+    # two sides agree by construction of the fake rather than by construction of the system.
+    "agent",
+    # Real Postgres under that agent, because the pipeline it runs verifies every citation
+    # against the database before it answers. Not a new dependency of this project: the same
+    # pin, from the same lock, that `analysis` and `agent` already carry in their own dev
+    # groups.
+    "testcontainers[postgres]==4.13.2",
 ]
 
 [build-system]

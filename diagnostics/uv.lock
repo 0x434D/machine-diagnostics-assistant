@@ -33,6 +33,7 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "analysis" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "testcontainers" },
@@ -52,6 +53,7 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "analysis", editable = "analysis" },
     { name = "pytest", specifier = "==9.1.1" },
     { name = "pytest-asyncio", specifier = "==1.4.0" },
     { name = "testcontainers", extras = ["postgres"], specifier = "==4.13.2" },
@@ -672,9 +674,11 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "agent" },
     { name = "analysis" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
+    { name = "testcontainers" },
     { name = "types-pyyaml" },
 ]
 
@@ -689,9 +693,11 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "agent", editable = "agent" },
     { name = "analysis", editable = "analysis" },
     { name = "pytest", specifier = "==9.1.1" },
     { name = "pytest-asyncio", specifier = "==1.4.0" },
+    { name = "testcontainers", extras = ["postgres"], specifier = "==4.13.2" },
     { name = "types-pyyaml", specifier = "==6.0.12.20260906" },
 ]
 

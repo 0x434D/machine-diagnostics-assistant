@@ -80,8 +80,11 @@ endef
 # "At least one", not an expected count. The count lives in the test files; a copy of it here
 # would have to be edited by whoever adds the fifth proof, and it catches nothing the empty
 # selection does not already catch.
+#
+# $(4) is the uv package name when it differs from the directory, exactly as $(3) is in
+# pytest-package above — and for the one case that needs it, diagnostics/mcp/.
 define pytest-marked
-	cd $(1) && uv run --frozen --package $(2) pytest $(2)/tests -q -m $(3)
+	cd $(1) && uv run --frozen --package $(if $(4),$(4),$(2)) pytest $(2)/tests -q -m $(3)
 endef
 
 define in-gateway
@@ -582,9 +585,17 @@ check: lint test
 
 # Separate from `check` on purpose: the authenticity proofs stop and restart containers, and a
 # gate slow enough to skip is not a gate. Task 15 registers the `authenticity` marker.
+#
+# Four packages, and the last two arrived a milestone after their marker did. M4 registered
+# `authenticity` in agent/pyproject.toml and mcp/pyproject.toml, which reads from a distance
+# exactly like a wired one — a marker that is declared, excluded from `addopts`, and run by
+# nothing. §1.6 and §1.7 are the proofs those two lines now run, and they are the first
+# proofs in this project that answer for the agent rather than for the pipe beneath it.
 verify:
 	$(call pytest-marked,plant,simulator,authenticity)
 	$(call pytest-marked,diagnostics,analysis,authenticity)
+	$(call pytest-marked,diagnostics,agent,authenticity)
+	$(call pytest-marked,diagnostics,mcp,authenticity,mcp-server)
 
 # `make verify` plus the plant it needs, brought up and taken down again.
 #

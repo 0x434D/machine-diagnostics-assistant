@@ -22,6 +22,7 @@ dependencies = [
 
 [tool.uv.sources]
 knowledge = { workspace = true }
+analysis = { workspace = true }
 
 [dependency-groups]
 dev = [
@@ -30,6 +31,18 @@ dev = [
     # Real Postgres, for the same reason the analysis package runs one: a grant boundary
     # asserted against a fake is a statement about the fake.
     "testcontainers[postgres]==4.13.2",
+    # Test scope only, and for one file: tests/test_authenticity.py answers §1.6 against the
+    # analysis service that actually serves the endpoints, over a socket, against the
+    # database. Every other test in this package runs against tests/fakes.py, which is right
+    # for them -- they ask what the pipeline does when the data says a particular thing -- and
+    # wrong for a §1 proof, because a citation stripped because a *fake* said `False` is a
+    # statement about the fake.
+    #
+    # It stays out of [project.dependencies] the way the MCP server's does: the running agent
+    # reaches the analysis service over HTTP and never imports it, so the "three consumers,
+    # none depending on the others" rule in diagnostics/pyproject.toml holds where it matters
+    # -- at runtime and in the image.
+    "analysis",
 ]
 
 [build-system]
