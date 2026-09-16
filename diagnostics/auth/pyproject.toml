@@ -33,8 +33,44 @@ dev = [
     # deliberately: the MCP server's image has no FastAPI in it, and only a test suite ever
     # imports `auth.testing`.
     "fastapi==0.141.1",
+    # --- what tests/test_authenticity.py needs, and nothing else uses -----------------
+    #
+    # §1.8's claim is *every diagnostics endpoint*, which is not a sentence any one service
+    # can say: it spans the analysis service, the agent and the MCP server at once, plus the
+    # `agent.sessions` row that records whose question it was. So the proof lives with the
+    # module the claim is about, and the three services arrive here as test-scope
+    # dependencies of it.
+    #
+    # This is a dev-scope cycle -- all three depend on `auth`, and `auth` depends on all
+    # three to be proven. It is the same trade `agent` and `mcp` already made for their own
+    # §1 proofs and the same reason: a proof of the door made against a stand-in for the
+    # services is a statement about the stand-in. It stays out of [project.dependencies],
+    # so the runtime graph and the images are unchanged and nothing a service runs can
+    # reach any of this.
+    "analysis",
+    "agent",
+    "mcp-server",
+    "pytest-asyncio==1.4.0",
+    "uvicorn==0.52.4",
+    # Real Postgres, because `sessions.subject` is a column and a subject asserted against a
+    # fake is a statement about the fake. Same pin, from the same lock, that the other three
+    # packages already carry.
+    "testcontainers[postgres]==4.13.2",
+    "psycopg[binary]==3.3.5",
 ]
+
+[tool.uv.sources]
+analysis = { workspace = true }
+agent = { workspace = true }
+mcp-server = { workspace = true }
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+# §1.8's proof starts a Postgres container and serves three services over loopback sockets,
+# which is the cost `make verify` exists to hold back from the gate.
+markers = ["authenticity: §1's proofs — starts containers, minutes long (make verify)"]
+addopts = "-m 'not authenticity'"

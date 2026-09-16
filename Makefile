@@ -620,8 +620,14 @@ check: lint test
 # exactly like a wired one — a marker that is declared, excluded from `addopts`, and run by
 # nothing. §1.6 and §1.7 are the proofs those two lines now run, and they are the first
 # proofs in this project that answer for the agent rather than for the pipe beneath it.
+#
+# Five packages now. M5 adds `auth`, and it is the one whose proof is not about a service:
+# §1.8's claim is *every* diagnostics endpoint, which no single service can say — the
+# analysis service cannot answer for the agent, neither can answer for the MCP server, and
+# none of the three holds the `agent.sessions` row. It runs where the rule they share lives.
 verify:
 	$(call pytest-marked,plant,simulator,authenticity)
+	$(call pytest-marked,diagnostics,auth,authenticity)
 	$(call pytest-marked,diagnostics,analysis,authenticity)
 	$(call pytest-marked,diagnostics,agent,authenticity)
 	$(call pytest-marked,diagnostics,mcp,authenticity,mcp-server)

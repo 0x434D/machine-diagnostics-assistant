@@ -231,9 +231,16 @@ dependencies = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "agent" },
+    { name = "analysis" },
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "mcp-server" },
+    { name = "psycopg", extra = ["binary"] },
     { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "testcontainers" },
+    { name = "uvicorn" },
 ]
 
 [package.metadata]
@@ -245,9 +252,16 @@ requires-dist = [
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "agent", editable = "agent" },
+    { name = "analysis", editable = "analysis" },
     { name = "fastapi", specifier = "==0.141.1" },
     { name = "httpx", specifier = "==0.28.1" },
+    { name = "mcp-server", editable = "mcp" },
+    { name = "psycopg", extras = ["binary"], specifier = "==3.3.5" },
     { name = "pytest", specifier = "==9.1.1" },
+    { name = "pytest-asyncio", specifier = "==1.4.0" },
+    { name = "testcontainers", extras = ["postgres"], specifier = "==4.13.2" },
+    { name = "uvicorn", specifier = "==0.52.4" },
 ]
 
 [[package]]
