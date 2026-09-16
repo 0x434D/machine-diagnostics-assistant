@@ -1,0 +1,243 @@
+"""§6.2's knowledge base, read off disk.
+
+These run against the real `knowledge/` tree rather than a fixture one, because the claim
+being tested is about *those* documents: "adding diagnostic competence means adding a file"
+is only true if every file already there is readable, unique and routable. A fixture tree
+would pass while the real one was broken, which is the one outcome that matters.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+from agent.knowledge import (
+    DEFAULT_ROOT,
+    Document,
+    Facets,
+    KnowledgeBase,
+    KnowledgeError,
+    load,
+    parse,
+    search,
+)
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
+KNOWLEDGE = REPOSITORY_ROOT / "knowledge"
+
+#: What each directory holds, per knowledge/README.md. Asserted as a *lower* bound plus an
+#: exact total against the filesystem below, so that adding a document fails this file only
+#: when the document is unreadable — not merely because it is new.
+DIRECTORIES = ("core", "sops", "stations", "alarms", "defects", "patterns")
+
+
+def test_the_default_root_is_the_repositorys_knowledge_tree() -> None:
+    assert DEFAULT_ROOT == KNOWLEDGE
+
+
+def test_every_document_parses() -> None:
+    index = load(KNOWLEDGE)
+
+    assert index.documents, "the knowledge tree produced no documents at all"
+    for document in index.documents:
+        assert document.id
+        assert document.title
+        assert document.body.strip(), f"{document.path} has front-matter and no body"
+
+
+def test_every_markdown_file_with_front_matter_is_indexed() -> None:
+    """The count is read off the tree rather than written down.
+
+    A test that asserts "30" fails the day a thirty-first document is added, which trains
+    whoever added it to edit the number. This one fails only when a file that declares
+    itself a document did not reach the index — which is the failure worth catching.
+    """
+    declared = {
+        path for path in KNOWLEDGE.rglob("*.md") if path.read_text().startswith("---\n")
+    }
+
+    assert {document.path for document in load(KNOWLEDGE).documents} == declared
+
+
+def test_every_id_is_unique() -> None:
+    index = load(KNOWLEDGE)
+
+    assert len(index.by_id) == len(index.documents)
+
+
+def test_a_duplicate_id_is_a_startup_failure(tmp_path: Path) -> None:
+    (tmp_path / "one.md").write_text("---\nid: X-1\ntitle: One\n---\n\nbody\n")
+    (tmp_path / "two.md").write_text("---\nid: X-1\ntitle: Two\n---\n\nbody\n")
+
+    with pytest.raises(KnowledgeError, match="X-1"):
+        load(tmp_path)
+
+
+def test_a_file_without_front_matter_is_ignored() -> None:
+    """knowledge/README.md states the rule and is itself the case it describes."""
+    readme = KNOWLEDGE / "README.md"
+
+    assert parse(readme.read_text(), readme) is None
+    assert readme not in {document.path for document in load(KNOWLEDGE).documents}
+
+
+def test_the_two_core_documents_carry_always_load() -> None:
+    index = load(KNOWLEDGE)
+
+    flagged = {document.path for document in index.always_load}
+    assert flagged == set((KNOWLEDGE / "core").glob("*.md"))
+    assert len(flagged) == 2
+
+
+def test_no_document_outside_core_carries_always_load() -> None:
+    for document in load(KNOWLEDGE).documents:
+        if document.always_load:
+            assert document.path.parent.name == "core", document.path
+
+
+def test_front_matter_becomes_the_index_entry() -> None:
+    index = load(KNOWLEDGE)
+    document = index.by_id["DP-02"]
+
+    assert document.title == "Misalignment and scratch concentrated on one carrier"
+    assert document.applies_to.defect_classes == frozenset({"misalignment", "scratch"})
+    assert document.applies_to.dimensions == frozenset({"carrier"})
+    assert document.applies_to.question_types == frozenset({"quality_investigation"})
+    assert document.applies_to.stations == frozenset()
+    assert document.body.startswith("# DP-02")
+    assert "---" not in document.body.splitlines()[0]
+
+
+def test_an_unknown_front_matter_key_is_a_failure(tmp_path: Path) -> None:
+    """A key nobody reads is a claim the document makes that nothing honours."""
+    (tmp_path / "doc.md").write_text(
+        "---\nid: X-1\ntitle: One\napplies_too: yes\n---\n\nbody\n"
+    )
+
+    with pytest.raises(KnowledgeError, match="applies_too"):
+        load(tmp_path)
+
+
+def test_an_unknown_applies_to_key_is_a_failure(tmp_path: Path) -> None:
+    (tmp_path / "doc.md").write_text(
+        "---\nid: X-1\ntitle: One\napplies_to:\n  question_type: [status]\n---\n\nbody\n"
+    )
+
+    with pytest.raises(KnowledgeError, match="question_type"):
+        load(tmp_path)
+
+
+def test_a_misspelt_question_type_is_a_failure(tmp_path: Path) -> None:
+    """The failure this whole loader exists to make loud.
+
+    `stop_investigations` routes nothing, ever, and nothing else in the system would ever
+    say so: the document simply never arrives and the answer is written without it.
+    """
+    (tmp_path / "doc.md").write_text(
+        "---\nid: X-1\ntitle: One\napplies_to:\n"
+        "  question_types: [stop_investigations]\n---\n\nbody\n"
+    )
+
+    with pytest.raises(KnowledgeError, match="stop_investigations"):
+        load(tmp_path)
+
+
+def test_a_document_with_front_matter_and_no_id_is_a_failure(tmp_path: Path) -> None:
+    (tmp_path / "doc.md").write_text("---\ntitle: One\n---\n\nbody\n")
+
+    with pytest.raises(KnowledgeError, match="id"):
+        load(tmp_path)
+
+
+def test_an_unclosed_front_matter_block_is_a_failure(tmp_path: Path) -> None:
+    (tmp_path / "doc.md").write_text("---\nid: X-1\ntitle: One\n\nbody\n")
+
+    with pytest.raises(KnowledgeError):
+        load(tmp_path)
+
+
+def test_an_empty_applies_to_list_is_a_failure(tmp_path: Path) -> None:
+    """A declared key with nothing in it reads as scope and carries none."""
+    (tmp_path / "doc.md").write_text(
+        "---\nid: X-1\ntitle: One\napplies_to:\n  stations: []\n---\n\nbody\n"
+    )
+
+    with pytest.raises(KnowledgeError):
+        load(tmp_path)
+
+
+def test_facets_reject_a_value_outside_the_vocabulary() -> None:
+    with pytest.raises(KnowledgeError, match="S9"):
+        Facets(stations=frozenset({"S9"}))
+
+
+def test_a_reload_swaps_the_index_rather_than_mutating_it(tmp_path: Path) -> None:
+    """§6.2: an SOP edit must not require a restart, and a reload mid-question is safe."""
+    document = tmp_path / "doc.md"
+    document.write_text("---\nid: X-1\ntitle: One\n---\n\nbefore\n")
+    base = KnowledgeBase(tmp_path)
+
+    held = base.index  # what a question in flight is holding
+    document.write_text("---\nid: X-1\ntitle: One\n---\n\nafter\n")
+    reloaded = base.reload()
+
+    assert held is not reloaded
+    assert held.by_id["X-1"].body.strip() == "before"
+    assert reloaded.by_id["X-1"].body.strip() == "after"
+    assert base.index is reloaded
+
+
+def test_an_index_a_question_holds_is_unaffected_by_a_later_edit(
+    tmp_path: Path,
+) -> None:
+    document = tmp_path / "doc.md"
+    document.write_text("---\nid: X-1\ntitle: One\n---\n\nbefore\n")
+    base = KnowledgeBase(tmp_path)
+    held = base.index
+
+    (tmp_path / "second.md").write_text("---\nid: X-2\ntitle: Two\n---\n\nnew\n")
+    document.unlink()
+    base.reload()
+
+    assert [d.id for d in held.documents] == ["X-1"]
+    assert [d.id for d in base.index.documents] == ["X-2"]
+
+
+def test_reload_if_changed_notices_an_edit_and_otherwise_does_not_reload(
+    tmp_path: Path,
+) -> None:
+    document = tmp_path / "doc.md"
+    document.write_text("---\nid: X-1\ntitle: One\n---\n\nbefore\n")
+    base = KnowledgeBase(tmp_path)
+
+    assert base.reload_if_changed() is base.index
+    first = base.index
+
+    document.write_text("---\nid: X-1\ntitle: One\n---\n\nafter\n")
+    second = base.reload_if_changed()
+
+    assert second is not first
+    assert second.by_id["X-1"].body.strip() == "after"
+
+
+def test_free_text_search_finds_a_document_by_its_words() -> None:
+    """§6.2's other path: direct knowledge questions, never the procedure."""
+    index = load(KNOWLEDGE)
+
+    hits = search(index, "contamination", limit=3)
+
+    assert hits
+    assert "contamination" in {document.id for document in hits}
+
+
+def test_free_text_search_returns_nothing_for_words_that_are_not_there() -> None:
+    index = load(KNOWLEDGE)
+
+    assert search(index, "hydraulic accumulator preload", limit=3) == ()
+
+
+def test_documents_are_immutable() -> None:
+    document: Document = load(KNOWLEDGE).documents[0]
+
+    with pytest.raises(AttributeError):
+        document.title = "something else"  # type: ignore[misc]
