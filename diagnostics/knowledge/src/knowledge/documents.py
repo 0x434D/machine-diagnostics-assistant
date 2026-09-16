@@ -5,22 +5,29 @@
 
 Which puts one obligation on this module above all others: **a document that does not load
 is a startup failure, loudly.** A loader that skipped a malformed file would turn "I added
-a file" into "I think I added a file", and the document that never arrives is indis-
-tinguishable, from inside an answer, from a document that had nothing to say. So every
-deviation from the front-matter vocabulary raises — an unknown key, an unknown value, a
-duplicate id, an empty list — and nothing here catches anything.
+a file" into "I think I added a file", and a document that never arrives is indistinguish-
+able, from inside an answer, from a document that had nothing to say. So every deviation
+from the front-matter vocabulary raises — an unknown key, an unknown value, a duplicate id,
+an empty list — and nothing here catches anything.
 
-**Why the front-matter is read without a YAML parser.** The front-matter grammar in use is
-four scalar forms and one nested block of flow sequences, and reading it needs a *stricter*
-reader than a general one: `question_type:` for `question_types:` has to fail, and
-`safe_load` would return it happily for the routing layer to ignore forever. The stricter
-reader is the smaller half of this module. A general parser would also have to be a runtime
-dependency of this package, which it is not — `pyyaml` is in the workspace as the contract
-generator's dev tool, and the container this package ships in does not carry it.
+**Why there is a validation layer on top of `yaml.safe_load`, which looks like reinvention
+and is not.** A parser's job is to tell you what the document says; it has no opinion on
+whether that is a thing this system understands. `safe_load` accepts
 
-The vocabulary constants below are not a routing table. They are the closed sets §6.1 and
-§3.4 fix, restated once so that a typo in a document is caught where it is written rather
-than never.
+    applies_to:
+      question_type: [stop_investigation]
+
+without a murmur — singular, where the vocabulary is plural — and hands back a mapping that
+routing will look at, find nothing it recognises in, and skip. The document then never
+arrives for any question, forever, and nothing anywhere says so. That is precisely §6.2's
+failure mode, and it is why every key and every value below is checked against a closed set
+rather than read. The vocabulary constants are not a routing table: they are the sets §6.1
+and §3.4 fix, restated once so that a typo is caught where it is written.
+
+This package is deliberately its own workspace member. The analysis service serves §5.3's
+`GET /knowledge/{id}` from it, the agent routes from it, and §6.11's MCP server exposes the
+same documents as resources — three consumers, none of which may depend on either of the
+others.
 """
 
 from __future__ import annotations
@@ -30,6 +37,9 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
+from typing import cast
+
+import yaml
 
 #: The front-matter keys under `applies_to`, in the order a document is scored across them.
 #: `stations` and `alarm_codes` are this tree's extensions to the four the spec names; they
@@ -41,6 +51,8 @@ FACET_KEYS: tuple[str, ...] = (
     "stations",
     "alarm_codes",
 )
+
+DOCUMENT_KEYS: frozenset[str] = frozenset({"id", "title", "always_load", "applies_to"})
 
 QUESTION_TYPES: frozenset[str] = frozenset(
     {
@@ -74,11 +86,12 @@ shape rather than on a list that would have to be edited alongside every new ala
 _FENCE = "---"
 
 DEFAULT_ROOT: Path = Path(__file__).resolve().parents[4] / "knowledge"
-"""Where the tree lives: top level, and deliberately (§10.1).
+"""Where the tree lives: the repository's top level, and deliberately (§10.1).
 
-The deployment's dial for it belongs in `Settings`, the way `analysis.config` restates the
-defaults its pure modules carry. Until it is lifted there, a container that does not mount
-the tree at this path fails on the first read rather than answering without it.
+The deployment's dial for it is `Settings.knowledge_root` in both services that read it;
+this default is what a developer running from a checkout gets. The container lays the tree
+down at `/knowledge` and says so in `compose.yml` rather than relying on this arithmetic
+landing in the right place.
 """
 
 
@@ -115,7 +128,7 @@ class Facets:
                 raise KnowledgeError(f"alarm_codes: {code!r} is not an alarm code")
 
     def as_mapping(self) -> Mapping[str, frozenset[str]]:
-        """The five keys as data, for the one caller that walks them uniformly."""
+        """The five keys as data, for the callers that walk them uniformly."""
         return MappingProxyType(
             {
                 "question_types": self.question_types,
@@ -129,6 +142,22 @@ class Facets:
     @property
     def declares_nothing(self) -> bool:
         return not any(self.as_mapping().values())
+
+    @property
+    def declares_only_question_types(self) -> bool:
+        """The shape §6.2 gives a procedure: *"one per investigation type"*.
+
+        A document that names a question type and makes no claim about any workcell, defect
+        class, dimension or alarm code is saying it is about the *kind* of question rather
+        than about anything in particular the question mentions. In the tree as it stands
+        that is exactly the six SOPs and nothing else. `routing` reserves it a place for
+        that reason, and the property is here — beside the vocabulary it is phrased in —
+        rather than there, so that the rule stays a reading of the front-matter.
+        """
+        values = self.as_mapping()
+        return bool(self.question_types) and not any(
+            values[key] for key in FACET_KEYS if key != "question_types"
+        )
 
 
 @dataclass(frozen=True)
@@ -215,19 +244,20 @@ def parse(text: str, path: Path) -> Document | None:
     if closing is None:
         raise KnowledgeError(f"{path}: the front-matter block is never closed")
 
-    identifier, title, always_load, applies_to = _front_matter(lines[1:closing], path)
-    if identifier is None:
-        raise KnowledgeError(f"{path}: front-matter without an id")
-    if title is None:
-        raise KnowledgeError(f"{path}: front-matter without a title")
+    front_matter = _mapping(
+        yaml.safe_load("\n".join(lines[1:closing])), path, "front-matter"
+    )
+    unknown = sorted(set(front_matter) - DOCUMENT_KEYS)
+    if unknown:
+        raise KnowledgeError(f"{path}: unknown front-matter key(s) {unknown}")
 
     return Document(
-        id=identifier,
-        title=title,
+        id=_required_string(front_matter, "id", path),
+        title=_required_string(front_matter, "title", path),
         path=path,
         body="\n".join(lines[closing + 1 :]).strip("\n"),
-        always_load=always_load,
-        applies_to=applies_to,
+        always_load=_flag(front_matter.get("always_load", False), path),
+        applies_to=_applies_to(front_matter.get("applies_to"), path),
     )
 
 
@@ -237,7 +267,8 @@ def search(index: KnowledgeIndex, text: str, limit: int) -> tuple[Document, ...]
     Free text, for a direct knowledge question — *"what does contamination mean?"* — and
     **never for the procedure**, which is why this is a separate function from
     `routing.route` rather than a fallback inside it. A miss here costs a definition; a
-    miss on the procedure costs the method, and `always_load` is why that cannot happen.
+    miss on the procedure costs the method, and `always_load` and the reserved procedure
+    slot are why that cannot happen.
     """
     words = [word for word in re.split(r"\W+", text.lower()) if word]
     if not words:
@@ -295,81 +326,67 @@ class KnowledgeBase:
         return self.reload()
 
 
-# --- front-matter, read strictly -----------------------------------------------------------
+# --- front-matter, validated against the vocabulary ---
 
 
-def _front_matter(
-    lines: list[str], path: Path
-) -> tuple[str | None, str | None, bool, Facets]:
-    identifier: str | None = None
-    title: str | None = None
-    always_load = False
-    values: dict[str, frozenset[str]] = {}
-    inside_applies_to = False
-
-    for line in lines:
-        if not line.strip():
-            continue
-        indented = line[:1].isspace()
-        key, separator, value = line.strip().partition(":")
-        key, value = key.strip(), value.strip()
-        if not separator:
-            raise KnowledgeError(f"{path}: {line.strip()!r} is not a key and a value")
-
-        if indented:
-            if not inside_applies_to:
-                raise KnowledgeError(f"{path}: indented key {key!r} outside applies_to")
-            if key not in FACET_KEYS:
-                raise KnowledgeError(f"{path}: unknown applies_to key {key!r}")
-            if key in values:
-                raise KnowledgeError(f"{path}: applies_to key {key!r} appears twice")
-            values[key] = _sequence(value, key, path)
-            continue
-
-        inside_applies_to = False
-        if key == "id":
-            identifier = _required_scalar(value, key, path)
-        elif key == "title":
-            title = _required_scalar(value, key, path)
-        elif key == "always_load":
-            always_load = _flag(value, path)
-        elif key == "applies_to":
-            if value:
-                raise KnowledgeError(f"{path}: applies_to takes an indented block")
-            inside_applies_to = True
-        else:
-            raise KnowledgeError(f"{path}: unknown front-matter key {key!r}")
-
-    try:
-        facets = Facets(**values)
-    except KnowledgeError as error:
-        raise KnowledgeError(f"{path}: {error}") from error
-    return identifier, title, always_load, facets
+def _mapping(value: object, path: Path, what: str) -> Mapping[str, object]:
+    if not isinstance(value, dict):
+        raise KnowledgeError(f"{path}: {what} is not a mapping")
+    for key in value:
+        if not isinstance(key, str):
+            raise KnowledgeError(f"{path}: {what} key {key!r} is not a name")
+    return cast(Mapping[str, object], value)
 
 
-def _required_scalar(value: str, key: str, path: Path) -> str:
-    if not value:
-        raise KnowledgeError(f"{path}: {key} is empty")
+def _required_string(front_matter: Mapping[str, object], key: str, path: Path) -> str:
+    value = front_matter.get(key)
+    if value is None:
+        raise KnowledgeError(f"{path}: front-matter without {key}")
+    if not isinstance(value, str) or not value.strip():
+        raise KnowledgeError(f"{path}: {key} must be a non-empty string")
     return value
 
 
-def _sequence(value: str, key: str, path: Path) -> frozenset[str]:
-    if not (value.startswith("[") and value.endswith("]")):
-        raise KnowledgeError(f"{path}: {key} must be a list in [a, b] form")
-    entries = [entry.strip() for entry in value[1:-1].split(",") if entry.strip()]
+def _flag(value: object, path: Path) -> bool:
+    if not isinstance(value, bool):
+        raise KnowledgeError(
+            f"{path}: always_load must be true or false, not {value!r}"
+        )
+    return value
+
+
+def _applies_to(value: object, path: Path) -> Facets:
+    if value is None:
+        return Facets()
+    declared = _mapping(value, path, "applies_to")
+    unknown = sorted(set(declared) - set(FACET_KEYS))
+    if unknown:
+        # The typo that routes nothing, forever. `safe_load` is happy with it, which is
+        # the whole reason this function exists between the parser and the index.
+        raise KnowledgeError(f"{path}: unknown applies_to key(s) {unknown}")
+
+    values = {key: _values(declared[key], key, path) for key in declared}
+    try:
+        return Facets(**values)
+    except KnowledgeError as error:
+        # Re-raised, not recovered from: the only thing added is which file said it, which
+        # is the one fact the constructor cannot know and the reader most needs.
+        raise KnowledgeError(f"{path}: {error}") from error
+
+
+def _values(value: object, key: str, path: Path) -> frozenset[str]:
+    if not isinstance(value, list):
+        raise KnowledgeError(f"{path}: {key} must be a list")
+    entries: list[str] = []
+    for entry in value:
+        if not isinstance(entry, str):
+            raise KnowledgeError(f"{path}: {key} holds {entry!r}, which is not a name")
+        entries.append(entry)
     if not entries:
         # A key that is written down and carries nothing reads, to anyone editing the
         # tree, as scope the document has. It has none, and nothing downstream says so.
         raise KnowledgeError(f"{path}: {key} is an empty list")
     return frozenset(entries)
-
-
-def _flag(value: str, path: Path) -> bool:
-    if value not in ("true", "false"):
-        raise KnowledgeError(
-            f"{path}: always_load must be true or false, not {value!r}"
-        )
-    return value == "true"
 
 
 def _check(key: str, values: frozenset[str], vocabulary: frozenset[str]) -> None:

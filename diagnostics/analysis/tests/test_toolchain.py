@@ -17,7 +17,13 @@ def test_runs_on_pinned_python() -> None:
 def test_workspace_members_pin_the_same_python() -> None:
     root = tomllib.loads((ROOT / "pyproject.toml").read_text())
     members = root["tool"]["uv"]["workspace"]["members"]
-    assert set(members) == {"analysis", "agent"}
+
+    # Read off the tree rather than written down here. A package added under diagnostics/
+    # and left out of `members` is not locked, not built into either image and not reached
+    # by `make check`, and nothing else in the repository would say so — where a listed
+    # member that does not exist fails on the next `uv lock` and is loud already.
+    assert set(members) == {path.parent.name for path in ROOT.glob("*/pyproject.toml")}
+
     for member in members:
         cfg = tomllib.loads((ROOT / member / "pyproject.toml").read_text())
         assert cfg["project"]["requires-python"] == ">=3.13,<3.14"

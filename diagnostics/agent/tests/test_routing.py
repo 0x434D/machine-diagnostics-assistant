@@ -10,8 +10,8 @@ import re
 from pathlib import Path
 
 import pytest
-from agent.knowledge import Facets, KnowledgeError, load
 from agent.routing import DEFAULT_BUDGET, RetrievalBudget, route, specificity
+from knowledge.documents import Facets, KnowledgeError, load
 
 KNOWLEDGE = Path(__file__).resolve().parents[3] / "knowledge"
 ROUTING_SOURCE = Path(__file__).resolve().parents[1] / "src" / "agent" / "routing.py"

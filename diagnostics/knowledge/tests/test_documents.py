@@ -11,8 +11,9 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from agent.knowledge import (
+from knowledge.documents import (
     DEFAULT_ROOT,
+    QUESTION_TYPES,
     Document,
     Facets,
     KnowledgeBase,
@@ -24,11 +25,6 @@ from agent.knowledge import (
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 KNOWLEDGE = REPOSITORY_ROOT / "knowledge"
-
-#: What each directory holds, per knowledge/README.md. Asserted as a *lower* bound plus an
-#: exact total against the filesystem below, so that adding a document fails this file only
-#: when the document is unreadable — not merely because it is new.
-DIRECTORIES = ("core", "sops", "stations", "alarms", "defects", "patterns")
 
 
 def test_the_default_root_is_the_repositorys_knowledge_tree() -> None:
@@ -241,3 +237,81 @@ def test_documents_are_immutable() -> None:
 
     with pytest.raises(AttributeError):
         document.title = "something else"  # type: ignore[misc]
+
+
+def test_a_title_holding_a_colon_survives_the_parser(tmp_path: Path) -> None:
+    """One of the things a real YAML parser is for.
+
+    Nothing in the tree needs it today, and the day one document does, the failure of a
+    hand-rolled reader would be a truncated title in an answer rather than an error.
+    """
+    (tmp_path / "doc.md").write_text(
+        '---\nid: X-1\ntitle: "S2: the press did not reach home"\n---\n\nbody\n'
+    )
+
+    assert load(tmp_path).by_id["X-1"].title == "S2: the press did not reach home"
+
+
+def test_always_load_must_be_a_boolean_and_not_a_word_that_looks_like_one(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "doc.md").write_text(
+        "---\nid: X-1\ntitle: One\nalways_load: maybe\n---\n\nbody\n"
+    )
+
+    with pytest.raises(KnowledgeError, match="always_load"):
+        load(tmp_path)
+
+
+def test_an_applies_to_value_that_is_not_a_list_is_a_failure(tmp_path: Path) -> None:
+    (tmp_path / "doc.md").write_text(
+        "---\nid: X-1\ntitle: One\napplies_to:\n  stations: S2\n---\n\nbody\n"
+    )
+
+    with pytest.raises(KnowledgeError, match="stations"):
+        load(tmp_path)
+
+
+def test_exactly_the_procedures_declare_a_question_type_and_nothing_else() -> None:
+    """The reading of the front-matter that `routing` reserves a slot on.
+
+    §6.2 sizes `sops/` as "one per investigation type", and a document that names a
+    question type while making no claim about any workcell, class, dimension or alarm code
+    is saying it is about the kind of question rather than about anything in it. That this
+    picks out the procedures and only the procedures is a property of the tree, so it is
+    asserted here rather than assumed in the router.
+    """
+    index = load(KNOWLEDGE)
+
+    procedures = {
+        document.path.parent.name
+        for document in index.documents
+        if document.applies_to.declares_only_question_types
+    }
+
+    assert procedures == {"sops"}
+    assert len(
+        [d for d in index.documents if d.applies_to.declares_only_question_types]
+    ) == len(list((KNOWLEDGE / "sops").glob("*.md")))
+
+
+def test_every_question_type_has_a_procedure_except_the_one_that_is_not_an_investigation() -> (
+    None
+):
+    """Seven of §6.1's eight types have a procedure. `knowledge` has none, on purpose.
+
+    A direct knowledge question — *"what does contamination mean?"* — is not an
+    investigation and has no procedure to run; §6.2 sends exactly that case to free-text
+    search instead, which is the one path allowed to miss. Asserted rather than assumed,
+    both directions: if a procedure for `knowledge` is ever added this fails and the
+    routing reservation picks it up, and if one of the other seven loses its procedure
+    this fails before a question of that type is answered without it.
+    """
+    index = load(KNOWLEDGE)
+
+    covered: set[str] = set()
+    for document in index.documents:
+        if document.applies_to.declares_only_question_types:
+            covered |= document.applies_to.question_types
+
+    assert covered == QUESTION_TYPES - {"knowledge"}

@@ -22,20 +22,31 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 
+# The build context is the repository root, not diagnostics/. `knowledge/` sits at the top
+# level and deliberately (§10.1) -- it is what a domain expert edits -- and both services in
+# this image read it: §5.3 serves GET /knowledge/{id} from the analysis service and §6.2
+# routes from it in the agent. A per-stack context cannot reach it, which is the same reason
+# the gateway and the UI already build from the root.
+
 # 1. the interpreter, pinned by .python-version
-COPY .python-version ./
+COPY diagnostics/.python-version ./
 RUN uv python install
 
 # 2. dependencies only — this layer survives every source edit
 ARG PACKAGE
-COPY pyproject.toml uv.lock ./
-COPY analysis/pyproject.toml analysis/
-COPY agent/pyproject.toml agent/
+COPY diagnostics/pyproject.toml diagnostics/uv.lock ./
+COPY diagnostics/analysis/pyproject.toml analysis/
+COPY diagnostics/agent/pyproject.toml agent/
+COPY diagnostics/knowledge/pyproject.toml knowledge/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-workspace --package "${PACKAGE}"
 
 # 3. source last
-COPY . .
+COPY diagnostics/ .
+# The documents themselves, beside the workspace rather than inside it: they are not Python
+# and they are not this stack's -- `knowledge/` is one directory up from `diagnostics/` in
+# the repository, and it is one directory up from /src here for the same reason.
+COPY knowledge/ /knowledge/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --package "${PACKAGE}"
 
@@ -55,6 +66,7 @@ RUN apt-get update \
 COPY --from=build /opt/python /opt/python
 COPY --from=build /opt/venv  /opt/venv
 COPY --from=build --chown=10001:10001 /src /src
+COPY --from=build --chown=10001:10001 /knowledge /knowledge
 ENV PATH="/opt/venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1
 WORKDIR /src

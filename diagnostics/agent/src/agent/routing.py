@@ -4,8 +4,8 @@
 
 Taken literally: nothing in this module names a document, a directory or a filename, and
 `tests/test_routing.py` reads this file and fails if it finds one. The only vocabulary here
-is the five front-matter keys, which live in `knowledge.py` because they are also what a
-document is validated against.
+is the five front-matter keys, which live in `knowledge.documents` because they are also
+what a document is validated against.
 
 Three things happen, in this order, and the order is the design:
 
@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from agent.knowledge import FACET_KEYS, Document, Facets, KnowledgeIndex
+from knowledge.documents import FACET_KEYS, Document, Facets, KnowledgeIndex
 
 
 @dataclass(frozen=True)
@@ -34,10 +34,10 @@ class RetrievalBudget:
 
     Both defaults are read against the tree as it stands — a retrieved document averages
     just under 2.5 kB, so eight of them is a little under 20 kB, and the character cap
-    binds first only when the selection runs long on the larger prose. The dial belongs in
-    `Settings` beside the tool budget; it is defaulted here for the same reason
-    `analysis.config` reads its numbers off the modules that define them, so that there is
-    one number and an environment variable that moves it rather than two that agree today.
+    binds first only when the selection runs long on the larger prose. `Settings` carries
+    the dial, defaulted off this class for the same reason `analysis.config` reads its
+    numbers off the modules that define them: one number, and an environment variable that
+    moves it, rather than two that agree today.
 
     Neither cap applies to `always_load`.
     """

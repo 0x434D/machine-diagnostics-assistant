@@ -167,10 +167,11 @@ lint-python: lock-check
 	cd plant && uv run --frozen ruff format --check . && uv run --frozen ruff check . \
 	  && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini .
 	cd diagnostics && uv run --frozen ruff format --check . && uv run --frozen ruff check .
-# Per package, not over the workspace: both packages have a tests/ with a conftest.py, and a
-# single run sees one module name defined twice and stops before checking anything.
+# Per package, not over the workspace: each package has a tests/ with the same module names
+# in it, and a single run sees one name defined twice and stops before checking anything.
 	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini analysis
 	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini agent
+	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini knowledge
 # measurements/ is not a package and sits outside both workspaces, so neither line above
 # reaches it -- while gate.yml's path filter does list measurements/**, which made CI run a
 # check that never looked at the file that changed. Its runners execute inside the plant
@@ -519,6 +520,7 @@ contract:
 test-python: lock-check
 	$(call pytest-package,plant,simulator)
 	$(call pytest-package,plant,inspection)
+	$(call pytest-package,diagnostics,knowledge)
 	$(call pytest-package,diagnostics,analysis)
 	$(call pytest-package,diagnostics,agent)
 
