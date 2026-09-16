@@ -11,7 +11,8 @@ from typing import cast
 from urllib.parse import urlparse
 
 import pytest
-import yaml
+from _compose_yaml import load as _load
+from _compose_yaml import services as _services
 from simulator.config import Settings
 from simulator.pki import PARTIES
 
@@ -27,14 +28,6 @@ PLANT_ENV_EXAMPLE = REPO / "plant" / ".env.example"
 COMPOSE_FILES = sorted(REPO.glob("*/compose.yml"))
 
 BOUNDARY_CONTAINERS = {"line-simulator", "edge-gateway"}
-
-
-def _load(path: Path) -> dict[str, object]:
-    return cast(dict[str, object], yaml.safe_load(path.read_text()))
-
-
-def _services(doc: dict[str, object]) -> dict[str, dict[str, object]]:
-    return cast(dict[str, dict[str, object]], doc.get("services") or {})
 
 
 def _networks_of(service: dict[str, object]) -> set[str]:

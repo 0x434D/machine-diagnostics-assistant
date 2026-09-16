@@ -34,6 +34,15 @@ export interface InjectedView {
   params: Record<string, number>;
 }
 
+/** §10.5's shared secret rides its own header, never `Authorization` — so this
+ * shared-secret gate is not mistaken at a glance for the diagnostics stack's JWT
+ * bearer tokens. The same literal as `simulator.hmi.FAULT_TOKEN_HEADER`; there is no
+ * module the two workspaces could share it from (§10.7 keeps the plant and diagnostics
+ * stacks from depending on each other), so the two spellings are kept in step by
+ * `test_hmi.py` on one side and `panel.test.tsx` on the other rather than by an import.
+ */
+export const FAULT_TOKEN_HEADER = "X-Plant-Fault-Token";
+
 async function ok(response: Response): Promise<Response> {
   if (response.ok) return response;
   // The plant answers 400 with the reason it refused — a parameter the kind does not
@@ -59,21 +68,32 @@ export async function acknowledgeAlarm(sequence: number): Promise<void> {
   await ok(response);
 }
 
-/** §3.7's fault-injection panel.
+/** §3.7's fault-injection panel -- §10.5's one privileged action, so this is the one
+ * call in this file that carries a token.
  *
  * `durationSeconds` is null for a fault nothing repairs, which is a real choice — §3.5's
  * row 3 is exactly that — so the panel says which it meant rather than leaving one of
  * the two as the quiet case.
+ *
+ * `token` is whatever the operator typed into the panel, sent whether or not it is
+ * right: refusing locally would need this page to hold its own copy of the plant's
+ * secret to check against, which is one more place for it to leak. The plant is what
+ * decides, and a wrong token comes back as a 401 `ok()` turns into the same kind of
+ * message a bad parameter does.
  */
 export async function injectFault(
   kind: string,
   params: Record<string, number>,
   durationSeconds: number | null,
+  token: string,
 ): Promise<InjectedView> {
   const response = await ok(
     await fetch(plantUrl("/faults"), {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        [FAULT_TOKEN_HEADER]: token,
+      },
       body: JSON.stringify({
         kind,
         params,

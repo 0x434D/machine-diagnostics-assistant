@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { AlarmList } from "../AlarmList";
 import { InjectionPanel } from "../InjectionPanel";
+import { FAULT_TOKEN_HEADER } from "../plantApi";
 import type { AlarmView } from "../snapshot";
 
 /** §3.5's seven kinds as `GET /faults` serves them. Two of them, because what this file
@@ -150,6 +151,77 @@ describe("the injection panel", () => {
 
     // The status carries the plant's text. Swallowing it would leave a button that does
     // nothing, which is the one outcome a demo console cannot have.
+    await waitFor(() => {
+      expect(screen.getByText(new RegExp(refusal))).toBeInTheDocument();
+    });
+  });
+
+  it("sends whatever was typed into the token box, on its own header", async () => {
+    // A bespoke stub rather than `stubPlant`: that helper's `Call` records `{ url,
+    // method, body }`, and every existing test asserts equality against exactly that
+    // shape -- adding a `headers` field there would break them for a header only this
+    // test needs to see.
+    const headers: Headers[] = [];
+    vi.stubGlobal(
+      "fetch",
+      (_input: string, init?: RequestInit): Promise<Response> => {
+        if (init?.method === "POST") headers.push(new Headers(init.headers));
+        return Promise.resolve(
+          init?.method === "POST"
+            ? new Response(
+                JSON.stringify({
+                  kind: "joining_force_drift",
+                  at: "t",
+                  until: null,
+                  params: {},
+                }),
+                {
+                  status: 201,
+                  headers: { "Content-Type": "application/json" },
+                },
+              )
+            : new Response(JSON.stringify(KINDS), { status: 200 }),
+        );
+      },
+    );
+    render(<InjectionPanel />);
+    await waitFor(() => {
+      expect(screen.getByLabelText(/token/)).toBeInTheDocument();
+    });
+
+    fireEvent.change(screen.getByLabelText(/token/), {
+      target: { value: "s3cr3t" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "inject" }));
+
+    await waitFor(() => {
+      expect(headers).toHaveLength(1);
+    });
+    // Not part of the JSON body a ground-truth record is built from, so it cannot end
+    // up in that log by accident.
+    expect(headers[0]?.get(FAULT_TOKEN_HEADER)).toBe("s3cr3t");
+  });
+
+  it("shows the plant's refusal when the token gate rejects the request", async () => {
+    const refusal = "fault injection needs the plant's shared token";
+    vi.stubGlobal(
+      "fetch",
+      (_input: string, init?: RequestInit): Promise<Response> =>
+        Promise.resolve(
+          init?.method === "POST"
+            ? new Response(refusal, { status: 401 })
+            : new Response(JSON.stringify(KINDS), { status: 200 }),
+        ),
+    );
+    render(<InjectionPanel />);
+    await waitFor(() => {
+      expect(screen.getByLabelText(/newtons/)).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "inject" }));
+
+    // A 401 is refused the same visible way a 400 is: the operator sees why, not a
+    // button that quietly did nothing.
     await waitFor(() => {
       expect(screen.getByText(new RegExp(refusal))).toBeInTheDocument();
     });

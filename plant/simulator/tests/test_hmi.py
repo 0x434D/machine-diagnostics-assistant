@@ -23,6 +23,7 @@ from simulator.faults import FaultKind, FaultSet, parameters_for
 from simulator.ground_truth import INJECTION, Injector, open_log
 from simulator.hmi import (
     CATEGORIES,
+    FAULT_TOKEN_HEADER,
     RecentParts,
     build_app,
     category_for,
@@ -41,6 +42,11 @@ PLANT = Path(__file__).resolve().parents[2]
 HMI = PLANT / "hmi"
 NGINX_TEMPLATE = HMI / "nginx.conf.template"
 COMPOSE = PLANT / "compose.yml"
+
+FAULT_TOKEN = "test-fault-token"
+"""§10.5's shared secret, as this suite's panels are configured with it. A literal
+rather than a fixture: every test below either sends this same string back and gets in,
+or deliberately sends something else and is refused."""
 
 # The Makefile's `in-frontend` macro skips a frontend directory that is not in this
 # checkout rather than failing, so a simulator unit test must not be the one thing that
@@ -227,8 +233,12 @@ def _panel(
 
     The log is a real `GroundTruthLog` on a real file rather than a double: what is being
     asserted is that the bytes reach the volume, and a double would assert the call.
+
+    Defaults to a panel with `FAULT_TOKEN` configured, so every test that does not care
+    about the gate can post to `/faults` as freely as before it existed; the tests that
+    do care pass their own `Settings` or their own header.
     """
-    settings = settings or Settings()
+    settings = settings or Settings(fault_injection_token=FAULT_TOKEN)
     injected = FaultSet((), clock.history_start) if faults is None else faults
     path = tmp_path / "ground-truth.jsonl"
     log = open_log(path, settings, clock, None)
@@ -412,6 +422,7 @@ def test_every_injection_from_the_panel_reaches_the_ground_truth_log(
     with TestClient(panel.app) as client:
         response = client.post(
             "/faults",
+            headers={FAULT_TOKEN_HEADER: FAULT_TOKEN},
             json={
                 "kind": "joining_force_drift",
                 "params": {"newtons": -250.0, "ramp_seconds": 60.0},
@@ -464,6 +475,7 @@ def test_a_fault_the_panel_injects_is_one_the_line_is_running(tmp_path: Path) ->
         assert (
             client.post(
                 "/faults",
+                headers={FAULT_TOKEN_HEADER: FAULT_TOKEN},
                 json={
                     "kind": "optics_fouling",
                     "params": {"factor": 0.5},
@@ -518,10 +530,79 @@ def test_a_fault_the_plant_does_not_take_is_refused_and_not_recorded(
             },
         ]
         for body in refused:
-            assert client.post("/faults", json=body).status_code == 400, body
+            response = client.post(
+                "/faults", headers={FAULT_TOKEN_HEADER: FAULT_TOKEN}, json=body
+            )
+            assert response.status_code == 400, body
 
     assert _injections(panel.log_path) == []
     assert panel.faults.faults == ()
+
+
+def test_fault_injection_with_no_token_or_the_wrong_one_is_refused_and_not_recorded(
+    tmp_path: Path,
+) -> None:
+    """§10.5's gate, and the same rule the test above proves for a bad body: a refusal
+    must leave no trace, or a fault the plant never ran becomes indistinguishable from
+    one it did.
+
+    401 rather than 400: the request never reached `Fault.__post_init__` at all, and the
+    panel has to be able to tell an operator "wrong token" apart from "wrong parameter".
+    """
+    line, clock, _nodes = asyncio.run(build_running_line())
+    panel = _panel(line, clock, RecentParts(1), tmp_path)
+    body = {
+        "kind": "optics_fouling",
+        "params": {"factor": 0.5},
+        "duration_seconds": None,
+    }
+
+    with TestClient(panel.app) as client:
+        refusals = [
+            client.post("/faults", json=body),  # no header at all
+            client.post("/faults", headers={FAULT_TOKEN_HEADER: "wrong"}, json=body),
+        ]
+
+    for response in refusals:
+        assert response.status_code == 401, response.text
+
+    assert _injections(panel.log_path) == []
+    assert panel.faults.faults == ()
+
+
+def test_fault_injection_is_refused_when_the_plant_has_no_token_configured(
+    tmp_path: Path,
+) -> None:
+    """The fail-closed half of `_authorize_injection`: an operator who never copied
+    `.env.example`'s `PLANT_FAULT_INJECTION_TOKEN` and set it gets a locked panel, not
+    an open one -- the default (`Settings().fault_injection_token is None`) must refuse
+    every request rather than admit the first one anybody sends.
+
+    A well-formed body, deliberately: what is under test is the token gate rather than
+    request validation, and a malformed body would be refused by FastAPI's own parsing
+    before `_authorize_injection` ever ran, which would prove nothing about the gate.
+    """
+    line, clock, _nodes = asyncio.run(build_running_line())
+    panel = _panel(
+        line, clock, RecentParts(1), tmp_path, settings=Settings()
+    )  # fault_injection_token defaults to None
+
+    with TestClient(panel.app) as client:
+        # Even the empty string, which is what an unset header and an unset token would
+        # match under a naive `==` -- this is the case `_authorize_injection`'s
+        # `not configured` guard exists for.
+        response = client.post(
+            "/faults",
+            headers={FAULT_TOKEN_HEADER: ""},
+            json={
+                "kind": "optics_fouling",
+                "params": {"factor": 0.5},
+                "duration_seconds": None,
+            },
+        )
+
+    assert response.status_code == 401
+    assert _injections(panel.log_path) == []
 
 
 def test_the_panel_is_offered_exactly_the_kinds_the_plant_has(tmp_path: Path) -> None:
@@ -613,3 +694,18 @@ def test_the_screen_gets_somewhere_writable_to_render_its_configuration_into() -
     assert conf_d["type"] == "tmpfs"
     # 01777 in the file; YAML reads a leading zero as octal, so this is that number.
     assert cast(dict[str, int], conf_d["tmpfs"])["mode"] == 0o1777
+
+
+@needs_the_screen
+def test_the_screen_sends_the_same_header_name_the_plant_checks() -> None:
+    """`FAULT_TOKEN_HEADER` is declared twice -- once in each language, because §10.7
+    forbids the plant's Python and TypeScript from sharing a module -- and the only
+    thing keeping the two spellings equal is this test reading both source files.
+    A header the screen sends under one name and the plant checks under another would
+    refuse every injection the same way a missing token does, silently.
+    """
+    plant_api = (HMI / "src" / "plantApi.ts").read_text()
+    assert f'"{FAULT_TOKEN_HEADER}"' in plant_api, (
+        f"plantApi.ts no longer sends {FAULT_TOKEN_HEADER!r} -- it has drifted from "
+        "simulator.hmi.FAULT_TOKEN_HEADER"
+    )
