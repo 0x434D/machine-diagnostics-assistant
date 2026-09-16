@@ -3,12 +3,16 @@
 > Adding diagnostic competence means adding a file. That is the project's central claim and
 > this is the mechanism that makes it literally true.
 
-Which puts one obligation on this module above all others: **a document that does not load
-is a startup failure, loudly.** A loader that skipped a malformed file would turn "I added
-a file" into "I think I added a file", and a document that never arrives is indistinguish-
-able, from inside an answer, from a document that had nothing to say. So every deviation
-from the front-matter vocabulary raises — an unknown key, an unknown value, a duplicate id,
-an empty list — and nothing here catches anything.
+Which puts one obligation on this module above all others: **anything that does not load is
+a startup failure, loudly.** A loader that skipped a malformed file would turn "I added a
+file" into "I think I added a file", and a document that never arrives is indistinguishable,
+from inside an answer, from a document that had nothing to say. So every deviation from the
+front-matter vocabulary raises — an unknown key, an unknown value, a duplicate id, an empty
+list — and nothing here catches anything.
+
+The same obligation applies one level up, to the tree itself, and that is the easier failure
+to cause: see `load`. A root that is absent or empty is refused there rather than returning
+an index with nothing in it.
 
 **Why there is a validation layer on top of `yaml.safe_load`, which looks like reinvention
 and is not.** A parser's job is to tell you what the document says; it has no opinion on
@@ -222,13 +226,34 @@ class KnowledgeIndex:
 def load(root: Path) -> KnowledgeIndex:
     """Every Markdown file under `root` that declares front-matter, as one index.
 
-    Raises `KnowledgeError` if any of them is malformed or if two share an id.
+    Raises `KnowledgeError` if any of them is malformed, if two share an id, **or if the
+    tree is absent or holds no documents at all.**
+
+    That last refusal is the one that is not obvious, and it is the one that matters most.
+    `Path.rglob` on a directory that does not exist yields nothing rather than raising, so
+    a mistyped root, an image that stopped carrying the documents, or a path one level too
+    deep would produce an index with nothing in it — and routing would then return nothing
+    at all, `always_load` included. Every question would be answered with no method, no
+    procedure and no error anywhere to say why.
+
+    That is §6.2's failed retrieval silently becoming a failed method, moved one level up
+    to where the flag, the reserved slot and the budget exemption cannot reach it. An empty
+    knowledge base is not a valid state for this system, so it is not a state this function
+    can return.
     """
+    if not root.exists():
+        raise KnowledgeError(f"the knowledge base does not exist: {root}")
+    if not root.is_dir():
+        raise KnowledgeError(f"the knowledge base is not a directory: {root}")
+
     documents: list[Document] = []
     for path in sorted(root.rglob("*.md")):
         document = parse(path.read_text(), path)
         if document is not None:
             documents.append(document)
+
+    if not documents:
+        raise KnowledgeError(f"the knowledge base holds no knowledge documents: {root}")
     return KnowledgeIndex.of(documents)
 
 

@@ -101,14 +101,24 @@ def test_a_document_added_to_the_tree_is_addressable_without_a_restart(
     tmp_path: Path,
 ) -> None:
     """§6.2 hot-reloads, and a listing that needed a restart would make "add a file" false
-    for exactly the person tuning the SOPs."""
+    for exactly the person tuning the SOPs.
+
+    Starts from a tree with one document rather than an empty one, because `load` refuses
+    an empty knowledge base: a root that exists and holds nothing is what a mistyped path
+    looks like, and an index with no documents in it is a system with no method.
+    """
     (tmp_path / "sops").mkdir()
+    (tmp_path / "sops" / "SOP-98-existing.md").write_text(
+        "---\nid: SOP-98\ntitle: A procedure that was already there\n---\n\nStep one.\n"
+    )
     base = KnowledgeBase(tmp_path)
-    assert resources.resources_for(base.index) == []
+    assert [resource.uri for resource in resources.resources_for(base.index)] == [
+        "sop://SOP-98"
+    ]
 
     (tmp_path / "sops" / "SOP-99-new.md").write_text(
         "---\nid: SOP-99\ntitle: A procedure added while running\n---\n\nStep one.\n"
     )
 
     listing = resources.resources_for(base.reload_if_changed())
-    assert [resource.uri for resource in listing] == ["sop://SOP-99"]
+    assert [resource.uri for resource in listing] == ["sop://SOP-98", "sop://SOP-99"]

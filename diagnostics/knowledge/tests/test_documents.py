@@ -315,3 +315,40 @@ def test_every_question_type_has_a_procedure_except_the_one_that_is_not_an_inves
             covered |= document.applies_to.question_types
 
     assert covered == QUESTION_TYPES - {"knowledge"}
+
+
+def test_a_root_that_does_not_exist_is_a_startup_failure(tmp_path: Path) -> None:
+    """The failure that defeats every guard above it, and the reason it is not obvious.
+
+    `Path.rglob` on a directory that is not there yields nothing rather than raising. So a
+    typo in `AGENT_KNOWLEDGE_ROOT`, an image that stopped copying the documents, or a root
+    pointed one level too deep produces an index with no documents in it — and `route`
+    then returns nothing at all, `always_load` included. Every question is answered with no
+    method, no procedure and no error anywhere.
+
+    §6.2's failed retrieval silently becoming a failed method, moved one level up to where
+    the flag, the reservation and the budget exemption cannot see it.
+    """
+    with pytest.raises(KnowledgeError, match="does not exist"):
+        load(tmp_path / "typo")
+
+
+def test_a_root_that_is_a_file_is_a_startup_failure(tmp_path: Path) -> None:
+    document = tmp_path / "doc.md"
+    document.write_text("---\nid: X-1\ntitle: One\n---\n\nbody\n")
+
+    with pytest.raises(KnowledgeError, match="not a directory"):
+        load(document)
+
+
+def test_a_root_holding_no_documents_is_a_startup_failure(tmp_path: Path) -> None:
+    """An empty knowledge base is not a valid state for this system.
+
+    Distinct from the missing root above and worth its own refusal: a root that exists and
+    is empty is what a wrong-but-plausible path looks like — one directory too deep, or the
+    parent of the tree instead of the tree.
+    """
+    (tmp_path / "README.md").write_text("# not a document\n")
+
+    with pytest.raises(KnowledgeError, match="no knowledge documents"):
+        load(tmp_path)
