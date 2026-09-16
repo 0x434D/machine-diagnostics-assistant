@@ -759,6 +759,67 @@ components:
       - groups
       title: InspectionStats
       type: object
+    KnowledgeAppliesTo:
+      description: "A document's own declaration of where it applies (\xA76.2's front-matter).\n\nServed\
+        \ beside the body rather than stripped from it because it is what routing acted\non: a reader\
+        \ following a `sop` citation can see why that document was loaded, which is\nthe difference between\
+        \ a cited procedure and a procedure asserted to exist."
+      properties:
+        alarm_codes:
+          items:
+            type: string
+          title: Alarm Codes
+          type: array
+        defect_classes:
+          items:
+            type: string
+          title: Defect Classes
+          type: array
+        dimensions:
+          items:
+            type: string
+          title: Dimensions
+          type: array
+        question_types:
+          items:
+            type: string
+          title: Question Types
+          type: array
+        stations:
+          items:
+            type: string
+          title: Stations
+          type: array
+      title: KnowledgeAppliesTo
+      type: object
+    KnowledgeDocument:
+      description: "\xA75.3's `/knowledge/{id}`: one document of the knowledge base, by id.\n\n`body`\
+        \ is Markdown exactly as the file holds it, front-matter removed. \xA77.3's `sop`\ncitation resolves\
+        \ here, and \xA77.2's \"clicking a citation opens the underlying data\"\nis the whole reason this\
+        \ endpoint exists."
+      properties:
+        always_load:
+          title: Always Load
+          type: boolean
+        applies_to:
+          $ref: '#/components/schemas/KnowledgeAppliesTo'
+        body:
+          title: Body
+          type: string
+        id:
+          title: Id
+          type: string
+        title:
+          title: Title
+          type: string
+      required:
+      - id
+      - title
+      - always_load
+      - applies_to
+      - body
+      title: KnowledgeDocument
+      type: object
     LastPartOut:
       description: The most recent part to leave S4, which is the line's real output clock.
       properties:
@@ -1935,6 +1996,34 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: Inspection Stats
+  /knowledge/{document_id}:
+    get:
+      description: "One document by its front-matter id \u2014 `SOP-01`, `DP-02`, `A-207`, `S2`, `crack`.\n\
+        \n\xA76.2 hot-reloads the tree, so an edit made while tuning is visible on the next request\n\
+        without a restart. The reload swaps an immutable index; this handler holds the one it\nwas given\
+        \ for the whole request."
+      operationId: getKnowledgeDocument
+      parameters:
+      - in: path
+        name: document_id
+        required: true
+        schema:
+          title: Document Id
+          type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KnowledgeDocument'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Knowledge Document
   /line/status:
     get:
       description: "Each station's last state and reason, the buffer levels, the standing alarms, the\n\

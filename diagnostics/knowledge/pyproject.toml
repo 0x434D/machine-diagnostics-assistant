@@ -1,0 +1,15 @@
+[project]
+name = "knowledge"
+version = "0.1.0"
+requires-python = ">=3.13,<3.14"
+# The front-matter is YAML and is read with a YAML parser. The strict validation layer in
+# documents.py is not a replacement for one -- it sits on top of safe_load and checks the
+# vocabulary, which is a different job and the one §6.2 needs done.
+dependencies = ["pyyaml==6.0.3"]
+
+[dependency-groups]
+dev = ["pytest==9.1.1", "types-pyyaml==6.0.12.20260906"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

@@ -1,7 +1,11 @@
 # Virtual workspace root: the diagnostics stack owns its own lockfile so that a dependency
 # bump here can never move a version underneath the plant stack (spec §10.7).
 [tool.uv.workspace]
-members = ["analysis", "agent"]
+# `knowledge` holds §6.2's loader and nothing else. Three consumers, none of which may
+# depend on either of the others: the analysis service serves §5.3's GET /knowledge/{id}
+# from it, the agent routes from it, and §6.11's MCP server exposes the same documents as
+# resources. A copy of the parser in each would be three readings of one vocabulary.
+members = ["analysis", "agent", "knowledge", "mcp"]
 
 [dependency-groups]
 dev = ["ruff==0.16.7", "mypy==2.3.1"]

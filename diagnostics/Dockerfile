@@ -22,20 +22,38 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 
+# The build context is the repository root, not diagnostics/. `knowledge/` sits at the top
+# level and deliberately (§10.1) -- it is what a domain expert edits -- and both services in
+# this image read it: §5.3 serves GET /knowledge/{id} from the analysis service and §6.2
+# routes from it in the agent. A per-stack context cannot reach it, which is the same reason
+# the gateway and the UI already build from the root.
+
 # 1. the interpreter, pinned by .python-version
-COPY .python-version ./
+COPY diagnostics/.python-version ./
 RUN uv python install
 
 # 2. dependencies only — this layer survives every source edit
 ARG PACKAGE
-COPY pyproject.toml uv.lock ./
-COPY analysis/pyproject.toml analysis/
-COPY agent/pyproject.toml agent/
+COPY diagnostics/pyproject.toml diagnostics/uv.lock ./
+COPY diagnostics/analysis/pyproject.toml analysis/
+COPY diagnostics/agent/pyproject.toml agent/
+COPY diagnostics/knowledge/pyproject.toml knowledge/
+COPY diagnostics/mcp/pyproject.toml mcp/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-workspace --package "${PACKAGE}"
 
 # 3. source last
-COPY . .
+COPY diagnostics/ .
+# The documents themselves, beside the workspace rather than inside it: they are not Python
+# and they are not this stack's -- `knowledge/` is one directory up from `diagnostics/` in
+# the repository, and it is one directory up from /src here for the same reason.
+COPY knowledge/ /knowledge/
+# The contract, for the same reason and one directory further out: §6.11's MCP server
+# generates its tool list from `contracts/analysis.openapi.yaml` at startup, so for that
+# service the contract is not a build-time artefact but a file it reads. Copied for every
+# package this image builds rather than conditionally on ARG PACKAGE -- a COPY that depends
+# on a build argument is a second image shape to reason about, for a hundred kilobytes.
+COPY contracts/ /contracts/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --package "${PACKAGE}"
 
@@ -55,6 +73,8 @@ RUN apt-get update \
 COPY --from=build /opt/python /opt/python
 COPY --from=build /opt/venv  /opt/venv
 COPY --from=build --chown=10001:10001 /src /src
+COPY --from=build --chown=10001:10001 /knowledge /knowledge
+COPY --from=build --chown=10001:10001 /contracts /contracts
 ENV PATH="/opt/venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1
 WORKDIR /src

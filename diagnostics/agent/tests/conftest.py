@@ -9,31 +9,24 @@ from __future__ import annotations
 
 import pytest
 
-from .fakes import FakeAnalysis, stats
+from .fakes import GAP, FakeAnalysis, coverage, stats
 
 
 @pytest.fixture
 def fake_analysis() -> FakeAnalysis:
-    return FakeAnalysis(stats(total=600, rejects=30, gaps=[]))
+    return FakeAnalysis({"inspection_stats": stats(total=600, rejects=30, gaps=[])})
 
 
 @pytest.fixture
 def fake_analysis_with_gap() -> FakeAnalysis:
     return FakeAnalysis(
-        stats(
-            total=600,
-            rejects=30,
-            gaps=[
-                {
-                    "from_ts": "2026-09-12T13:40:00Z",
-                    "to_ts": "2026-09-12T13:45:00Z",
-                    "reason": "plant_unreachable",
-                }
-            ],
-        )
+        {
+            "inspection_stats": stats(total=600, rejects=30, gaps=[GAP]),
+            "coverage": coverage([GAP]),
+        }
     )
 
 
 @pytest.fixture
 def fake_analysis_empty() -> FakeAnalysis:
-    return FakeAnalysis(stats(total=0, rejects=0, gaps=[]))
+    return FakeAnalysis({"inspection_stats": stats(total=0, rejects=0, gaps=[])})

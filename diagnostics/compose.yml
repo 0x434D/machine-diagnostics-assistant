@@ -83,8 +83,11 @@ services:
   analysis:
     <<: *runtime
     build:
-      context: .
-      dockerfile: Dockerfile
+      # The repository root, because `knowledge/` lives there -- top level and deliberately
+      # (§10.1), because it is what a domain expert edits. §5.3 puts GET /knowledge/{id} on
+      # this service, so the documents have to be in the context; see diagnostics/Dockerfile.
+      context: ..
+      dockerfile: diagnostics/Dockerfile
       args: { PACKAGE: analysis }
     command:
       ["uvicorn", "analysis.app:app", "--host", "0.0.0.0", "--port", "8000"]
@@ -103,6 +106,9 @@ services:
       # not widened to the gateway: the analysis service must keep answering when the
       # gateway is gone (§2.2), and a start-order edge would read as though it did not.
       ANALYSIS_DATABASE_URL: "postgresql://analysis:${ANALYSIS_DB_PASSWORD:-analysis}@postgres:5432/diagnostics"
+      # Where the Dockerfile laid the documents down. Stated rather than left to the module
+      # default, which resolves relative to the source tree and is right only by arithmetic.
+      ANALYSIS_KNOWLEDGE_ROOT: "/knowledge"
     ports:
       - "127.0.0.1:${ANALYSIS_PORT:-8000}:8000"
     # diag-net to reach Postgres, edge-net to be reachable from the host. It has never
@@ -112,22 +118,105 @@ services:
   agent:
     <<: *runtime
     build:
-      context: .
-      dockerfile: Dockerfile
+      # The repository root, for the same reason the analysis service builds from it: §6.2
+      # routes from the documents in `knowledge/`, one level above this file.
+      context: ..
+      dockerfile: diagnostics/Dockerfile
       args: { PACKAGE: agent }
     command: ["uvicorn", "agent.app:app", "--host", "0.0.0.0", "--port", "8001"]
-    depends_on: [analysis]
+    depends_on:
+      analysis:
+        condition: service_started
+      # Not for the answers -- those come from the analysis service, which keeps answering
+      # when everything else is gone -- but because the migration step below has nothing to
+      # apply against until Postgres is accepting connections.
+      postgres:
+        condition: service_healthy
     environment:
       AGENT_ANALYSIS_URL: "http://analysis:8000"
+      AGENT_KNOWLEDGE_ROOT: "/knowledge"
+      # §8's second writer. `agent`, never `postgres` and never `analysis`: the role
+      # migration 0001 creates owns `agent.*`, holds nothing in `ingest` or `read`, and is
+      # refused by the database rather than by a review comment if it reaches for either.
+      # Same shape and same override path as ANALYSIS_DATABASE_URL above -- a development
+      # default here, a real value through .env.
+      AGENT_DATABASE_URL: "postgresql://agent:${AGENT_DB_PASSWORD:-agent}@postgres:5432/diagnostics"
       # "scripted" needs no credentials and reaches no network. Set to "anthropic" and
       # provide ANTHROPIC_API_KEY through .env (which is gitignored) to use a real model.
       AGENT_PROVIDER: "${AGENT_PROVIDER:-scripted}"
     env_file:
       - path: .env
         required: false
+    # Migrations as a pre_start step, never from the service's own entrypoint (§8): a
+    # migration that runs at startup races across replicas, and it is the wrong thing to
+    # retry when the process it belongs to is the one answering questions.
+    #
+    # Two steps, because they run as two roles, and that is the ownership boundary rather
+    # than a deployment quirk:
+    #
+    #   1. 0001 creates the `agent` role, which no role can do for itself, and hands it the
+    #      password this deployment reaches it with. The owner's credential exists for the
+    #      length of this hook's process and is never given to the service.
+    #   2. Everything after 0001 is applied *as* `agent`, whose `search_path` 0001 set to
+    #      its own schema. That is what keeps an unqualified `CREATE TABLE` in a later
+    #      revision out of the gateway's `ingest` -- 005_m3_read_layer.sql's warning, and
+    #      alembic/env.py carries the argument in full.
+    pre_start:
+      - command: ["alembic", "-c", "agent/alembic.ini", "upgrade", "0001"]
+        environment:
+          AGENT_DATABASE_URL: "postgresql://postgres:${POSTGRES_PASSWORD:-diagnostics}@postgres:5432/diagnostics"
+          AGENT_ROLE_PASSWORD: "${AGENT_DB_PASSWORD:-agent}"
+      - command: ["alembic", "-c", "agent/alembic.ini", "upgrade", "head"]
     ports:
       - "127.0.0.1:${AGENT_PORT:-8001}:8001"
-    networks: [diag-net, edge-net] # reaches the analysis service, and nothing else
+    # diag-net for the analysis service and its own schema in Postgres, edge-net to be
+    # reachable from the host. It has never heard of OPC UA and never joins field-net.
+    networks: [diag-net, edge-net]
+
+  # §6.11's MCP server. It is the second binding over one contract: the UI binds the analysis
+  # service over REST, agent runtimes bind the same operations over MCP, and both come from
+  # `contracts/analysis.openapi.yaml`. Read-only, every tool, and there is deliberately no
+  # plant-side counterpart -- operating the plant agentically would let the diagnostics side
+  # know what it broke and destroy the evaluation.
+  mcp:
+    <<: *runtime
+    build:
+      # The repository root, for both reasons the other two Python services build from it:
+      # §6.2's documents in `knowledge/` are the resources this server exposes, and
+      # `contracts/` is where it generates its tool list from.
+      context: ..
+      dockerfile: diagnostics/Dockerfile
+      args: { PACKAGE: mcp-server }
+    # The package's own entry point rather than a uvicorn command line: it reads the host and
+    # the port out of the settings below, so there is one place each number lives (§10.3)
+    # instead of two that have to be kept saying the same thing.
+    command: ["mcp-server"]
+    depends_on:
+      analysis:
+        condition: service_started
+      agent:
+        condition: service_started
+    environment:
+      MCP_ANALYSIS_URL: "http://analysis:8000"
+      MCP_AGENT_URL: "http://agent:8001"
+      # Where the Dockerfile laid each of them down. Stated rather than left to the module
+      # defaults, which resolve relative to the source tree and are right only by arithmetic.
+      MCP_KNOWLEDGE_ROOT: "/knowledge"
+      MCP_CONTRACT: "/contracts/analysis.openapi.yaml"
+      # The container has to listen on its own interface to be reachable through the port
+      # published below; §6.11's "bound to localhost" is held by that publish being
+      # loopback-only and by diag-net being internal, not by this line. The module default is
+      # the loopback address, so a run from a checkout is bound the way the spec asks without
+      # being told.
+      MCP_HOST: "0.0.0.0"
+    ports:
+      # Every number is configuration (§10.3), and 127.0.0.1 is not an accident: this is the
+      # endpoint an external agent connects to, and it is reachable from this host only.
+      - "127.0.0.1:${MCP_PORT:-8002}:8002"
+    # diag-net to reach the analysis service and the agent, edge-net to be reachable from the
+    # host. It has never heard of OPC UA and never joins field-net -- §6.11 says so twice and
+    # it is the one claim the whole architecture exists to support.
+    networks: [diag-net, edge-net]
 
   ui:
     <<: *runtime

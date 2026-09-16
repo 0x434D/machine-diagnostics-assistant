@@ -166,6 +166,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/knowledge/{document_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Knowledge Document
+         * @description One document by its front-matter id — `SOP-01`, `DP-02`, `A-207`, `S2`, `crack`.
+         *
+         *     §6.2 hot-reloads the tree, so an edit made while tuning is visible on the next request
+         *     without a restart. The reload swaps an immutable index; this handler holds the one it
+         *     was given for the whole request.
+         */
+        get: operations["getKnowledgeDocument"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/line/status": {
         parameters: {
             query?: never;
@@ -901,6 +925,45 @@ export interface components {
             /** Total */
             total: number;
             window: components["schemas"]["Window"];
+        };
+        /**
+         * KnowledgeAppliesTo
+         * @description A document's own declaration of where it applies (§6.2's front-matter).
+         *
+         *     Served beside the body rather than stripped from it because it is what routing acted
+         *     on: a reader following a `sop` citation can see why that document was loaded, which is
+         *     the difference between a cited procedure and a procedure asserted to exist.
+         */
+        KnowledgeAppliesTo: {
+            /** Alarm Codes */
+            alarm_codes?: string[];
+            /** Defect Classes */
+            defect_classes?: string[];
+            /** Dimensions */
+            dimensions?: string[];
+            /** Question Types */
+            question_types?: string[];
+            /** Stations */
+            stations?: string[];
+        };
+        /**
+         * KnowledgeDocument
+         * @description §5.3's `/knowledge/{id}`: one document of the knowledge base, by id.
+         *
+         *     `body` is Markdown exactly as the file holds it, front-matter removed. §7.3's `sop`
+         *     citation resolves here, and §7.2's "clicking a citation opens the underlying data"
+         *     is the whole reason this endpoint exists.
+         */
+        KnowledgeDocument: {
+            /** Always Load */
+            always_load: boolean;
+            applies_to: components["schemas"]["KnowledgeAppliesTo"];
+            /** Body */
+            body: string;
+            /** Id */
+            id: string;
+            /** Title */
+            title: string;
         };
         /**
          * LastPartOut
@@ -1684,6 +1747,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["InspectionStats"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getKnowledgeDocument: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["KnowledgeDocument"];
                 };
             };
             /** @description Validation Error */

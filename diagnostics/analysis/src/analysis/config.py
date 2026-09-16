@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from pathlib import Path
 
+from knowledge.documents import DEFAULT_ROOT
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from analysis.patterns import Correction
@@ -25,6 +27,12 @@ class Settings(BaseSettings):
     # No password, so a local run that has not been given one fails to authenticate rather
     # than quietly reaching a database with different rights.
     database_url: str = "postgresql://analysis@localhost:5432/diagnostics"
+
+    # §6.2's knowledge base, which §5.3 serves by id from this service. A path rather than
+    # a connection string because §5.2 has no `docs` table: the documents are Markdown in
+    # the repository, at the top level and deliberately (§10.1). Defaulted off the module
+    # that defines it, and laid down at the same path inside the image.
+    knowledge_root: Path = DEFAULT_ROOT
 
     # §5.3 returns a handful of reject serials so the agent has something concrete to cite
     # rather than a bare count.

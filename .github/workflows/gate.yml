@@ -48,6 +48,8 @@ jobs:
               - 'plant/**'
               - 'diagnostics/analysis/**'
               - 'diagnostics/agent/**'
+              - 'diagnostics/knowledge/**'
+              - 'diagnostics/mcp/**'
               - 'diagnostics/pyproject.toml'
               - 'diagnostics/uv.lock'
               - 'diagnostics/.python-version'

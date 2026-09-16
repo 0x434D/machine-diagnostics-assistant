@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from analysis import windows
 from analysis.patterns import Correction, Dimension
@@ -830,3 +830,33 @@ class CarrierParts(BaseModel):
     carrier_id: int
     window: Window | None
     parts: PartsByOutcome
+
+
+class KnowledgeAppliesTo(BaseModel):
+    """A document's own declaration of where it applies (§6.2's front-matter).
+
+    Served beside the body rather than stripped from it because it is what routing acted
+    on: a reader following a `sop` citation can see why that document was loaded, which is
+    the difference between a cited procedure and a procedure asserted to exist.
+    """
+
+    question_types: list[str] = Field(default_factory=list)
+    defect_classes: list[str] = Field(default_factory=list)
+    dimensions: list[str] = Field(default_factory=list)
+    stations: list[str] = Field(default_factory=list)
+    alarm_codes: list[str] = Field(default_factory=list)
+
+
+class KnowledgeDocument(BaseModel):
+    """§5.3's `/knowledge/{id}`: one document of the knowledge base, by id.
+
+    `body` is Markdown exactly as the file holds it, front-matter removed. §7.3's `sop`
+    citation resolves here, and §7.2's "clicking a citation opens the underlying data"
+    is the whole reason this endpoint exists.
+    """
+
+    id: str
+    title: str
+    always_load: bool
+    applies_to: KnowledgeAppliesTo
+    body: str

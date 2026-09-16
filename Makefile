@@ -62,8 +62,11 @@ COMMIT_RANGE ?= main..HEAD
 
 # Strict: every package has tests now, so "collected nothing" is a package whose tests stopped
 # being found, which must fail rather than read as a pass.
+# $(3) is the uv package name when it differs from the directory, which happens exactly once:
+# diagnostics/mcp/ holds the package `mcp-server`, because `mcp` is the SDK's own distribution
+# and a workspace member of that name would shadow the thing it imports.
 define pytest-package
-	cd $(1) && uv run --frozen --package $(2) pytest $(2)/tests -q
+	cd $(1) && uv run --frozen --package $(if $(3),$(3),$(2)) pytest $(2)/tests -q
 endef
 
 # The same, for a marker, and exit 5 is no longer forgiven. It was, and correctly: the plant
@@ -77,8 +80,11 @@ endef
 # "At least one", not an expected count. The count lives in the test files; a copy of it here
 # would have to be edited by whoever adds the fifth proof, and it catches nothing the empty
 # selection does not already catch.
+#
+# $(4) is the uv package name when it differs from the directory, exactly as $(3) is in
+# pytest-package above — and for the one case that needs it, diagnostics/mcp/.
 define pytest-marked
-	cd $(1) && uv run --frozen --package $(2) pytest $(2)/tests -q -m $(3)
+	cd $(1) && uv run --frozen --package $(if $(4),$(4),$(2)) pytest $(2)/tests -q -m $(3)
 endef
 
 define in-gateway
@@ -167,10 +173,12 @@ lint-python: lock-check
 	cd plant && uv run --frozen ruff format --check . && uv run --frozen ruff check . \
 	  && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini .
 	cd diagnostics && uv run --frozen ruff format --check . && uv run --frozen ruff check .
-# Per package, not over the workspace: both packages have a tests/ with a conftest.py, and a
-# single run sees one module name defined twice and stops before checking anything.
+# Per package, not over the workspace: each package has a tests/ with the same module names
+# in it, and a single run sees one name defined twice and stops before checking anything.
 	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini analysis
 	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini agent
+	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini knowledge
+	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini mcp
 # measurements/ is not a package and sits outside both workspaces, so neither line above
 # reaches it -- while gate.yml's path filter does list measurements/**, which made CI run a
 # check that never looked at the file that changed. Its runners execute inside the plant
@@ -519,8 +527,10 @@ contract:
 test-python: lock-check
 	$(call pytest-package,plant,simulator)
 	$(call pytest-package,plant,inspection)
+	$(call pytest-package,diagnostics,knowledge)
 	$(call pytest-package,diagnostics,analysis)
 	$(call pytest-package,diagnostics,agent)
+	$(call pytest-package,diagnostics,mcp,mcp-server)
 
 check-python: lint-python test-python
 
@@ -575,9 +585,17 @@ check: lint test
 
 # Separate from `check` on purpose: the authenticity proofs stop and restart containers, and a
 # gate slow enough to skip is not a gate. Task 15 registers the `authenticity` marker.
+#
+# Four packages, and the last two arrived a milestone after their marker did. M4 registered
+# `authenticity` in agent/pyproject.toml and mcp/pyproject.toml, which reads from a distance
+# exactly like a wired one — a marker that is declared, excluded from `addopts`, and run by
+# nothing. §1.6 and §1.7 are the proofs those two lines now run, and they are the first
+# proofs in this project that answer for the agent rather than for the pipe beneath it.
 verify:
 	$(call pytest-marked,plant,simulator,authenticity)
 	$(call pytest-marked,diagnostics,analysis,authenticity)
+	$(call pytest-marked,diagnostics,agent,authenticity)
+	$(call pytest-marked,diagnostics,mcp,authenticity,mcp-server)
 
 # `make verify` plus the plant it needs, brought up and taken down again.
 #

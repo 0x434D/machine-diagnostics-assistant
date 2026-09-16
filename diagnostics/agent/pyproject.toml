@@ -8,10 +8,42 @@ dependencies = [
     "anthropic==1.5.0",
     "httpx==0.28.1",
     "pydantic-settings==2.15.0",
+    # §8: the agent's `agent.*` schema is Python-written, Python-read and Python-modelled,
+    # and Alembic owns it. The gateway's migrations are embedded SQL applied by the C#
+    # process and cannot reach a schema that is not the gateway's -- two tools over disjoint
+    # schemas is the ownership boundary made visible. psycopg is the driver the analysis
+    # service already uses; SQLAlchemy arrives as Alembic's own requirement, and adding
+    # psycopg2 for it would be a second Postgres driver in one stack.
+    "alembic==1.20.0",
+    "psycopg[binary]==3.3.5",
+    # §6.2's loader, shared with the analysis service and (M4 Task 7) the MCP server.
+    "knowledge",
 ]
 
+[tool.uv.sources]
+knowledge = { workspace = true }
+analysis = { workspace = true }
+
 [dependency-groups]
-dev = ["pytest==9.1.1", "pytest-asyncio==1.4.0"]
+dev = [
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    # Real Postgres, for the same reason the analysis package runs one: a grant boundary
+    # asserted against a fake is a statement about the fake.
+    "testcontainers[postgres]==4.13.2",
+    # Test scope only, and for one file: tests/test_authenticity.py answers §1.6 against the
+    # analysis service that actually serves the endpoints, over a socket, against the
+    # database. Every other test in this package runs against tests/fakes.py, which is right
+    # for them -- they ask what the pipeline does when the data says a particular thing -- and
+    # wrong for a §1 proof, because a citation stripped because a *fake* said `False` is a
+    # statement about the fake.
+    #
+    # It stays out of [project.dependencies] the way the MCP server's does: the running agent
+    # reaches the analysis service over HTTP and never imports it, so the "three consumers,
+    # none depending on the others" rule in diagnostics/pyproject.toml holds where it matters
+    # -- at runtime and in the image.
+    "analysis",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -19,3 +51,7 @@ build-backend = "hatchling.build"
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+# Authenticity proofs stop and start real containers and take minutes. `make check` must stay
+# fast and side-effect free, so they are excluded by default and run by `make verify`.
+markers = ["authenticity: §1's proofs — stops containers, minutes long (make verify)"]
+addopts = "-m 'not authenticity'"
