@@ -26,6 +26,11 @@
          while the real deadbands were wrong. -->
     <Content Include="..\Gateway\config\signals.json" Link="config\signals.json"
              CopyToOutputDirectory="PreserveNewest" />
+    <!-- The tokens both implementations of §10.5's rule are checked against, read out of the
+         one file diagnostics/auth's suite reads. A C# copy of them would let the two drift
+         while both suites stayed green, which is the one thing the pairing exists to stop. -->
+    <Content Include="..\..\auth\fixtures\tokens.json" Link="fixtures\tokens.json"
+             CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
 </Project>

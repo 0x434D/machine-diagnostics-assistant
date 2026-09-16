@@ -1,3 +1,4 @@
+using Gateway.Auth;
 using Gateway.Ingest;
 using Gateway.Opc;
 using Gateway.Status;
@@ -18,6 +19,19 @@ var signalPolicy = SignalPolicy.Load(options.SignalPolicyPath);
 var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
 var logger = app.Logger;
+
+// §14: every diagnostics endpoint refuses an unauthenticated request. In front of the whole
+// application rather than on each route, so that an endpoint added later is closed by this
+// line and not by someone remembering. Built here and not lazily, because a malformed
+// AUTH_PUBLIC_KEY has to be a start-up failure — the same reason SignalPolicy is loaded
+// above anything that listens.
+app.UseMiddleware<RequireToken>(new TokenGuard(
+    options,
+    // The wall clock is the right one for deciding whether a token has expired: §4.2's
+    // simulated time is what the *plant's* data is stamped with, and an issuer signing for
+    // this deployment knows nothing about it.
+    TimeProvider.System,
+    app.Services.GetRequiredService<ILoggerFactory>().CreateLogger<TokenGuard>()));
 
 var queue = await LocalQueue.OpenAsync(options.QueuePath).ConfigureAwait(false);
 

@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace Gateway.Opc;
 
 /// <summary>
@@ -37,6 +39,14 @@ public sealed record GatewayOptions
     /// is the wrong unit of change for a number an engineer tunes against jitter they measured.
     /// </summary>
     public const string DefaultSignalPolicyPath = "/config/signals.json";
+
+    // The same three values diagnostics/auth/config.py defaults to. Restated rather than
+    // shared because they cannot be shared across the language split; that they are equal is
+    // asserted, from the fixture file both suites read.
+    public const string DefaultTokenAudience = "machine-agent";
+    public const string DefaultTokenIssuer = "https://issuer.test/machine-agent";
+    public const string DefaultTokenAlgorithm = "RS256";
+    public const string DefaultTokenRoleClaim = "role";
 
     public required string ApplicationUri { get; init; }
     public required string EndpointUrl { get; init; }
@@ -110,6 +120,61 @@ public sealed record GatewayOptions
     public uint QueueSize { get; init; } = 100;
     public uint EventQueueSize { get; init; } = 200;
 
+    // --- §10.5's identity settings ----------------------------------------------------------
+    //
+    // Read from AUTH_*, not GATEWAY_*, and that is the point rather than an inconsistency.
+    // These are the *deployment's* identity settings: `diagnostics/auth` reads exactly these
+    // names in the three Python services, and the gateway has to be talking about the same
+    // issuer, the same audience and the same claim. A GATEWAY_AUDIENCE that an operator had
+    // to keep equal to AUTH_AUDIENCE by hand is precisely the silent drift that having the
+    // rule written twice already threatens, and the one thing the shared token fixtures
+    // exist to stop.
+
+    /// <summary>
+    /// The issuer's public key, PEM-encoded. There is no default and the empty value fails
+    /// closed: a gateway nobody configured trusts nothing and refuses everything, which is
+    /// the only resting state that leaves §14's claim true where the setting was forgotten.
+    ///
+    /// <para>A key rather than a JWKS URL because M5 is deliberately slim and there is no
+    /// issuer to fetch a key set from — <c>scripts/mint-token.py</c> stands where Zitadel
+    /// will. When Zitadel arrives this is where its JWKS URL goes.</para>
+    /// </summary>
+    public string TokenPublicKey { get; init; } = "";
+
+    /// <summary>§10.5's audience check. A token minted for another service must not open this one.</summary>
+    public string TokenAudience { get; init; } = DefaultTokenAudience;
+
+    /// <summary>The one issuer this application is a client of (§10.5).</summary>
+    public string TokenIssuer { get; init; } = DefaultTokenIssuer;
+
+    /// <summary>
+    /// One algorithm, not a list. A list of exactly one is what refuses <c>alg: none</c> and
+    /// the HMAC-with-the-public-key confusion; a deployment needing a second has changed
+    /// issuers rather than gained a setting.
+    /// </summary>
+    public string TokenAlgorithm { get; init; } = DefaultTokenAlgorithm;
+
+    /// <summary>
+    /// Which claim carries §10.5's role. Configuration because it is the one part of the
+    /// claim shape the issuer decides for us — Zitadel's default is a namespaced key.
+    /// </summary>
+    public string TokenRoleClaim { get; init; } = DefaultTokenRoleClaim;
+
+    /// <summary>
+    /// How much clock difference between the issuer and this gateway a token's <c>exp</c> is
+    /// given.
+    ///
+    /// <para><b>Zero, and the default is a statement rather than a placeholder.</b> It is
+    /// the same zero <c>diagnostics/auth/config.py</c> defaults to, for the same reason:
+    /// every container in this deployment runs on one host and reads one kernel clock, so
+    /// there is no skew to tolerate, and any non-zero default silently extends the life of
+    /// every token ever issued by that much. The setting exists because the issuer will one
+    /// day be somewhere else, and moving it then is configuration rather than a release —
+    /// and because the two implementations have to be able to disagree about it out loud.
+    /// </para>
+    /// </summary>
+    public TimeSpan TokenClockSkew { get; init; } = TimeSpan.Zero;
+
     public string OwnStoreRoot => Path.Join(PkiRoot, "edge-gateway");
     public string TrustedStoreRoot => Path.Join(PkiRoot, "trusted");
     public string RejectedStoreRoot { get; init; } = DefaultRejectedStoreRoot;
@@ -168,6 +233,12 @@ public sealed record GatewayOptions
                 environment, "GATEWAY_MAX_MESSAGE_SIZE", DefaultMaxMessageSize),
             ConnectTimeoutSeconds = ReadInt(
                 environment, "GATEWAY_CONNECT_TIMEOUT_SECONDS", DefaultConnectTimeoutSeconds),
+            TokenPublicKey = Read(environment, "AUTH_PUBLIC_KEY", ""),
+            TokenAudience = Read(environment, "AUTH_AUDIENCE", DefaultTokenAudience),
+            TokenIssuer = Read(environment, "AUTH_ISSUER", DefaultTokenIssuer),
+            TokenAlgorithm = Read(environment, "AUTH_ALGORITHM", DefaultTokenAlgorithm),
+            TokenRoleClaim = Read(environment, "AUTH_ROLE_CLAIM", DefaultTokenRoleClaim),
+            TokenClockSkew = TimeSpan.FromSeconds(ReadClockSkew(environment)),
         };
     }
 
@@ -180,6 +251,32 @@ public sealed record GatewayOptions
     private static int ReadInt(
         IReadOnlyDictionary<string, string?> environment, string key, int fallback) =>
         int.TryParse(Read(environment, key, string.Empty), out var value) ? value : fallback;
+
+    /// <summary>
+    /// The clock skew, in seconds, refused unless it is a non-negative number.
+    ///
+    /// <para>Refused rather than defaulted, and unlike most of the keys above. It governs how
+    /// long an expired token goes on being accepted, so a typo quietly becoming zero hides an
+    /// operator's fix, and a negative value expires every token early for a reason nobody
+    /// would look for. Unset is a different thing from mistyped and still takes the
+    /// default.</para>
+    /// </summary>
+    /// <exception cref="ArgumentException">the value is set and is not a non-negative number.</exception>
+    private static double ReadClockSkew(IReadOnlyDictionary<string, string?> environment)
+    {
+        const string Key = "AUTH_CLOCK_SKEW_SECONDS";
+        var raw = Read(environment, Key, string.Empty);
+        if (raw.Length == 0)
+        {
+            return 0.0;
+        }
+
+        return double.TryParse(raw, CultureInfo.InvariantCulture, out var value) && value >= 0
+            ? value
+            : throw new ArgumentException(
+                $"{Key} is '{raw}'; clock skew is a non-negative number of seconds",
+                nameof(environment));
+    }
 
     /// <summary>
     /// A window length, refused unless it is a positive whole number.

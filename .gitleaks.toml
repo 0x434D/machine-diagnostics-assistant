@@ -1,0 +1,27 @@
+# gitleaks' defaults, minus exactly one file.
+#
+# The pre-commit hook (docs/ENGINEERING.md §6) is the reason no credential has reached this
+# repository, and it stays at full strength everywhere else: `useDefault` keeps every rule,
+# and the allowlist below names one path rather than a pattern that would grow.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = """
+diagnostics/auth/fixtures/tokens.json trips the `jwt` rule eleven times, and every hit is a
+token this repository publishes on purpose.
+
+The file is the shared half of a two-implementation agreement: §10.5's validation rule is
+written once in Python and once in C# because the edge gateway cannot import the Python
+module, and the only thing that keeps the pair from drifting quietly is that both suites are
+checked against these same bytes. `scripts/mint-fixtures.py` generates them from an RSA
+keypair it creates in memory and never writes to disk, so there is no private key to leak
+after it exits, and the tokens are signed for `https://issuer.test/machine-agent`, which is
+an issuer that does not exist and never will -- M5 was ruled slim and builds no IdP.
+
+Allowlisted by path rather than by fingerprint because the file is regenerated whole: every
+signature changes on every run, and eleven fingerprints in `.gitleaksignore` would have to be
+rewritten each time, which is the shape of a suppression nobody maintains.
+"""
+paths = ['''^diagnostics/auth/fixtures/tokens\.json$''']
