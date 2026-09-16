@@ -5,13 +5,21 @@
  */
 import { useEffect, useState } from "react";
 
-import { describeFailure, fetchPart, imageUrl, type Part } from "./api";
+import {
+  describeFailure,
+  fetchImage,
+  fetchPart,
+  imagePath,
+  type Part,
+} from "./api";
 import { useAuth } from "./AuthContext";
 
 export function EvidencePanel({ serial }: { serial: string }) {
   const { token } = useAuth();
   const [part, setPart] = useState<Part | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [image, setImage] = useState<string | null>(null);
+  const [imageError, setImageError] = useState<string | null>(null);
 
   useEffect(() => {
     let current = true;
@@ -25,6 +33,35 @@ export function EvidencePanel({ serial }: { serial: string }) {
     // rather than nothing (below), and pasting a token afterwards should not require
     // closing and reopening the chip to see the row it was always pointing at.
   }, [serial, token]);
+
+  useEffect(() => {
+    const path = part === null ? null : imagePath(part);
+    if (path === null) return;
+
+    // `revoked` closes the window in which the teardown runs before the fetch resolves: an
+    // object URL created after that point would have no owner left to release it. A blob URL
+    // that outlives its <img> pins the image bytes for the life of the document, and a
+    // reader clicking through citations for an afternoon creates one per click.
+    let revoked = false;
+    let created: string | null = null;
+
+    fetchImage(path, token)
+      .then((bytes) => {
+        if (revoked) return;
+        created = URL.createObjectURL(bytes);
+        setImage(created);
+      })
+      .catch((reason: unknown) => {
+        if (!revoked) setImageError(describeFailure(reason));
+      });
+
+    return () => {
+      revoked = true;
+      if (created !== null) URL.revokeObjectURL(created);
+      setImage(null);
+      setImageError(null);
+    };
+  }, [part, token]);
 
   if (error !== null) {
     return (
@@ -44,7 +81,6 @@ export function EvidencePanel({ serial }: { serial: string }) {
     );
   }
 
-  const image = imageUrl(part);
   const inspection = part.inspection;
   return (
     <div data-testid="evidence-panel" className="evidence">
@@ -75,7 +111,15 @@ export function EvidencePanel({ serial }: { serial: string }) {
         <dt>Model</dt>
         <dd>{inspection?.model_version ?? "—"}</dd>
       </dl>
-      {image === null ? null : (
+      {/* Three states, not two. No image at all is §3.4's good part and shows nothing;
+          bytes that would not load is a failure and says so, because the image is the
+          evidence the citation was clicked for and a blank space where it should be reads
+          as "this part has no image" — which is a different and wrong fact. */}
+      {imageError !== null ? (
+        <p className="evidence__image-error">
+          Could not open the inspection image: {imageError}
+        </p>
+      ) : image === null ? null : (
         <img src={image} alt={`Inspection image for ${serial}`} />
       )}
     </div>

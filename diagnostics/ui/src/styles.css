@@ -92,6 +92,11 @@ button {
   margin-top: 0.75rem;
 }
 
+.evidence__image-error {
+  color: GrayText;
+  margin: 0.75rem 0 0;
+}
+
 .trace {
   margin: 1rem 0;
 }

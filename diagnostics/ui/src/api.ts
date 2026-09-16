@@ -90,9 +90,36 @@ export async function fetchPart(
  *
  * `inspection` is null for a part that has not reached S3 — the ordinary state of every
  * serial between the press and the camera — which is a third case and not an image. */
-export function imageUrl(part: Part): string | null {
+export function imagePath(part: Part): string | null {
   const url = part.inspection?.image_url ?? null;
   return url === null ? null : `${ANALYSIS}${url}`;
+}
+
+/** The reject image, as bytes, fetched under the reader's own identity.
+ *
+ * **This exists because a browser cannot put an `Authorization` header on an `<img>`.**
+ * `GET /parts/{serial}/image` refuses an unauthenticated request like every other endpoint
+ * since M5, and the element the panel used to render pointed straight at it — so the image
+ * a quality engineer opens a citation *for* silently failed to load. §7.2: a citation you
+ * cannot open is barely a citation, and that applies hardest to the evidence itself.
+ *
+ * The alternative was a short-lived signed query parameter on the endpoint, and it was not
+ * taken. It would be a second credential shape — minted somewhere, verified somewhere,
+ * expiring on its own schedule — beside the one `auth.tokens.verify` implements, which is
+ * the duplication the `auth` package exists to prevent; and it would put a credential in a
+ * URL, where browser history, `Referer` and every access log downstream keep a copy. This
+ * costs one `revokeObjectURL` in the caller instead, which is local and checkable.
+ */
+export async function fetchImage(
+  path: string,
+  token: string | null,
+): Promise<Blob> {
+  const response = await fetch(path, { headers: authHeaders(token) });
+  await refuseIfDenied(response);
+  if (!response.ok) {
+    throw new Error(`${path}: ${response.status} ${response.statusText}`);
+  }
+  return await response.blob();
 }
 
 /**
