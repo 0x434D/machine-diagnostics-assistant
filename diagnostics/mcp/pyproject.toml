@@ -1,0 +1,67 @@
+# §6.11's MCP server: the analysis queries as tools, the knowledge base as resources, and
+# the agent's pipeline as `diagnose`.
+#
+# The distribution is `mcp-server` and the import package `mcp_server`, because the obvious
+# names are taken by the SDK itself: `mcp` is its distribution and `mcp.server` its module.
+# A package of ours called either would shadow the thing it imports.
+[project]
+name = "mcp-server"
+version = "0.1.0"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    # The MCP SDK. Justified at length in the commit message; the short form is that MCP is
+    # a wire protocol with a versioned specification, and §6.11's claim is that an agent we
+    # did not build reaches these tools -- which is a claim about interoperability with
+    # other people's clients, not about our own JSON-RPC being adequate. The SDK is the
+    # reference implementation of both transports and of the 2026-07-28 revision §6.11
+    # names; hand-rolling it would put us on our own reading of a spec we are trying to
+    # demonstrate conformance to.
+    "mcp==2.2.0",
+    # The same client the agent reaches the analysis service with. Note the SDK brings
+    # `httpx2` for its own transport -- a different distribution, not an upgrade of this
+    # one -- so the two coexist and this pin is unaffected.
+    "httpx==0.28.1",
+    "pydantic-settings==2.15.0",
+    # The contract is YAML and is read with a YAML parser, the same way analysis's own
+    # contract test reads it.
+    "pyyaml==6.0.3",
+    # §6.2's loader, shared with the analysis service and the agent. This package is the
+    # third consumer named in diagnostics/pyproject.toml, and the reason it was extracted.
+    "knowledge",
+]
+
+# The entry point `diagnostics/compose.yml` runs, and the one a developer runs from a
+# checkout. It reads the settings below rather than taking a host and a port on the command
+# line, so the two cannot disagree and §10.3's numbers stay in one place.
+[project.scripts]
+mcp-server = "mcp_server.server:main"
+
+[tool.uv.sources]
+knowledge = { workspace = true }
+analysis = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+    "pytest-asyncio==1.4.0",
+    "types-pyyaml==6.0.12.20260906",
+    # Test scope only, and deliberately: §6.11's parity claim is that neither binding can do
+    # anything the other cannot, and the only honest way to assert that is against the other
+    # binding's *live* surface. Comparing the generated tool list against the committed YAML
+    # it was generated from would be the generator agreeing with itself.
+    #
+    # It stays out of [project.dependencies]: the running server reaches the analysis service
+    # over HTTP and never imports it, so the "three consumers, none depending on the others"
+    # rule in diagnostics/pyproject.toml holds where it matters -- at runtime and in the
+    # image.
+    "analysis",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+markers = ["authenticity: §1's proofs — stops containers, minutes long (make verify)"]
+addopts = "-m 'not authenticity'"

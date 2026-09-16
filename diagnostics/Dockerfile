@@ -38,6 +38,7 @@ COPY diagnostics/pyproject.toml diagnostics/uv.lock ./
 COPY diagnostics/analysis/pyproject.toml analysis/
 COPY diagnostics/agent/pyproject.toml agent/
 COPY diagnostics/knowledge/pyproject.toml knowledge/
+COPY diagnostics/mcp/pyproject.toml mcp/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-workspace --package "${PACKAGE}"
 
@@ -47,6 +48,12 @@ COPY diagnostics/ .
 # and they are not this stack's -- `knowledge/` is one directory up from `diagnostics/` in
 # the repository, and it is one directory up from /src here for the same reason.
 COPY knowledge/ /knowledge/
+# The contract, for the same reason and one directory further out: §6.11's MCP server
+# generates its tool list from `contracts/analysis.openapi.yaml` at startup, so for that
+# service the contract is not a build-time artefact but a file it reads. Copied for every
+# package this image builds rather than conditionally on ARG PACKAGE -- a COPY that depends
+# on a build argument is a second image shape to reason about, for a hundred kilobytes.
+COPY contracts/ /contracts/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked --package "${PACKAGE}"
 
@@ -67,6 +74,7 @@ COPY --from=build /opt/python /opt/python
 COPY --from=build /opt/venv  /opt/venv
 COPY --from=build --chown=10001:10001 /src /src
 COPY --from=build --chown=10001:10001 /knowledge /knowledge
+COPY --from=build --chown=10001:10001 /contracts /contracts
 ENV PATH="/opt/venv/bin:${PATH}" \
     PYTHONUNBUFFERED=1
 WORKDIR /src

@@ -62,8 +62,11 @@ COMMIT_RANGE ?= main..HEAD
 
 # Strict: every package has tests now, so "collected nothing" is a package whose tests stopped
 # being found, which must fail rather than read as a pass.
+# $(3) is the uv package name when it differs from the directory, which happens exactly once:
+# diagnostics/mcp/ holds the package `mcp-server`, because `mcp` is the SDK's own distribution
+# and a workspace member of that name would shadow the thing it imports.
 define pytest-package
-	cd $(1) && uv run --frozen --package $(2) pytest $(2)/tests -q
+	cd $(1) && uv run --frozen --package $(if $(3),$(3),$(2)) pytest $(2)/tests -q
 endef
 
 # The same, for a marker, and exit 5 is no longer forgiven. It was, and correctly: the plant
@@ -172,6 +175,7 @@ lint-python: lock-check
 	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini analysis
 	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini agent
 	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini knowledge
+	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini mcp
 # measurements/ is not a package and sits outside both workspaces, so neither line above
 # reaches it -- while gate.yml's path filter does list measurements/**, which made CI run a
 # check that never looked at the file that changed. Its runners execute inside the plant
@@ -523,6 +527,7 @@ test-python: lock-check
 	$(call pytest-package,diagnostics,knowledge)
 	$(call pytest-package,diagnostics,analysis)
 	$(call pytest-package,diagnostics,agent)
+	$(call pytest-package,diagnostics,mcp,mcp-server)
 
 check-python: lint-python test-python
 
