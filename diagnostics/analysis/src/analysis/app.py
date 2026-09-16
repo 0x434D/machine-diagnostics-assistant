@@ -13,6 +13,7 @@ from analysis import (
     routes_alarms,
     routes_coverage,
     routes_inspection,
+    routes_knowledge,
     routes_line,
     routes_parts,
     routes_patterns,
@@ -31,6 +32,7 @@ app.include_router(routes_signals.router)
 app.include_router(routes_line.router)
 app.include_router(routes_inspection.router)
 app.include_router(routes_patterns.router)
+app.include_router(routes_knowledge.router)
 # **Before `routes_parts`, and it has to be.** Starlette matches routes in registration
 # order, and `/parts/{serial}` matches `/parts/affected` with `serial="affected"` — so the
 # containment endpoint registered after it would be unreachable, answering 404 for a part
