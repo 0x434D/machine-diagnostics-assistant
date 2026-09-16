@@ -59,7 +59,11 @@ public static class StatusEndpoint
                     statusCode: Microsoft.AspNetCore.Http.StatusCodes.Status503ServiceUnavailable);
             }
 
+            // RS0030: neither of §4.2's timestamps — the default end of a query window when
+            // the caller named none, over a ledger the live subscription is still writing.
+#pragma warning disable RS0030
             var end = to ?? DateTime.UtcNow;
+#pragma warning restore RS0030
             var start = from ?? end - defaultWindow;
             return Results.Json(
                 await reconciler.CheckAsync(start, end).ConfigureAwait(false));

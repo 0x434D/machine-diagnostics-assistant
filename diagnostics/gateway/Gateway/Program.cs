@@ -152,7 +152,14 @@ var ingest = Task.Run(
         // copies of "where does storage end" is two places for the answer to drift.
         async Task BackfillFromStorageAsync()
         {
+            // RS0030: neither of §4.2's timestamps — this bounds a HistoryRead rather than
+            // stamping a row. Sound because backfill runs only after the phase poll above
+            // leaves "catchup", and past catch-up the plant's simulated clock advances 1:1
+            // with this one. Asking for a window ending "now" while the two were still
+            // diverging is exactly what that gate prevents.
+#pragma warning disable RS0030
             var to = DateTime.UtcNow;
+#pragma warning restore RS0030
             var earliest = to - options.HistoryDepth;
             var stored = writer is null
                 ? null

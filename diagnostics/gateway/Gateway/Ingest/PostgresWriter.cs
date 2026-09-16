@@ -812,7 +812,12 @@ public sealed class PostgresWriter
             To = to,
             Reason = reason,
         });
+        // RS0030: the ServerTs slot, and §4.2's ServerTimestamp is the wall clock. The gap's
+        // place in simulated time is `from`, which the caller measured; when the gateway
+        // noticed the gap is a different fact and the one this records.
+#pragma warning disable RS0030
         return new IngestRecord("gap", nodeId, from, DateTime.UtcNow, 0, payload, null);
+#pragma warning restore RS0030
     }
 
     private static async Task<int> InsertRawAsync(

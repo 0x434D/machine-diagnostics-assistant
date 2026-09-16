@@ -93,7 +93,11 @@ public sealed class LocalQueueTests : IDisposable
         Kind: "event",
         NodeId: "ns=2;i=5",
         SourceTs: new DateTime(2026, 9, 12, 2, 14, 0, DateTimeKind.Utc),
+        // RS0030: the wall clock, which is what ServerTs is. The assertions in this file are
+        // all about SourceTs, which is pinned to a literal instant one line above.
+#pragma warning disable RS0030
         ServerTs: DateTime.UtcNow,
+#pragma warning restore RS0030
         StatusCode: 0,
         PayloadJson: $"{{\"AssemblySerial\":\"{serial}\"}}",
         ImageBytes: null);

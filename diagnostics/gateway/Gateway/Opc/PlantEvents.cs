@@ -324,7 +324,12 @@ public sealed class EventStreamSpec
             SourceTs: sourceTs ?? throw new InvalidOperationException(
                 $"an event from {station} carries no {PlantEvents.TimeField}, so it cannot be "
                 + "placed in simulated time"),
+            // RS0030: §4.2's ServerTimestamp IS the wall clock — it is what the gateway
+            // saw and when, kept for diagnostics beside the SourceTs above that every
+            // analysis reads. The ban exists to make this line say so.
+#pragma warning disable RS0030
             ServerTs: DateTime.UtcNow,
+#pragma warning restore RS0030
             StatusCode: 0,
             PayloadJson: JsonSerializer.Serialize(payload),
             ImageBytes: image);

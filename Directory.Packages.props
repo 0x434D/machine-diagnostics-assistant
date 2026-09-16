@@ -1,0 +1,38 @@
+<Project>
+  <!-- Central package management, which spec §10.7 requires and which this repository did not
+       have: every version lived in a csproj, so two projects could disagree about one package
+       and nothing would say so. `Directory.Packages.props` was listed in gate.yml's dotnet
+       path filter and referenced by docs/ENGINEERING.md §2 as the place analyzers go, and was
+       never created — assumed present by later work, which is the shape this project keeps
+       finding. PackageReference in a csproj now carries a name and no version. -->
+  <PropertyGroup>
+    <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- GlobalPackageReference rather than a PackageReference per project: it applies to every
+         project in the tree and sets PrivateAssets so the analyzer does not flow into anything
+         that consumes the output. This is what makes BannedSymbols.txt a build error rather
+         than a document — see the file itself for what is banned and why the list is shorter
+         than the handbook's. -->
+    <GlobalPackageReference Include="Microsoft.CodeAnalysis.BannedApiAnalyzers" Version="5.6.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Gateway -->
+    <PackageVersion Include="Microsoft.Data.Sqlite" Version="10.0.12" />
+    <PackageVersion Include="Microsoft.IdentityModel.JsonWebTokens" Version="8.22.0" />
+    <PackageVersion Include="Npgsql" Version="10.0.3" />
+    <PackageVersion Include="OPCFoundation.NetStandard.Opc.Ua.Client" Version="1.5.378.176" />
+    <PackageVersion Include="OPCFoundation.NetStandard.Opc.Ua.Configuration" Version="1.5.378.176" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Gateway.Tests -->
+    <PackageVersion Include="coverlet.collector" Version="6.0.4" />
+    <PackageVersion Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageVersion Include="Testcontainers.PostgreSql" Version="4.15.0" />
+    <PackageVersion Include="xunit" Version="2.9.3" />
+    <PackageVersion Include="xunit.runner.visualstudio" Version="3.1.4" />
+  </ItemGroup>
+</Project>
