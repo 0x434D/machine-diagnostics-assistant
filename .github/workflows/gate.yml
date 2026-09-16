@@ -48,6 +48,7 @@ jobs:
               - 'plant/**'
               - 'diagnostics/analysis/**'
               - 'diagnostics/agent/**'
+              - 'diagnostics/auth/**'
               - 'diagnostics/knowledge/**'
               - 'diagnostics/mcp/**'
               - 'diagnostics/pyproject.toml'
@@ -66,6 +67,9 @@ jobs:
               - 'contracts/**'
               - 'Directory.Build.props'
               - 'Directory.Packages.props'
+              # Read by BannedApiAnalyzers, which Directory.Packages.props references
+              # globally: editing it changes what compiles.
+              - 'BannedSymbols.txt'
               - 'NuGet.config'
               - 'global.json'
               - 'Makefile'

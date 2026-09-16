@@ -5,7 +5,10 @@
 # depend on either of the others: the analysis service serves §5.3's GET /knowledge/{id}
 # from it, the agent routes from it, and §6.11's MCP server exposes the same documents as
 # resources. A copy of the parser in each would be three readings of one vocabulary.
-members = ["analysis", "agent", "knowledge", "mcp"]
+members = ["analysis", "agent", "auth", "knowledge", "mcp"]
+# `auth` is the second package extracted for the same reason and with the same three
+# consumers: §10.5's token rules, in one place, because the one domain where nobody should
+# own more code than they must is the one that decides who gets in.
 
 [dependency-groups]
 dev = ["ruff==0.16.7", "mypy==2.3.1"]

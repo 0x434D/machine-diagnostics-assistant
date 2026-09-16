@@ -17,6 +17,18 @@ header p {
   color: GrayText;
 }
 
+.token-field {
+  display: grid;
+  gap: 0.25rem;
+  margin-top: 0.75rem;
+  font-size: 0.85em;
+  max-width: 16rem;
+}
+
+.token-field__status {
+  color: GrayText;
+}
+
 form {
   display: grid;
   gap: 0.5rem;
@@ -78,6 +90,11 @@ button {
 .evidence img {
   max-width: 100%;
   margin-top: 0.75rem;
+}
+
+.evidence__image-error {
+  color: GrayText;
+  margin: 0.75rem 0 0;
 }
 
 .trace {

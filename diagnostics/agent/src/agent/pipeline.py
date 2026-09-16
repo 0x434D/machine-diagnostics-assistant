@@ -123,14 +123,20 @@ async def stream(
     settings: Settings | None = None,
     analysis: AnalysisClient | None = None,
     provider: Provider | None = None,
+    token: str | None = None,
 ) -> AsyncIterator[Progress | Answer]:
-    """Yields a `Progress` per step and exactly one `Answer`, last."""
-    # §5.2's `sessions`, `messages` and `traces` exist and nothing writes them yet: the
-    # transcript is per-user and identity is M5's. Taken and dropped rather than removed
-    # from the signature, so the caller that will carry it does not change shape later.
+    """Yields a `Progress` per step and exactly one `Answer`, last.
+
+    `token` is the caller's, forwarded to the analysis service: since M5 that service
+    refuses an unauthenticated request like every other one (§10.5), and the agent asks it
+    questions on the asker's behalf rather than on its own.
+    """
+    # §5.2's `messages` and `traces` are still written by nothing -- the transcript is
+    # M6's. `sessions` is written by `agent.app` before this is reached, which is the layer
+    # that has the principal; the session id arrives here already recorded.
     del session_id
     settings = settings or Settings()
-    analysis = analysis or AnalysisClient(settings.analysis_url)
+    analysis = analysis or AnalysisClient(settings.analysis_url, token=token)
     provider = provider or select_provider(settings)
 
     caveats: list[str] = [DISCLOSURE] if provider.name == "scripted" else []
@@ -341,6 +347,7 @@ async def run(
     settings: Settings | None = None,
     analysis: AnalysisClient | None = None,
     provider: Provider | None = None,
+    token: str | None = None,
 ) -> Answer:
     """`stream` without the progress, for callers that only want the answer."""
     answer: Answer | None = None
@@ -350,6 +357,7 @@ async def run(
         settings=settings,
         analysis=analysis,
         provider=provider,
+        token=token,
     ):
         if isinstance(item, Answer):
             answer = item

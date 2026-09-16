@@ -7,21 +7,24 @@ proof and a passing one look identical from a green pipeline.
 
 Each proof below says where it runs, or which milestone it waits on and why.
 
-**Seven of the nine are proved after M4, and two are not — and one of the seven is proved in
+**Eight of the nine are proved after M5, and one is not — and one of the eight is proved in
 half.** 1.1 to 1.4 were M1's; M3 closed **1.5**, the analysis. **M4 closes 1.7** outright and
 **1.6 only as far as anything without an API key can**: the mechanism that stops an invention
 reaching the reader is proved, and whether a *model* resists inventing is not, because
 everything M4 built runs against `ScriptedProvider`. That split is written out in full below
-and is the honest boundary of this milestone — read past it and this file starts claiming
-something §1 does not have. What remains: **1.8** (identity) waits on **M5**, because there is
-no identity layer to prove anything about — every diagnostics endpoint still answers
-unauthenticated requests, and what M5 has to supply is an identity on the request and a proof
-that an unauthenticated one is refused; **1.9** (traceability returns *exactly* the affected
-serials) waits on **M7**, because "exactly" is a score against ground truth — M2b proved the
-genealogy resolves and M3 wrote the query, and what is missing is the harness that compares
-the returned set against what the plant recorded, outside both stacks, since ground truth
-never reaches this one. The one non-§1 row, `read_rows == pg_rows`, waits on a runner outside
-both stacks and is argued at the bottom of this file.
+and is the honest boundary of that milestone — read past it and this file starts claiming
+something §1 does not have. **M5 closes 1.8**, identity: every endpoint the diagnostics stack
+serves refuses an unauthenticated request, MCP included and enumerated from the applications
+rather than listed; an admin-only action performed as `user` is a 403 and not a 401; and
+`sessions.subject` carries the `sub` off the token. What M5 does **not** demonstrate is §14's
+*other* identity line — that adding Google or Microsoft is an admin-UI task — and that is
+written out below rather than left to be inferred from a green pipeline, which is the failure
+mode this whole file exists to prevent. What remains: **1.9** (traceability returns *exactly*
+the affected serials) waits on **M7**, because "exactly" is a score against ground truth — M2b
+proved the genealogy resolves and M3 wrote the query, and what is missing is the harness that
+compares the returned set against what the plant recorded, outside both stacks, since ground
+truth never reaches this one. The one non-§1 row, `read_rows == pg_rows`, waits on a runner
+outside both stacks and is argued at the bottom of this file.
 
 ## Provable today
 
@@ -351,7 +354,8 @@ over four packages** — plant 4, analysis 4 (6 min 12 s, the container stops an
 agent 5 (3.4 s), MCP 3 (5.0 s). The two new files are seconds of assertions behind a container
 that takes most of a minute to start, which is the whole of why they are not in the gate.
 
-**`make verify` runs four packages now, and ran two before.** `agent/pyproject.toml` and
+**`make verify` runs four packages after M4, and ran two before** — five after M5, and the
+section below says which one and why. `agent/pyproject.toml` and
 `mcp/pyproject.toml` have registered the `authenticity` marker since the tasks that created
 them — declared, excluded from `addopts`, and run by nothing, which from a distance is
 indistinguishable from wiring. The two lines in the `verify` target are what M4 adds, and they
@@ -436,11 +440,97 @@ document and a tool list and nothing else.
 binding would follow the procedure it read, or choose those tools. The binding is proven; the
 judgement of whatever binds to it is not.
 
+### M5 closes §1.8, and is explicit about the identity claim it does not touch
+
+| Claim | Proof | Runs as |
+|---|---|---|
+| §1.8 — every endpoint the diagnostics stack serves refuses an unauthenticated request, MCP included and **enumerated from the applications and from the server rather than listed**; an admin-only action as `user` is **403**, distinguishable from the 401; and `agent.sessions.subject` carries the `sub` off the token | `diagnostics/auth/tests/test_authenticity.py` | `make verify` |
+
+Postgres in a container carrying the gateway's own migrations and the agent's Alembic history,
+with the analysis service, the agent and §6.11's MCP server each served over a loopback socket
+and spoken to by a plain HTTP client holding no reference to any of them. Nothing below the
+three is a fake, which is why it sits behind `make verify` rather than in the gate — the cost
+rule this file has applied since M2a, not a category one.
+
+**It lives in the `auth` package, which is the fifth `make verify` runs.** Each of the three
+services already proves its own half in the gate — `test_authorisation.py`, one copy per
+service, in process against `TestClient`. None of them can say §1.8's actual sentence, because
+that sentence is about *every* endpoint: the analysis service cannot answer for the agent,
+neither can answer for the MCP server, and none of the three holds the `agent.sessions` row.
+So the claim is made where the rule the three share lives, and `auth` takes its own three
+consumers as test-scope dependencies to make it. That is a dev-scope cycle and it is the same
+trade `agent` and `mcp` already made for their §1 proofs: the runtime graph and the images are
+unchanged, and nothing a service runs can reach any of it.
+
+**Why enumerated rather than listed**, in the sentence §1 cares about: a hand-written list of
+paths passes on the day it is written and goes on passing while the endpoint somebody adds six
+months from now is open by default — and that endpoint is exactly the one §1.8 is about. The
+walk takes the routes off the two FastAPI applications and the tools off the MCP server, and a
+surface it cannot see the guard on (a mounted sub-application, a raw Starlette route, the
+interactive docs switched back on) fails at collection rather than being skipped by pattern.
+**19 endpoints and 19 tools** on the run that closed this row; the whole file is **8 s** behind
+a container that takes most of a minute to start.
+
+**Both sides of every refusal, because one side is satisfied by a stack that is simply down.**
+Each endpoint is also called with a `user` token and must not answer 401. The 403 set is
+derived the same way — which endpoints the *running* stack actually refuses to a `user`,
+compared against §10.5's two live admin rows — rather than read off the dependency tree the
+applications were assembled from, which is the claim the gate's structural test already makes.
+An `admin` dependency declared and then bypassed by the router serving it passes that one and
+fails this.
+
+**What was falsified, against what.** Each break was applied to the shipped code and the whole
+file re-run. The proof named is the one that failed and no other did.
+
+| Break | Proof that failed |
+|---|---|
+| the application-wide `Depends(principal)` dropped from `analysis.app` | every diagnostics endpoint refuses |
+| `RequireToken` not added to the MCP server's application | the MCP server refuses |
+| `GET /prompts` loses its `Depends(admin)` | the admin-only action is 403 |
+| `remember(who.subject, …)` → `remember("anonymous", …)` | `sessions.subject` carries the `sub` |
+
+The last two rows are what show this is four proofs rather than one written out four times: an
+endpoint that stops requiring `admin` still refuses an anonymous request, and a session row
+stamped with a constant is invisible to every assertion about a status code.
+
+#### What M5 does **not** establish
+
+**§14's other identity line is not demonstrated, and cannot be by anything in this
+repository.** The line is *"adding Google or Microsoft as a login option is demonstrably an
+admin-UI task: no code change, no redeploy."* Demonstrating it needs an issuer that brokers,
+and the human ruling of 2026-09-15 made M5 **slim**: a JWT validation module with statically
+configured roles, and no Zitadel container. The M5 plan states that cost in those words; this
+file states it again, because §1's standard is that every link holds what it claims, and a
+milestone that quietly let this one pass would be the first to break that standard.
+
+What is true is the half the ruling preserved, and it is worth stating exactly rather than
+generously: the application is an OIDC client of exactly one issuer, knows one claim shape and
+one role source, and never learns that Google exists. `auth.config.Settings` is where a JWKS
+URL goes when there is an issuer to fetch one from, and `auth.tokens.verify` gains a line.
+That is an *argument* that the design would make it an admin-UI task. It is not a
+demonstration, and this file exists for the difference between the two.
+
+**`GET /prompts` serves the fixed prompts, not the exchange.** §10.5's admin row reads *"raw
+model exchange and system prompts"*. What the endpoint returns is every fixed instruction the
+running service sends a model — the classification prompt, the investigation prompt, the
+decline, the provider and the model name — read off the running service rather than off the
+source of whatever version somebody hopes is deployed. The per-run transcript is `agent.traces`,
+which nothing writes to until M6. So the row is gated and half-served, and the missing half is
+a table with no writer rather than an endpoint with a hole in it.
+
+**`BannedSymbols.txt` is C#-only, so one of CLAUDE.md's invariants is enforced in one of the
+two languages that state it.** The invariant reads *"`DateTime.Now` is banned at build time;
+in Python use the injected clock"*, and M5's symbol ban enforces the first clause alone:
+`Microsoft.CodeAnalysis.BannedApiAnalyzers` is a Roslyn analyzer and the Python gate has no
+equivalent — ruff's datetime rules catch a *naive* timestamp, which is a different mistake
+from calling `datetime.now` where the injected clock belongs. Every Python call to
+`datetime.now(UTC)` in the two workspaces today is an injected clock's own definition, which
+is correct; the one added tomorrow that is not is the one nothing would catch.
+
 ## Not provable yet
 
 | § | Link | Waits on | Why not yet, and what it needs |
 |---|---|---|---|
-| 1.8 | Identity | M5 | there is no identity layer, so every diagnostics endpoint answers unauthenticated requests. The README says so in those words, and that is the whole of the current posture. What closes it: an identity on the request, `sessions.subject` carrying the OIDC `sub` it is already typed for, and a proof that an unauthenticated request is **refused** — the half a login screen does not give |
 | 1.9 | Traceability | M7 | **the genealogy and the query both exist.** M2b creates the serials, the supplier lots and the as-built links and proves above that a serial resolves to its whole history without inference; M3 writes the containment query. What is left is the word *exactly*: no miss and no false inclusion is a **score** against what the plant recorded, and ground truth never reaches this stack. What closes it: M7's harness, running outside both stacks, comparing the returned set against the scenario's own ledger |
 | 1.6's behavioural half | Agent | M7, and an API key | the mechanism is proved above and the judgement is not. §8.1's case classes are the scoring, and a provider that is a model is the thing being scored. Listed here rather than left out, because "1.6 is closed" would otherwise read as more than it is |
 | — | `read_rows == pg_rows` at 25 streams | a working `measurements/run_r1_r2.py` | it is a three-way comparison — the plant's ledger, what the backfill read, what Postgres stores — and only the runner outside both stacks can make it. See below |

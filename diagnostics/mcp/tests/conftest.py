@@ -7,9 +7,32 @@ transport would be testing the database twice and the binding once.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+
 import pytest
+from auth.testing import AUDIENCE, ISSUER, PUBLIC_PEM, mint
 from knowledge.documents import DEFAULT_ROOT, KnowledgeBase
 from mcp_server.config import Settings
+
+
+@pytest.fixture(scope="session", autouse=True)
+def authentication() -> Iterator[None]:
+    """The server configured the way it is deployed: a public key, an audience, an issuer.
+
+    Through the environment rather than by replacing the guard, for the reason the other two
+    packages' conftests give: a suite that props the door open proves nothing about the door.
+    """
+    with pytest.MonkeyPatch.context() as environment:
+        environment.setenv("AUTH_PUBLIC_KEY", PUBLIC_PEM)
+        environment.setenv("AUTH_AUDIENCE", AUDIENCE)
+        environment.setenv("AUTH_ISSUER", ISSUER)
+        yield
+
+
+@pytest.fixture(scope="session")
+def bearer() -> str:
+    """A `user` token. §10.5's matrix has no admin row this server serves."""
+    return mint(role="user")
 
 
 @pytest.fixture

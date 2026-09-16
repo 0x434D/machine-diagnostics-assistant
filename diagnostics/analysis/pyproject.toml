@@ -10,10 +10,13 @@ dependencies = [
     # §5.3 puts GET /knowledge/{id} on this service; §5.2 has no `docs` table because the
     # knowledge base is Markdown in the repository (§6.2). This is how it reads it.
     "knowledge",
+    # §10.5's token rules, shared with the agent and the MCP server the way `knowledge` is.
+    "auth",
 ]
 
 [tool.uv.sources]
 knowledge = { workspace = true }
+auth = { workspace = true }
 
 [dependency-groups]
 dev = [

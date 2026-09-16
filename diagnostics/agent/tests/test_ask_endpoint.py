@@ -9,12 +9,10 @@ answer event closes the stream. What the answer *says* is the pipeline's tests.
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
 
 import pytest
 from agent import app as app_module
-from agent.answer import Answer, Method
-from agent.pipeline import Progress
+from agent.answer import Answer
 from fastapi.testclient import TestClient
 
 
@@ -32,28 +30,9 @@ def _events(body: str) -> list[tuple[str, str]]:
     return out
 
 
-@pytest.fixture
-def scripted_stream(monkeypatch: pytest.MonkeyPatch) -> None:
-    answer = Answer(
-        findings=[],
-        answer_markdown="600 parts, 30 rejected.",
-        method=Method(tools_called=["inspection_stats"], provider="scripted"),
-    )
-
-    async def fake_stream(
-        question: str, session_id: str
-    ) -> AsyncIterator[Progress | Answer]:
-        del question, session_id
-        yield Progress("reading inspection results")
-        yield Progress("checking coverage")
-        yield answer
-
-    monkeypatch.setattr(app_module, "stream", fake_stream)
-
-
-@pytest.mark.usefixtures("scripted_stream")
-def test_progress_arrives_before_the_answer() -> None:
-    with TestClient(app_module.app) as client:
+@pytest.mark.usefixtures("scripted_stream", "no_database")
+def test_progress_arrives_before_the_answer(bearer: dict[str, str]) -> None:
+    with TestClient(app_module.app, headers=bearer) as client:
         response = client.post("/ask", json={"question": "how many rejects?"})
 
     assert response.status_code == 200
@@ -64,11 +43,13 @@ def test_progress_arrives_before_the_answer() -> None:
     assert json.loads(events[0][1])["message"] == "reading inspection results"
 
 
-@pytest.mark.usefixtures("scripted_stream")
-def test_the_answer_event_carries_the_whole_answer_object() -> None:
+@pytest.mark.usefixtures("scripted_stream", "no_database")
+def test_the_answer_event_carries_the_whole_answer_object(
+    bearer: dict[str, str],
+) -> None:
     """Not prose on the wire: §6.3's object, so the UI renders findings and citations
     rather than parsing sentences back apart."""
-    with TestClient(app_module.app) as client:
+    with TestClient(app_module.app, headers=bearer) as client:
         response = client.post("/ask", json={"question": "how many rejects?"})
 
     _, data = _events(response.text)[-1]

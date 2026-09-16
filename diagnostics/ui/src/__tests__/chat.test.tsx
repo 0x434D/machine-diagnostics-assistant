@@ -1,8 +1,10 @@
 /** The question box, the steps, and the answer — over a real server-sent-event body. */
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 
+import { AuthProvider } from "../AuthContext";
 import { Chat } from "../Chat";
+import { TOKEN_STORAGE_KEY } from "../tokenStorage";
 import type { Answer } from "../api";
 
 const ANSWER: Answer = {
@@ -38,8 +40,16 @@ function sse(blocks: string[]): Response {
   });
 }
 
+// These tests are about the SSE parsing and rendering, not the auth gate M5 Task 6 adds --
+// that gate has its own tests in auth.test.tsx. Signed in by default here so a real 401
+// (missing/invalid token) does not masquerade as the SSE cases these exercise.
+beforeEach(() => {
+  window.localStorage.setItem(TOKEN_STORAGE_KEY, "dev-token-123");
+});
+
 afterEach(() => {
   vi.unstubAllGlobals();
+  window.localStorage.clear();
 });
 
 test("the steps arrive before the answer, and the answer carries its citation", async () => {
@@ -57,7 +67,11 @@ test("the steps arrive before the answer, and the answer carries its citation", 
     ),
   );
 
-  render(<Chat />);
+  render(
+    <AuthProvider>
+      <Chat />
+    </AuthProvider>,
+  );
   fireEvent.click(screen.getByRole("button", { name: "Ask" }));
 
   expect(
@@ -85,7 +99,11 @@ test("the reasoning trace names the provider that answered", async () => {
     ),
   );
 
-  render(<Chat />);
+  render(
+    <AuthProvider>
+      <Chat />
+    </AuthProvider>,
+  );
   fireEvent.click(screen.getByRole("button", { name: "Ask" }));
 
   expect(await screen.findByText("scripted")).toBeInTheDocument();
@@ -109,7 +127,11 @@ test("a caveat renders as emphasis, not as literal underscores", async () => {
     ),
   );
 
-  render(<Chat />);
+  render(
+    <AuthProvider>
+      <Chat />
+    </AuthProvider>,
+  );
   fireEvent.click(screen.getByRole("button", { name: "Ask" }));
 
   const caveat = await screen.findByText("The window contains 1 ingest gap.");
@@ -129,7 +151,11 @@ test("a stream that ends without an answer is reported, not left blank", async (
     ),
   );
 
-  render(<Chat />);
+  render(
+    <AuthProvider>
+      <Chat />
+    </AuthProvider>,
+  );
   fireEvent.click(screen.getByRole("button", { name: "Ask" }));
 
   expect(await screen.findByRole("alert")).toHaveTextContent(

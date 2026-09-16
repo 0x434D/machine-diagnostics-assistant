@@ -6,6 +6,7 @@ requires-python = "==3.13.*"
 members = [
     "agent",
     "analysis",
+    "auth",
     "knowledge",
     "mcp-server",
 ]
@@ -23,6 +24,7 @@ source = { editable = "agent" }
 dependencies = [
     { name = "alembic" },
     { name = "anthropic" },
+    { name = "auth" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "knowledge" },
@@ -43,6 +45,7 @@ dev = [
 requires-dist = [
     { name = "alembic", specifier = "==1.20.0" },
     { name = "anthropic", specifier = "==1.5.0" },
+    { name = "auth", editable = "auth" },
     { name = "fastapi", specifier = "==0.141.1" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "knowledge", editable = "knowledge" },
@@ -78,6 +81,7 @@ name = "analysis"
 version = "0.1.0"
 source = { editable = "analysis" }
 dependencies = [
+    { name = "auth" },
     { name = "fastapi" },
     { name = "knowledge" },
     { name = "psycopg", extra = ["binary", "pool"] },
@@ -96,6 +100,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "auth", editable = "auth" },
     { name = "fastapi", specifier = "==0.141.1" },
     { name = "knowledge", editable = "knowledge" },
     { name = "psycopg", extras = ["binary", "pool"], specifier = "==3.3.5" },
@@ -212,6 +217,51 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/9a/8e/82a0fe20a541c03148528be8cac2408564a6c9a0cc7e9171802bc1d26985/attrs-26.1.0.tar.gz", hash = "sha256:d03ceb89cb322a8fd706d4fb91940737b6642aa36998fe130a9bc96c985eff32", size = 952055, upload-time = "2026-03-19T14:22:25.026Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/64/b4/17d4b0b2a2dc85a6df63d1157e028ed19f90d4cd97c36717afef2bc2f395/attrs-26.1.0-py3-none-any.whl", hash = "sha256:c647aa4a12dfbad9333ca4e71fe62ddc36f4e63b2d260a37a8b83d2f043ac309", size = 67548, upload-time = "2026-03-19T14:22:23.645Z" },
+]
+
+[[package]]
+name = "auth"
+version = "0.1.0"
+source = { editable = "auth" }
+dependencies = [
+    { name = "pydantic-settings" },
+    { name = "pyjwt", extra = ["crypto"] },
+    { name = "starlette" },
+]
+
+[package.dev-dependencies]
+dev = [
+    { name = "agent" },
+    { name = "analysis" },
+    { name = "fastapi" },
+    { name = "httpx" },
+    { name = "mcp-server" },
+    { name = "psycopg", extra = ["binary"] },
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+    { name = "testcontainers" },
+    { name = "uvicorn" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pydantic-settings", specifier = "==2.15.0" },
+    { name = "pyjwt", extras = ["crypto"], specifier = "==2.14.0" },
+    { name = "starlette", specifier = "==1.6.0" },
+]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "agent", editable = "agent" },
+    { name = "analysis", editable = "analysis" },
+    { name = "fastapi", specifier = "==0.141.1" },
+    { name = "httpx", specifier = "==0.28.1" },
+    { name = "mcp-server", editable = "mcp" },
+    { name = "psycopg", extras = ["binary"], specifier = "==3.3.5" },
+    { name = "pytest", specifier = "==9.1.1" },
+    { name = "pytest-asyncio", specifier = "==1.4.0" },
+    { name = "testcontainers", extras = ["postgres"], specifier = "==4.13.2" },
+    { name = "uvicorn", specifier = "==0.52.4" },
 ]
 
 [[package]]
@@ -665,6 +715,7 @@ name = "mcp-server"
 version = "0.1.0"
 source = { editable = "mcp" }
 dependencies = [
+    { name = "auth" },
     { name = "httpx" },
     { name = "knowledge" },
     { name = "mcp" },
@@ -676,6 +727,7 @@ dependencies = [
 dev = [
     { name = "agent" },
     { name = "analysis" },
+    { name = "httpx2" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "testcontainers" },
@@ -684,6 +736,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "auth", editable = "auth" },
     { name = "httpx", specifier = "==0.28.1" },
     { name = "knowledge", editable = "knowledge" },
     { name = "mcp", specifier = "==2.2.0" },
@@ -695,6 +748,7 @@ requires-dist = [
 dev = [
     { name = "agent", editable = "agent" },
     { name = "analysis", editable = "analysis" },
+    { name = "httpx2", specifier = "==2.12.0" },
     { name = "pytest", specifier = "==9.1.1" },
     { name = "pytest-asyncio", specifier = "==1.4.0" },
     { name = "testcontainers", extras = ["postgres"], specifier = "==4.13.2" },

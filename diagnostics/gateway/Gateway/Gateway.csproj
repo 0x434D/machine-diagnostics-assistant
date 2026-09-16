@@ -18,10 +18,19 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="Microsoft.Data.Sqlite" Version="10.0.12" />
-    <PackageReference Include="Npgsql" Version="10.0.3" />
-    <PackageReference Include="OPCFoundation.NetStandard.Opc.Ua.Client" Version="1.5.378.176" />
-    <PackageReference Include="OPCFoundation.NetStandard.Opc.Ua.Configuration" Version="1.5.378.176" />
+    <!-- JOSE, and the reason it is a dependency rather than code here: .NET has no JWT
+         support in the BCL at all, so "nothing new" would mean writing RSASSA-PKCS1-v1_5
+         verification, base64url decoding and claim validation by hand — the one kind of code
+         where a subtle mistake is silent and total. This package rather than
+         Microsoft.AspNetCore.Authentication.JwtBearer, which wraps the same library: JwtBearer
+         brings authentication schemes, TokenValidationParameters out of DI and a five-minute
+         default clock skew, which is a second configuration mechanism (§10.3 says there is
+         one) and a second set of defaults to keep equal to diagnostics/auth's. -->
+    <PackageReference Include="Microsoft.IdentityModel.JsonWebTokens" />
+    <PackageReference Include="Microsoft.Data.Sqlite" />
+    <PackageReference Include="Npgsql" />
+    <PackageReference Include="OPCFoundation.NetStandard.Opc.Ua.Client" />
+    <PackageReference Include="OPCFoundation.NetStandard.Opc.Ua.Configuration" />
   </ItemGroup>
 
 </Project>

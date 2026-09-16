@@ -18,11 +18,13 @@ from collections.abc import Mapping
 
 import mcp_types as types
 import uvicorn
+from auth.requests import RequireToken, presented
 from knowledge.documents import KnowledgeBase
 from mcp.server.context import ServerRequestContext
 from mcp.server.lowlevel.server import Server
 from mcp.shared.exceptions import MCPError
 from starlette.applications import Starlette
+from starlette.requests import Request
 
 from mcp_server import contract, resources
 from mcp_server.config import Settings
@@ -76,16 +78,22 @@ def build(settings: Settings | None = None) -> Server[object]:
     async def on_call_tool(
         ctx: ServerRequestContext[object, object], params: types.CallToolRequestParams
     ) -> types.CallToolResult:
-        del ctx
+        # The caller's token, taken back off the HTTP request the middleware already
+        # accepted and forwarded to whichever service answers the tool. Both of them refuse
+        # an unauthenticated request since M5, and this server holds no credential of its
+        # own to offer instead -- which is the property `mcp_server.config` claims and the
+        # one that keeps this a binding rather than a second privileged path into the data.
+        token = presented(ctx.request) if isinstance(ctx.request, Request) else None
         arguments: Mapping[str, object] = params.arguments or {}
         if params.name == DIAGNOSE_TOOL:
             return await pipeline.diagnose(
                 _string(arguments, "question"),
                 _optional_string(arguments, "session_id"),
+                token,
             )
         if params.name not in tools.names:
             raise MCPError(types.METHOD_NOT_FOUND, f"no tool named {params.name!r}")
-        return await tools.call(params.name, arguments)
+        return await tools.call(params.name, arguments, token)
 
     async def on_list_resources(
         ctx: ServerRequestContext[object, object],
@@ -124,15 +132,24 @@ def build(settings: Settings | None = None) -> Server[object]:
 
 
 def build_app(settings: Settings | None = None) -> Starlette:
-    """The ASGI application. One POST per request; the pinned revision has no GET stream."""
+    """The ASGI application. One POST per request; the pinned revision has no GET stream.
+
+    §14 names this server specifically and §10.5 says it validates the same tokens as
+    everything else: the tools are read-only and read-only is not public. The guard is a
+    middleware rather than a dependency because the routes here are the SDK's, not ours —
+    there is nothing to decorate, and standing at the door also answers for the paths this
+    application does not serve, which a 404 given without a token would otherwise enumerate.
+    """
     settings = settings or Settings()
-    return build(settings).streamable_http_app(
+    app = build(settings).streamable_http_app(
         streamable_http_path=settings.path,
         # No `event_store`: `Last-Event-ID` resumption is one of the things the revision
         # pinned in config.PROTOCOL_REVISION removed, and a store for it would be machinery
         # kept for a feature that no longer exists.
         host=settings.host,
     )
+    app.add_middleware(RequireToken)
+    return app
 
 
 def main() -> None:

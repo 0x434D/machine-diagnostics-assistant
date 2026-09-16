@@ -1,14 +1,23 @@
 # syntax=docker/dockerfile:1
 
-# Directory.Build.props and global.json sit at the repository root and carry the target
-# framework, the analyzer settings and the SDK pin, so the build context is the repository
-# root and not this directory:
+# Directory.Build.props, Directory.Packages.props, BannedSymbols.txt and global.json sit at
+# the repository root and carry the target framework, the analyzer settings, every package
+# version and the SDK pin, so the build context is the repository root and not this directory:
 #   docker build -f diagnostics/gateway/Dockerfile -t machine-agent/edge-gateway:dev .
 FROM mcr.microsoft.com/dotnet/sdk:10.0.103@sha256:e362a8dbcd691522456da26a5198b8f3ca1d7641c95624fadc5e3e82678bd08a AS build
 WORKDIR /src
 
 # Manifests first so a source-only change does not re-resolve packages.
-COPY global.json Directory.Build.props ./
+#
+# All four, and the two that are not `global.json` or `Directory.Build.props` are here
+# because leaving them out breaks the image in two different ways, one loud and one silent.
+# Central package management moved every version out of the csproj, so without
+# `Directory.Packages.props` restore fails NU1015/NU1004 -- "no version specified" against a
+# lock file that has one. `BannedSymbols.txt` is the file `Directory.Build.props` points
+# `AdditionalFiles` at, and MSBuild's `Include` of a path that does not exist yields no item
+# and no warning: the image would build clean with the symbol ban switched off, which is the
+# worse of the two failures because nothing says so.
+COPY global.json Directory.Build.props Directory.Packages.props BannedSymbols.txt ./
 COPY diagnostics/gateway/Gateway/Gateway.csproj \
      diagnostics/gateway/Gateway/packages.lock.json \
      ./diagnostics/gateway/Gateway/

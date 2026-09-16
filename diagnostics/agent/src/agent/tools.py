@@ -407,17 +407,32 @@ class AnalysisClient:
     """The only thing the agent can reach. Read-only by construction: there is no method
     here that writes anything anywhere."""
 
-    def __init__(self, base_url: str, client: httpx.AsyncClient | None = None) -> None:
+    def __init__(
+        self,
+        base_url: str,
+        client: httpx.AsyncClient | None = None,
+        token: str | None = None,
+    ) -> None:
         self._base_url = base_url.rstrip("/")
         self._client = client
+        # The *caller's* token, forwarded rather than a service credential of the agent's
+        # own. §10.5 has one issuer and one claim shape, so a token that opens the agent
+        # opens the analysis service too -- and forwarding it keeps the answer's authority
+        # the asker's. A credential of the agent's own would let anyone who reached this
+        # service read as the agent, which is a wider hole than the one it would close.
+        self._headers = {"Authorization": f"Bearer {token}"} if token else {}
 
     async def _get(
         self, path: str, params: dict[str, str] | None = None
     ) -> httpx.Response:
         if self._client is not None:
-            return await self._client.get(f"{self._base_url}{path}", params=params)
+            return await self._client.get(
+                f"{self._base_url}{path}", params=params, headers=self._headers
+            )
         async with httpx.AsyncClient(timeout=30) as client:
-            return await client.get(f"{self._base_url}{path}", params=params)
+            return await client.get(
+                f"{self._base_url}{path}", params=params, headers=self._headers
+            )
 
     async def resolve_time(self, expression: str) -> Window | None:
         """§6.1 step 2's code half. `None` means the calendar does not know the phrase —

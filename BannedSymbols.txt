@@ -1,0 +1,47 @@
+// Spec invariants as build errors (docs/ENGINEERING.md §2). Read by
+// Microsoft.CodeAnalysis.BannedApiAnalyzers, which Directory.Packages.props references
+// globally; Directory.Build.props hands it this file. A hit is RS0030, and
+// TreatWarningsAsErrors makes it fail the build.
+//
+// `//` comments and nothing else: the analyzer parses one entry per line and treats anything
+// it cannot resolve as a symbol that simply is not present — so a `#` comment is silently an
+// entry, and two blank-ish ones are RS0031, "listed more than once". Measured, not guessed:
+// the first draft of this file failed the build six times over on its own paragraph breaks.
+//
+// This list is deliberately SHORTER than the handbook's, and the two differences are the
+// whole of the thinking behind it.
+//
+// 1. The handbook bans `T:System.DateTime` — the type. That cannot hold here. §4.2's two
+//    timestamps are both DateTime and both required: IngestRecord carries SourceTs and
+//    ServerTs, GatewayStatus reports LastEventSourceTs, the backfill windows are DateTime
+//    pairs, and the migrations bind DateTime parameters. Banning the type would forbid the
+//    thing the spec requires.
+//
+// 2. `DateTime.UtcNow` IS banned, and the five sanctioned uses carry
+//    `#pragma warning disable RS0030` with a reason at the point of use. Banning only
+//    `DateTime.Now` would be a rule with no force: local time appears nowhere in this
+//    codebase and never would, while UtcNow is the one anybody actually reaches for. What the
+//    ban buys is not that the existing five change — they are correct — but that a sixth has
+//    to say, in writing and where it is written, which of §4.2's two timestamps it is
+//    producing, or that it is producing neither.
+//
+//    The honest limit, recorded because it matters: this is a syntactic list and §4.2's rule
+//    is semantic. "Wall clock here, simulated time there" is a distinction a symbol name
+//    cannot carry, so the analyzer can only force the question and never answer it.
+//
+// `DateTimeOffset.UtcNow` is NOT banned. It appears in exactly one place — certificate
+// validity in ConnectionTests — where there is no simulated-time counterpart to confuse it
+// with, so a ban would buy one more suppression and no question worth asking. Nor is
+// TimeProvider.GetUtcNow, which is the injected clock these bans point people towards.
+//
+// The handbook's `EnsureCreated()` line is also left out: there is no Entity Framework in this
+// repository, so it would be a rule that can never match. Add it with EF Core, not before.
+P:System.DateTime.Now;local time is never right here — use the injected clock, and see §4.2 on which of the two timestamps you mean
+P:System.DateTime.UtcNow;the wall clock. If this is genuinely ServerTimestamp or a read bound (§4.2), suppress RS0030 here and say which; if it is SourceTimestamp it is simulated time and must come from the plant or an injected TimeProvider
+P:System.DateTime.Today;local time, and a date with no time is not one of §4.2's timestamps
+P:System.DateTimeOffset.Now;local time is never right here — use TimeProvider.GetUtcNow()
+M:System.Threading.Tasks.Task.Wait();await it — this service is one long-lived async pipeline and a blocked thread-pool thread is how it stops ingesting
+M:System.Threading.Tasks.Task.Wait(System.Int32);await it, with a CancellationToken rather than a timeout
+P:System.Threading.Tasks.Task`1.Result;await it — .Result on an incomplete task blocks, and on a faulted one throws AggregateException, which buries the exception that matters
+M:System.Threading.Thread.Sleep(System.Int32);use Task.Delay with a CancellationToken — a sleeping thread does not notice shutdown
+M:System.Threading.Thread.Sleep(System.TimeSpan);use Task.Delay with a CancellationToken — a sleeping thread does not notice shutdown

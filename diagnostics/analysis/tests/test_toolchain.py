@@ -1,3 +1,4 @@
+import re
 import sys
 import tomllib
 from pathlib import Path
@@ -9,6 +10,43 @@ ROOT = Path(__file__).resolve().parents[2]  # diagnostics/
 # This deliberately mirrors plant/simulator/tests/test_toolchain.py instead of sharing a
 # helper with it. §10.1 says the two stacks share no code, and a module imported across the
 # workspace boundary would be the first thing to make that false.
+
+
+def _ci_filters() -> dict[str, list[str]]:
+    gate = yaml.safe_load((ROOT.parent / ".github/workflows/gate.yml").read_text())
+    filters = [
+        step["with"]["filters"]
+        for job in gate["jobs"].values()
+        for step in job.get("steps", [])
+        if isinstance(step, dict) and "filters" in step.get("with", {})
+    ]
+    assert len(filters) == 1, "expected exactly one paths-filter step"
+    parsed: dict[str, list[str]] = yaml.safe_load(filters[0])
+    return parsed
+
+
+def _commit_hook_filters() -> tuple[dict[str, str], str]:
+    """The `grep -qE` patterns in `.claude/hooks/gate-commit.sh`, by the target they select.
+
+    Read off the script rather than restated here, so this asserts what the hook does and not
+    what someone typed into a test alongside it.
+    """
+    hook = (ROOT.parent / ".claude/hooks/gate-commit.sh").read_text()
+    per_target = {
+        target: pattern
+        for pattern, target in re.findall(
+            r"grep -qE '([^']+)' <<<\"\$staged\" \\\n\s*&& targets\+=\((check-\w+)\)",
+            hook,
+        )
+    }
+    fallback = re.search(
+        r"grep -qE '([^']+)' <<<\"\$staged\" && targets=\(check\)", hook
+    )
+    assert fallback is not None, "the hook no longer has a run-everything fallback"
+    assert set(per_target) == {"check-python", "check-dotnet", "check-frontend"}, (
+        f"the hook selects {sorted(per_target)}, which is not the three stacks"
+    )
+    return per_target, fallback.group(1)
 
 
 def test_runs_on_pinned_python() -> None:
@@ -45,15 +83,7 @@ def test_ci_watches_every_workspace_member() -> None:
     omission was easy to make and hard to see, and is why this is asserted rather than
     remembered.
     """
-    gate = yaml.safe_load((ROOT.parent / ".github/workflows/gate.yml").read_text())
-    filters = [
-        step["with"]["filters"]
-        for job in gate["jobs"].values()
-        for step in job.get("steps", [])
-        if isinstance(step, dict) and "filters" in step.get("with", {})
-    ]
-    assert len(filters) == 1, "expected exactly one paths-filter step"
-    watched = set(yaml.safe_load(filters[0])["python"])
+    watched = set(_ci_filters()["python"])
 
     members = tomllib.loads((ROOT / "pyproject.toml").read_text())["tool"]["uv"][
         "workspace"
@@ -62,6 +92,40 @@ def test_ci_watches_every_workspace_member() -> None:
         member for member in members if f"diagnostics/{member}/**" not in watched
     ]
     assert missing == [], f"gate.yml's python filter does not watch: {missing}"
+
+
+def test_the_commit_hook_gates_everything_ci_gates() -> None:
+    """The commit hook is a second copy of CI's path filters, and it had already drifted.
+
+    `diagnostics/auth/`, `diagnostics/knowledge/`, `scripts/` and `measurements/` were watched
+    by gate.yml and by nothing in the hook, so a commit touching only the shared module that
+    decides who gets into every service ran no Python gate — the identical omission
+    `test_ci_watches_every_workspace_member` above was written for, one list further down and
+    invisible for the same reason.
+
+    Asserted rather than derived: the hook is `sh` and runs before any interpreter this
+    repository pins is known to be available, so it cannot read gate.yml itself. What it can
+    be is checked, which is what this does — every path CI routes to a stack must reach that
+    stack's gate locally, either through its own pattern or through the fallback that runs
+    everything.
+    """
+    hook, fallback = _commit_hook_filters()
+
+    unreached: list[str] = []
+    for language, globs in _ci_filters().items():
+        target = f"check-{language}"
+        if target not in hook:
+            continue  # `images`, whose filter selects a job with no local gate.
+        for glob in globs:
+            # A path the glob would match. `plant/**` -> `plant/x`; a bare filename is itself.
+            sample = glob.replace("/**", "/x")
+            if not (re.search(hook[target], sample) or re.search(fallback, sample)):
+                unreached.append(f"{language}: {glob}")
+
+    assert unreached == [], (
+        "gate.yml routes these to a stack's gate; .claude/hooks/gate-commit.sh does not: "
+        f"{unreached}"
+    )
 
 
 def test_both_stacks_pin_the_same_interpreter() -> None:

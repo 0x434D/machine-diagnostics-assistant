@@ -5,11 +5,11 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="coverlet.collector" Version="6.0.4" />
-    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
-    <PackageReference Include="Testcontainers.PostgreSql" Version="4.15.0" />
-    <PackageReference Include="xunit" Version="2.9.3" />
-    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <PackageReference Include="coverlet.collector" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="Testcontainers.PostgreSql" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
   </ItemGroup>
 
   <ItemGroup>
@@ -25,6 +25,11 @@
          than duplicated: a test fixture that merely resembled the shipped file would pass
          while the real deadbands were wrong. -->
     <Content Include="..\Gateway\config\signals.json" Link="config\signals.json"
+             CopyToOutputDirectory="PreserveNewest" />
+    <!-- The tokens both implementations of §10.5's rule are checked against, read out of the
+         one file diagnostics/auth's suite reads. A C# copy of them would let the two drift
+         while both suites stayed green, which is the one thing the pairing exists to stop. -->
+    <Content Include="..\..\auth\fixtures\tokens.json" Link="fixtures\tokens.json"
              CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 

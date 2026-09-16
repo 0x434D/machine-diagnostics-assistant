@@ -18,6 +18,7 @@ from pathlib import Path
 
 import psycopg
 import pytest
+from auth.testing import AUDIENCE, ISSUER, PUBLIC_PEM, mint
 
 REPO = Path(__file__).resolve().parents[3]
 PLANT_CONTAINER = "machine-agent-plant-line-simulator-1"
@@ -68,7 +69,26 @@ def _container_logs(name: str, lines: int = 20) -> str:
 
 
 def _status() -> dict[str, object]:
-    raw = _sh("curl", "-s", "--max-time", "5", STATUS)
+    """`/status`, with a token, because since M5 it refuses a request without one.
+
+    Minted per call rather than once at fixture setup: the four proofs below poll this for up
+    to seven minutes at a stretch while a plant rebuilds 33 h of history, and a token that
+    expired halfway through would turn every proof into "the gateway never reached live" —
+    which is a sentence this file has already meant two different things by.
+
+    `user`, not `admin`: §10.5's matrix puts no gateway action in the admin column, and
+    reading `/status` with the more privileged token would stop these proofs from noticing if
+    one ever appeared.
+    """
+    raw = _sh(
+        "curl",
+        "-s",
+        "--max-time",
+        "5",
+        "-H",
+        f"Authorization: Bearer {mint(role='user')}",
+        STATUS,
+    )
     if not raw:
         return {}
     try:
@@ -213,6 +233,17 @@ def stack() -> Iterator[None]:
         f"{queue.stat().st_uid}:{queue.stat().st_gid}",
         "-p",
         "18082:8080",
+        # §10.5's three, the same names diagnostics/compose.yml passes. Without the key the
+        # gateway fails closed — which is correct, and which would make every proof below
+        # time out on a 401 reported as "the gateway never reached live". The keypair is
+        # `auth.testing`'s, in memory for the length of this run; there is no issuer in this
+        # project to get one from.
+        "-e",
+        f"AUTH_PUBLIC_KEY={PUBLIC_PEM}",
+        "-e",
+        f"AUTH_AUDIENCE={AUDIENCE}",
+        "-e",
+        f"AUTH_ISSUER={ISSUER}",
         "-e",
         "GATEWAY_HISTORY_DEPTH_HOURS=2",
         "-e",

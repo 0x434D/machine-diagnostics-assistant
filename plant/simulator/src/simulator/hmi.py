@@ -25,13 +25,21 @@ scenario engine directly rather than needing a channel back in.
 from __future__ import annotations
 
 import asyncio
+import hmac
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Final, TypedDict
+from typing import Annotated, Final, TypedDict
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Response, WebSocket, WebSocketDisconnect
+from fastapi import (
+    FastAPI,
+    Header,
+    HTTPException,
+    Response,
+    WebSocket,
+    WebSocketDisconnect,
+)
 
 from simulator.alarms import AlarmSystem
 from simulator.clock import SimulatedClock
@@ -408,6 +416,40 @@ def line_snapshot(
     }
 
 
+FAULT_TOKEN_HEADER: Final = "X-Plant-Fault-Token"
+"""§10.5's shared secret rides its own header, never `Authorization`. A name of its own
+keeps the plant's one shared-secret gate from *looking* like the diagnostics stack's
+JWT bearer tokens, on top of sharing no configuration with them
+(test_identity_boundary.py checks the latter; this is what makes the former true of the
+wire format too)."""
+
+
+def _authorize_injection(settings: Settings, presented: str | None) -> None:
+    """Refuses §3.7's panel unless `presented` is the plant's configured token.
+
+    An unset `fault_injection_token` refuses every request rather than admitting them:
+    the failure mode a machine-local HMI can afford is "the panel is locked", not
+    "nobody configured it, so it's open". `hmac.compare_digest` rather than `==` --  a
+    shared secret compared byte-for-byte leaks its length and its matching prefix
+    through response timing, which is exactly the property this gate exists to not
+    leak.
+
+    Raises HTTPException(401) for a missing header, a wrong token, or no token
+    configured at all; the caller cannot tell the three apart, which is deliberate --
+    distinguishing "wrong" from "unconfigured" would tell a guesser which one they hit.
+    """
+    configured = settings.fault_injection_token
+    if (
+        not configured
+        or not presented
+        or not hmac.compare_digest(configured, presented)
+    ):
+        raise HTTPException(
+            status_code=401,
+            detail="fault injection needs the plant's shared token",
+        )
+
+
 def build_app(
     line: Line,
     clock: SimulatedClock,
@@ -481,8 +523,17 @@ def build_app(
     # injection writes to the ground-truth log", and an injection that does not is a
     # fault no evaluation can ever account for -- which is exactly why M2b declined a
     # hold button before the log existed.
+    #
+    # §10.5's other rule: this is the plant's one privileged action, and
+    # `_authorize_injection` runs before any of the above -- a wrong or missing token
+    # never reaches the injector, so a refused request is never mistaken for a fault
+    # that was accepted and did nothing.
     @app.post("/faults", status_code=201, response_model=None)
-    async def inject(request: InjectionRequest) -> InjectedView:
+    async def inject(
+        request: InjectionRequest,
+        fault_token: Annotated[str | None, Header(alias=FAULT_TOKEN_HEADER)] = None,
+    ) -> InjectedView:
+        _authorize_injection(settings, fault_token)
         at = clock.now()
         until = (
             None

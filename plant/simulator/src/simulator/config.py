@@ -639,6 +639,15 @@ class Settings(BaseSettings):  # type: ignore[explicit-any]
     # exists to cap.
     hmi_recent_parts: int = 20
 
+    # §10.5's one privileged action. `None` until an operator copies `.env.example` and
+    # sets it -- and unset means every injection is refused rather than admitted, because
+    # the failure mode a machine-local HMI can afford is "the panel is locked", never
+    # "nobody got around to configuring it and it's open". This is the plant's own
+    # secret: it must never be the diagnostics stack's issuer, audience or key, and
+    # test_identity_boundary.py reads both stacks' configuration to assert the two share
+    # neither a name nor a value.
+    fault_injection_token: str | None = None
+
     # boundary
     endpoint_url: str = "opc.tcp://line-simulator:4840/plant"
     application_uri: str = "urn:machine-agent:plant:line-simulator"

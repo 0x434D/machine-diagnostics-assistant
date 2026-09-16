@@ -26,4 +26,13 @@
     <Deterministic>true</Deterministic>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- One list for the whole tree, tests included: a test that stamps a row with the wrong
+         one of §4.2's two timestamps is the same defect as a service that does. The analyzer
+         matches on the file's name, so the link is what makes it visible from these projects
+         at all. -->
+    <AdditionalFiles Include="$(MSBuildThisFileDirectory)BannedSymbols.txt"
+                     Link="BannedSymbols.txt" />
+  </ItemGroup>
 </Project>

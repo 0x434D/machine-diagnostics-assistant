@@ -16,6 +16,26 @@ x-runtime: &runtime
       max-size: "10m"
       max-file: "3"
 
+# §10.5's three settings, shared by every service that validates a token, because there is
+# exactly one issuer and one claim shape and a service configured for a second one would be
+# a second identity system inside the boundary that exists to have only one.
+#
+# **The public key has no default and that is deliberate.** `auth.Settings` fails closed --
+# a service that was never given a key refuses everything -- and a default here would be
+# either a committed key (a credential in the repository) or a placeholder that turns the
+# failure into a puzzle. M5 is slim and there is no issuer container: `scripts/mint-token.py`
+# is the development issuer, `--public-key` prints what goes here, and the keypair it writes
+# is gitignored. Put AUTH_PUBLIC_KEY in `diagnostics/.env`, which is gitignored too.
+#
+# Nothing in this block is shared with the plant stack, and nothing in it ever may be: the
+# plant's one privileged action is gated by a secret in *its* `.env`, and two identity
+# mechanisms disjoint by construction is what keeps the two-stack split from acquiring a
+# second channel across it (§10.5, CLAUDE.md's fifth invariant).
+x-auth: &auth
+  AUTH_PUBLIC_KEY: "${AUTH_PUBLIC_KEY:-}"
+  AUTH_AUDIENCE: "${AUTH_AUDIENCE:-machine-agent}"
+  AUTH_ISSUER: "${AUTH_ISSUER:-https://issuer.test/machine-agent}"
+
 services:
   postgres:
     <<: *runtime
@@ -50,6 +70,12 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      # The same three AUTH_* names the Python services above read, and the same block. The
+      # gateway validates the token in C# because it cannot import `diagnostics/auth` (§2.3),
+      # and that second implementation is held to the first by the shared fixtures in
+      # `diagnostics/auth/fixtures/tokens.json` -- but only if both are pointed at one issuer,
+      # which is what sharing this anchor rather than writing GATEWAY_AUDIENCE achieves.
+      <<: *auth
       # Restated here rather than left to GatewayOptions' defaults so the one name this
       # boundary is built around is visible in the file that joins the network.
       GATEWAY_ENDPOINT_URL: "opc.tcp://line-simulator:4840/plant"
@@ -95,6 +121,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      <<: *auth
       # `analysis`, never `postgres`: the role 005_m3_read_layer.sql creates holds USAGE on
       # `read`, SELECT on its views and nothing else anywhere. Sharing the gateway's
       # superuser here -- which is what this line said until M3 -- made §5.2's "reads views
@@ -133,6 +160,7 @@ services:
       postgres:
         condition: service_healthy
     environment:
+      <<: *auth
       AGENT_ANALYSIS_URL: "http://analysis:8000"
       AGENT_KNOWLEDGE_ROOT: "/knowledge"
       # §8's second writer. `agent`, never `postgres` and never `analysis`: the role
@@ -197,6 +225,7 @@ services:
       agent:
         condition: service_started
     environment:
+      <<: *auth
       MCP_ANALYSIS_URL: "http://analysis:8000"
       MCP_AGENT_URL: "http://agent:8001"
       # Where the Dockerfile laid each of them down. Stated rather than left to the module

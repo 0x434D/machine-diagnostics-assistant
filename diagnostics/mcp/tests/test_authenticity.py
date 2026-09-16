@@ -49,21 +49,29 @@ import pytest
 import pytest_asyncio
 import uvicorn
 from agent.app import app as agent_app
+from alembic import command
+from alembic.config import Config
 from analysis.app import app as analysis_app
 from analysis.config import Settings as AnalysisSettings
 from analysis.db import reset_pool
 from analysis.dependencies import now_dependency, settings_dependency
-from mcp import Client
+from auth.testing import mint
 from mcp_server import server
-from mcp_server.config import PROTOCOL_REVISION, Settings
+from mcp_server.config import Settings
 from mcp_server.diagnose import DIAGNOSE_TOOL
 from psycopg import Connection, sql
 from psycopg.conninfo import make_conninfo
 from testcontainers.postgres import PostgresContainer
 
+from .clients import authorised
+
 pytestmark = pytest.mark.authenticity
 
 DIAGNOSTICS = Path(__file__).resolve().parents[2]
+AGENT_ALEMBIC = DIAGNOSTICS / "agent"
+"""Where the agent's own migrations live. `POST /ask` writes §5.2's `sessions` row since
+M5, so `agent.*` has to exist before this file's agent can answer anything."""
+
 MIGRATIONS = DIAGNOSTICS / "gateway" / "Gateway" / "Migrations"
 
 # Pinned by digest, not tag (§10.7). scripts/pin-images.sh re-resolves it.
@@ -237,7 +245,9 @@ async def analysis_service(seeded: str) -> AsyncIterator[str]:
 
 @pytest_asyncio.fixture
 async def agent_service(
-    analysis_service: str, monkeypatch: pytest.MonkeyPatch
+    analysis_service: str,
+    postgres_container: PostgresContainer,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[str]:
     """The agent, over a socket, pointed at the analysis service by its own setting.
 
@@ -245,8 +255,17 @@ async def agent_service(
     deployment states it (`AGENT_ANALYSIS_URL`, `diagnostics/compose.yml`): the pipeline
     builds its `Settings` per request, and a seam invented here would leave the path Compose
     takes exercised by nothing.
+
+    Since M5 `POST /ask` writes §5.2's `sessions` row carrying the `sub` off the caller's
+    token, so `agent.*` has to exist. Applied here as the database owner, where
+    `agent/tests/test_agent_schema.py` applies it as two identities on purpose: that file
+    proves the grant boundary, and this one proves §1.7. One fixture doing both would make
+    each proof depend on the other's setup.
     """
+    owner = str(postgres_container.get_connection_url())
     monkeypatch.setenv("AGENT_ANALYSIS_URL", analysis_service)
+    monkeypatch.setenv("AGENT_DATABASE_URL", owner)
+    _migrate_agent_schema()
     url, running, serving = await _serve(agent_app)
     try:
         yield url
@@ -264,6 +283,13 @@ async def mcp_endpoint(analysis_service: str, agent_service: str) -> AsyncIterat
         await _stop(running, serving)
 
 
+def _migrate_agent_schema() -> None:
+    """`alembic upgrade head` against whatever `AGENT_DATABASE_URL` currently names."""
+    config = Config(str(AGENT_ALEMBIC / "alembic.ini"))
+    config.set_main_option("script_location", str(AGENT_ALEMBIC / "alembic"))
+    command.upgrade(config, "head")
+
+
 async def ask_over_rest(agent_url: str, question: str) -> dict[str, object]:
     """`POST /ask`, read as a caller that has never heard of this repository would.
 
@@ -274,7 +300,12 @@ async def ask_over_rest(agent_url: str, question: str) -> dict[str, object]:
     async with (
         httpx.AsyncClient(timeout=120.0) as client,
         client.stream(
-            "POST", f"{agent_url}/ask", json={"question": question}
+            "POST",
+            f"{agent_url}/ask",
+            json={"question": question},
+            # Since M5 this endpoint refuses an unauthenticated request like every other
+            # one. A caller that has never heard of this repository still has a token.
+            headers={"Authorization": f"Bearer {mint(role='user')}"},
         ) as response,
     ):
         response.raise_for_status()
@@ -306,7 +337,7 @@ async def test_the_same_question_answered_over_mcp_and_over_rest_agrees(
     §1.7 and fail here, which is the failure this proof exists for.
     """
     over_rest = await ask_over_rest(agent_service, QUESTION)
-    async with Client(mcp_endpoint, mode=PROTOCOL_REVISION) as client:
+    async with authorised(mcp_endpoint, mint(role="user")) as client:
         result = await client.call_tool(DIAGNOSE_TOOL, {"question": QUESTION})
 
     assert result.structured_content == over_rest
@@ -336,11 +367,13 @@ async def test_an_analysis_query_answers_alike_over_both_bindings(
         "to": FROZEN_NOW.isoformat().replace("+00:00", "Z"),
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(
+        timeout=30.0, headers={"Authorization": f"Bearer {mint(role='user')}"}
+    ) as client:
         rest = (
             await client.get(f"{analysis_service}/inspection/stats", params=window)
         ).json()
-    async with Client(mcp_endpoint, mode=PROTOCOL_REVISION) as client:
+    async with authorised(mcp_endpoint, mint(role="user")) as client:
         tool = await client.call_tool("inspectionStats", window)
 
     assert tool.structured_content == rest
@@ -371,7 +404,7 @@ async def test_an_agent_following_the_sop_it_read_over_mcp_reaches_the_same_figu
     assert isinstance(sops, list)
     assert "SOP-05" in sops, sops
 
-    async with Client(mcp_endpoint, mode=PROTOCOL_REVISION) as client:
+    async with authorised(mcp_endpoint, mint(role="user")) as client:
         # Discovered from the listing rather than constructed from the id: an external agent
         # has the protocol and nothing else, and a URI spelled here would be this test
         # agreeing with a rule it had been told. `name` is the document id (`resources.py`).

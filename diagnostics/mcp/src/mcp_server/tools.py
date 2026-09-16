@@ -67,7 +67,7 @@ class AnalysisTools:
         return [tool_for(operation) for operation in self._operations.values()]
 
     async def call(
-        self, name: str, arguments: Mapping[str, object]
+        self, name: str, arguments: Mapping[str, object], token: str | None = None
     ) -> types.CallToolResult:
         """One operation, called. Raises `KeyError` for a name this server does not serve.
 
@@ -79,7 +79,7 @@ class AnalysisTools:
         """
         operation = self._operations[name]
         path, query = operation.url_for(arguments)
-        response = await self._get(path, query)
+        response = await self._get(path, query, token)
 
         if response.status_code >= 400:
             return types.CallToolResult(
@@ -120,9 +120,19 @@ class AnalysisTools:
             structured_content=body if isinstance(body, dict) else None,
         )
 
-    async def _get(self, path: str, query: Mapping[str, str]) -> httpx.Response:
+    async def _get(
+        self, path: str, query: Mapping[str, str], token: str | None
+    ) -> httpx.Response:
+        """The caller's own token travels with the request (§10.5).
+
+        Forwarded rather than exchanged for a credential of this server's own, for the
+        reason `agent.tools` gives: this server holds no grant of its own and is not meant
+        to be a second privileged path into the data. One issuer and one claim shape is what
+        makes a straight forward correct.
+        """
         url = f"{self._base_url}{path}"
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
         if self._client is not None:
-            return await self._client.get(url, params=dict(query))
+            return await self._client.get(url, params=dict(query), headers=headers)
         async with httpx.AsyncClient(timeout=self._timeout) as client:
-            return await client.get(url, params=dict(query))
+            return await client.get(url, params=dict(query), headers=headers)

@@ -7,7 +7,8 @@ right now" becomes structurally unanswerable.
 
 from __future__ import annotations
 
-from fastapi import FastAPI
+from auth.requests import principal
+from fastapi import Depends, FastAPI
 
 from analysis import (
     routes_alarms,
@@ -23,7 +24,24 @@ from analysis import (
     routes_traceability,
 )
 
-app = FastAPI(title="machine-agent analysis", version="0.1.0")
+app = FastAPI(
+    title="machine-agent analysis",
+    version="0.1.0",
+    # §10.5, and the reason it is here rather than on each router: an endpoint added
+    # tomorrow is closed by the line that closed the ones added today. A per-route
+    # dependency is a decision somebody has to remember to repeat, and the endpoint nobody
+    # remembered is the one §1.8 is about.
+    dependencies=[Depends(principal)],
+    # **The three routes FastAPI would add for itself, deliberately not served.** They are
+    # not APIRoutes and an application-wide dependency does not reach them, so keeping them
+    # would mean four unauthenticated endpoints describing every other one. The schema is
+    # committed in `contracts/analysis.openapi.yaml` and generated from `app.openapi()` by
+    # `make contract`, so a running service serves nothing the repository does not already
+    # hold -- which makes this a subtraction rather than a loss.
+    openapi_url=None,
+    docs_url=None,
+    redoc_url=None,
+)
 app.include_router(routes_time.router)
 app.include_router(routes_coverage.router)
 app.include_router(routes_stops.router)

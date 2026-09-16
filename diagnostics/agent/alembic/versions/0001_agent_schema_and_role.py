@@ -83,10 +83,16 @@ def upgrade() -> None:
     # system runs on an injected clock (CLAUDE.md), and a second clock in the database is
     # one no test can move.
     #
-    # `subject` is the OIDC `sub` claim §5.2 names, and it is nullable because there is no
-    # issuer until M5. Not defaulted to a placeholder: a column that always holds
-    # "anonymous" cannot be told apart from one nobody ever wrote to, and this column is
-    # what an audit trail is read through.
+    # `subject` is the OIDC `sub` claim §5.2 names. It was nullable because there was no
+    # issuer to state one; M5 built the validating half of §10.5 and `agent/sessions.py`
+    # now writes this column from the token the asker presented, so that sentence is no
+    # longer true and this one replaces it.
+    #
+    # It stays nullable all the same. A column is not retyped by editing the migration that
+    # created it -- that is a new revision, and nobody has asked for one while the only path
+    # that writes the table always sets the column. Never defaulted to a placeholder: a
+    # column that always holds "anonymous" cannot be told apart from one nobody ever wrote
+    # to, and this column is what an audit trail is read through.
     op.execute("""
         CREATE TABLE agent.sessions (
           id         uuid PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -25,6 +25,7 @@ from analysis.app import app
 from analysis.config import Settings
 from analysis.db import reset_pool
 from analysis.dependencies import now_dependency, settings_dependency
+from auth.testing import AUDIENCE, ISSUER, PUBLIC_PEM, mint
 from fastapi.testclient import TestClient
 from psycopg import Connection, sql
 from psycopg.conninfo import conninfo_to_dict, make_conninfo
@@ -765,6 +766,28 @@ test that asserts something different every time it runs.
 """
 
 
+@pytest.fixture(scope="session", autouse=True)
+def authentication() -> Iterator[None]:
+    """The service configured the way it is deployed: a public key, an audience, an issuer.
+
+    Through the environment rather than through `dependency_overrides`, and that is the
+    point. Overriding the guard in a fixture would leave every test in this package running
+    against a service whose door was propped open by the test suite, and the one thing M5
+    must not do is prove the guard against a stand-in for it.
+    """
+    with pytest.MonkeyPatch.context() as environment:
+        environment.setenv("AUTH_PUBLIC_KEY", PUBLIC_PEM)
+        environment.setenv("AUTH_AUDIENCE", AUDIENCE)
+        environment.setenv("AUTH_ISSUER", ISSUER)
+        yield
+
+
+@pytest.fixture(scope="session")
+def bearer() -> dict[str, str]:
+    """A `user` token, which is what §10.5 says every read in this service needs."""
+    return {"Authorization": f"Bearer {mint(role='user')}"}
+
+
 @pytest.fixture
 def frozen_now() -> Iterator[datetime]:
     app.dependency_overrides[now_dependency] = lambda: FROZEN_NOW
@@ -774,7 +797,7 @@ def frozen_now() -> Iterator[datetime]:
 
 @pytest.fixture
 def client(
-    database: str, analysis_url: str, frozen_now: datetime
+    database: str, analysis_url: str, frozen_now: datetime, bearer: dict[str, str]
 ) -> Iterator[TestClient]:
     """The service, connected the way it is deployed: as `analysis`, over `read.*`.
 
@@ -789,13 +812,13 @@ def client(
     app.dependency_overrides[settings_dependency] = lambda: Settings(
         database_url=analysis_url
     )
-    yield TestClient(app)
+    yield TestClient(app, headers=bearer)
     app.dependency_overrides.clear()
 
 
 @pytest.fixture
 def tuned_client(
-    frozen_now: datetime,
+    frozen_now: datetime, bearer: dict[str, str]
 ) -> Iterator[Callable[[Settings], TestClient]]:
     """A client whose `Settings` the test supplies, for the numbers §10.3 makes configurable.
 
@@ -806,7 +829,7 @@ def tuned_client(
 
     def build(settings: Settings) -> TestClient:
         app.dependency_overrides[settings_dependency] = lambda: settings
-        return TestClient(app)
+        return TestClient(app, headers=bearer)
 
     assert frozen_now == FROZEN_NOW
     yield build
@@ -814,11 +837,11 @@ def tuned_client(
 
 
 @pytest.fixture
-def clockless_client(frozen_now: datetime) -> TestClient:
+def clockless_client(frozen_now: datetime, bearer: dict[str, str]) -> TestClient:
     """The service with a fixed clock and no database, for the one endpoint that needs none.
 
     `/time/resolve` reads a calendar, not Postgres, and giving it a container would hide
     that -- an endpoint that quietly started querying would go on passing.
     """
     assert frozen_now == FROZEN_NOW
-    return TestClient(app)
+    return TestClient(app, headers=bearer)

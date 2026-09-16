@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "dependencies": {
     "net10.0": {
       "coverlet.collector": {
@@ -7,6 +7,12 @@
         "requested": "[6.0.4, )",
         "resolved": "6.0.4",
         "contentHash": "lkhqpF8Pu2Y7IiN7OntbsTtdbpR1syMsm2F3IgX6ootA4ffRqWL5jF7XipHuZQTdVuWG/gVAAcf8mjk8Tz0xPg=="
+      },
+      "Microsoft.CodeAnalysis.BannedApiAnalyzers": {
+        "type": "Direct",
+        "requested": "[5.6.0, )",
+        "resolved": "5.6.0",
+        "contentHash": "Kcobt3pnOdO0A+6CKiMHZdTEluJpsfxiV20axtZdmfBQnDmiWTKPJADlgAfdTuKNAnVarrkJa0UEGwuOo91muw=="
       },
       "Microsoft.NET.Test.Sdk": {
         "type": "Direct",
@@ -115,20 +121,15 @@
           "Docker.DotNet.Enhanced.Handler.Abstractions": "4.3.3"
         }
       },
+      "Microsoft.Bcl.Cryptography": {
+        "type": "Transitive",
+        "resolved": "10.0.2",
+        "contentHash": "LG9Yll3B5aNpxv0+D47g6LiOiKBIlodhcHdQwcYzo8VeexFLGqx5ymetmA2aBRyo9cCcWsQWrFsdbsr8LvmWDw=="
+      },
       "Microsoft.CodeCoverage": {
         "type": "Transitive",
         "resolved": "17.14.1",
         "contentHash": "pmTrhfFIoplzFVbhVwUquT+77CbGH+h4/3mBpdmIlYtBi9nAB+kKI6dN3A/nV4DFi3wLLx/BlHIPK+MkbQ6Tpg=="
-      },
-      "Microsoft.Data.Sqlite": {
-        "type": "Transitive",
-        "resolved": "10.0.12",
-        "contentHash": "xUq9xUc653ue7ac2rMfCaf8UQN+U3zS8poWYlugycpvJllplMM0Mk7v/+MM0CTlu9zGvbGML4BPH8YWhrUOfGw==",
-        "dependencies": {
-          "Microsoft.Data.Sqlite.Core": "10.0.12",
-          "SQLitePCLRaw.bundle_e_sqlite3": "2.1.12",
-          "SQLitePCLRaw.core": "2.1.12"
-        }
       },
       "Microsoft.Data.Sqlite.Core": {
         "type": "Transitive",
@@ -183,6 +184,29 @@
         "resolved": "10.0.8",
         "contentHash": "OBPo4nYhMyIbtueoC10CBm6AGAbo/A9IV8QQ/6ryZS7VvmqpGT7hunazeHLxFawRzn3oLOq4jhqhpBX4tfswWQ=="
       },
+      "Microsoft.IdentityModel.Abstractions": {
+        "type": "Transitive",
+        "resolved": "8.22.0",
+        "contentHash": "LU3V3owsu4vGpCg2kyL7SsQEuHwcoJ8FSNBqzLADzCf3/PcKUTcx5Plsd51DoTJMfK/WigXV/03UhaN5JXE6uQ=="
+      },
+      "Microsoft.IdentityModel.Logging": {
+        "type": "Transitive",
+        "resolved": "8.22.0",
+        "contentHash": "G9Tl0yXSlr2pkXv4EpXjO16M4q6oo9N/od+gNyOusZ8yM8LZg1H3f/QOMFuOJiV6znzY5MkAREU97JRRnqpEQw==",
+        "dependencies": {
+          "Microsoft.IdentityModel.Abstractions": "8.22.0"
+        }
+      },
+      "Microsoft.IdentityModel.Tokens": {
+        "type": "Transitive",
+        "resolved": "8.22.0",
+        "contentHash": "i4lywKKUuVmheCUA+w/q8QNPReNI0qanHI9hhz48AFqD1ljyb8sxPL2RbXOGiPV13XdJ4kxieL9ukS7tD43LxA==",
+        "dependencies": {
+          "Microsoft.Bcl.Cryptography": "10.0.2",
+          "Microsoft.Extensions.Logging.Abstractions": "8.0.0",
+          "Microsoft.IdentityModel.Logging": "8.22.0"
+        }
+      },
       "Microsoft.TestPlatform.ObjectModel": {
         "type": "Transitive",
         "resolved": "17.14.1",
@@ -201,32 +225,6 @@
         "type": "Transitive",
         "resolved": "13.0.4",
         "contentHash": "pdgNNMai3zv51W5aq268sujXUyx7SNdE2bj1wZcWjAQrKMFZV260lbqYop1d2GM67JI1huLRwxo9ZqnfF/lC6A=="
-      },
-      "Npgsql": {
-        "type": "Transitive",
-        "resolved": "10.0.3",
-        "contentHash": "7nb5YzXuvWWJxB0J8DiyL3we+X4FOctZrt0fIBnucOIaIevFEEwGQVZKtiu9olXdlNAK1eNgqSral6r/jlhI4w==",
-        "dependencies": {
-          "Microsoft.Extensions.Logging.Abstractions": "10.0.0"
-        }
-      },
-      "OPCFoundation.NetStandard.Opc.Ua.Client": {
-        "type": "Transitive",
-        "resolved": "1.5.378.176",
-        "contentHash": "S69pGBZK73tJIYfR2IqRIl2qy/r4kodeSaOXnwz3hkQtJSd++Ts3C612v3KYIKgK48jkArWOiVXQhdSTKvqwyA==",
-        "dependencies": {
-          "BitFaster.Caching": "2.6.0",
-          "OPCFoundation.NetStandard.Opc.Ua.Configuration": "1.5.378.176",
-          "OPCFoundation.NetStandard.Opc.Ua.Core": "1.5.378.176"
-        }
-      },
-      "OPCFoundation.NetStandard.Opc.Ua.Configuration": {
-        "type": "Transitive",
-        "resolved": "1.5.378.176",
-        "contentHash": "96eSjJ1+TyvrP9rgZs5Eb2KGqz666irjmMCQAcM3Cg8k4zNFtkM4+om67vpHLGiGn0YtM1mKOEEpk+0ziLwosw==",
-        "dependencies": {
-          "OPCFoundation.NetStandard.Opc.Ua.Core": "1.5.378.176"
-        }
       },
       "OPCFoundation.NetStandard.Opc.Ua.Core": {
         "type": "Transitive",
@@ -352,9 +350,59 @@
         "type": "Project",
         "dependencies": {
           "Microsoft.Data.Sqlite": "[10.0.12, )",
+          "Microsoft.IdentityModel.JsonWebTokens": "[8.22.0, )",
           "Npgsql": "[10.0.3, )",
           "OPCFoundation.NetStandard.Opc.Ua.Client": "[1.5.378.176, )",
           "OPCFoundation.NetStandard.Opc.Ua.Configuration": "[1.5.378.176, )"
+        }
+      },
+      "Microsoft.Data.Sqlite": {
+        "type": "CentralTransitive",
+        "requested": "[10.0.12, )",
+        "resolved": "10.0.12",
+        "contentHash": "xUq9xUc653ue7ac2rMfCaf8UQN+U3zS8poWYlugycpvJllplMM0Mk7v/+MM0CTlu9zGvbGML4BPH8YWhrUOfGw==",
+        "dependencies": {
+          "Microsoft.Data.Sqlite.Core": "10.0.12",
+          "SQLitePCLRaw.bundle_e_sqlite3": "2.1.12",
+          "SQLitePCLRaw.core": "2.1.12"
+        }
+      },
+      "Microsoft.IdentityModel.JsonWebTokens": {
+        "type": "CentralTransitive",
+        "requested": "[8.22.0, )",
+        "resolved": "8.22.0",
+        "contentHash": "kv6peMLjALZLDAy2H3F77KjVRdwiscn2p/g3ui2chcbuEcAX2MpAbyDcYnJ7Vyh8jZ1aJWrniUMCDWoOgnu4NQ==",
+        "dependencies": {
+          "Microsoft.IdentityModel.Tokens": "8.22.0"
+        }
+      },
+      "Npgsql": {
+        "type": "CentralTransitive",
+        "requested": "[10.0.3, )",
+        "resolved": "10.0.3",
+        "contentHash": "7nb5YzXuvWWJxB0J8DiyL3we+X4FOctZrt0fIBnucOIaIevFEEwGQVZKtiu9olXdlNAK1eNgqSral6r/jlhI4w==",
+        "dependencies": {
+          "Microsoft.Extensions.Logging.Abstractions": "10.0.0"
+        }
+      },
+      "OPCFoundation.NetStandard.Opc.Ua.Client": {
+        "type": "CentralTransitive",
+        "requested": "[1.5.378.176, )",
+        "resolved": "1.5.378.176",
+        "contentHash": "S69pGBZK73tJIYfR2IqRIl2qy/r4kodeSaOXnwz3hkQtJSd++Ts3C612v3KYIKgK48jkArWOiVXQhdSTKvqwyA==",
+        "dependencies": {
+          "BitFaster.Caching": "2.6.0",
+          "OPCFoundation.NetStandard.Opc.Ua.Configuration": "1.5.378.176",
+          "OPCFoundation.NetStandard.Opc.Ua.Core": "1.5.378.176"
+        }
+      },
+      "OPCFoundation.NetStandard.Opc.Ua.Configuration": {
+        "type": "CentralTransitive",
+        "requested": "[1.5.378.176, )",
+        "resolved": "1.5.378.176",
+        "contentHash": "96eSjJ1+TyvrP9rgZs5Eb2KGqz666irjmMCQAcM3Cg8k4zNFtkM4+om67vpHLGiGn0YtM1mKOEEpk+0ziLwosw==",
+        "dependencies": {
+          "OPCFoundation.NetStandard.Opc.Ua.Core": "1.5.378.176"
         }
       }
     }

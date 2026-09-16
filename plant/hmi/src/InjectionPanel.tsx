@@ -26,6 +26,7 @@ export function InjectionPanel() {
   const [selected, setSelected] = useState("");
   const [values, setValues] = useState<Record<string, string>>({});
   const [duration, setDuration] = useState("");
+  const [token, setToken] = useState("");
   const [message, setMessage] = useState("");
 
   useEffect(() => {
@@ -66,7 +67,12 @@ export function InjectionPanel() {
       if (raw !== undefined && raw !== "") params[name] = Number(raw);
     }
     setMessage("");
-    injectFault(selected, params, duration === "" ? null : Number(duration))
+    injectFault(
+      selected,
+      params,
+      duration === "" ? null : Number(duration),
+      token,
+    )
       .then((injected) => {
         setMessage(`injected ${injected.kind} at ${injected.at}`);
       })
@@ -120,6 +126,20 @@ export function InjectionPanel() {
           value={duration}
           onChange={(event) => {
             setDuration(event.target.value);
+          }}
+        />
+      </label>
+
+      {/* §10.5's gate. Not pre-filled and not remembered anywhere on this page: the
+          plant is what decides whether it is right, and a page that could answer that
+          question itself would need its own copy of the secret. */}
+      <label className="inject__field">
+        token
+        <input
+          type="password"
+          value={token}
+          onChange={(event) => {
+            setToken(event.target.value);
           }}
         />
       </label>

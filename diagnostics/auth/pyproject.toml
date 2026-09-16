@@ -1,0 +1,76 @@
+# §10.5's shared validation module, as its own workspace member for the reason `knowledge`
+# is one: three consumers -- the analysis service, the agent and the MCP server -- and none
+# of them may depend on either of the others. A copy of the token rules in each would be
+# three readings of one claim shape, and the one place in this system where nobody should
+# own more code than they must.
+[project]
+name = "auth"
+version = "0.1.0"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    # Signature verification, and the reason it is a dependency rather than code here: the
+    # standard library has no JOSE support at all, so "no new dependency" would mean writing
+    # RSASSA-PKCS1-v1_5 verification, base64url decoding and claim validation by hand -- the
+    # one kind of code where a subtle mistake is silent and total. PyJWT is already resolved
+    # in this workspace (the MCP SDK's OAuth client pulls it), so this pin adds an edge to
+    # the graph rather than a package to the images.
+    "pyjwt[crypto]==2.14.0",
+    # §10.3: every number is configuration. Same settings machinery as every other package.
+    "pydantic-settings==2.15.0",
+    # `Request`, `HTTPException` and the ASGI types. Starlette rather than FastAPI because
+    # the MCP server is a Starlette application and has no FastAPI in its image -- and
+    # FastAPI handles a Starlette `HTTPException` with the same handler it uses for its own.
+    "starlette==1.6.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+    # Starlette's own TestClient, for the middleware the MCP server mounts. It is httpx that
+    # the TestClient needs; the same pin the other three packages already carry.
+    "httpx==0.28.1",
+    # `testing.api_routes`, which the two FastAPI services' §1.8 proofs share. Dev-scope and
+    # deliberately: the MCP server's image has no FastAPI in it, and only a test suite ever
+    # imports `auth.testing`.
+    "fastapi==0.141.1",
+    # --- what tests/test_authenticity.py needs, and nothing else uses -----------------
+    #
+    # §1.8's claim is *every diagnostics endpoint*, which is not a sentence any one service
+    # can say: it spans the analysis service, the agent and the MCP server at once, plus the
+    # `agent.sessions` row that records whose question it was. So the proof lives with the
+    # module the claim is about, and the three services arrive here as test-scope
+    # dependencies of it.
+    #
+    # This is a dev-scope cycle -- all three depend on `auth`, and `auth` depends on all
+    # three to be proven. It is the same trade `agent` and `mcp` already made for their own
+    # §1 proofs and the same reason: a proof of the door made against a stand-in for the
+    # services is a statement about the stand-in. It stays out of [project.dependencies],
+    # so the runtime graph and the images are unchanged and nothing a service runs can
+    # reach any of this.
+    "analysis",
+    "agent",
+    "mcp-server",
+    "pytest-asyncio==1.4.0",
+    "uvicorn==0.52.4",
+    # Real Postgres, because `sessions.subject` is a column and a subject asserted against a
+    # fake is a statement about the fake. Same pin, from the same lock, that the other three
+    # packages already carry.
+    "testcontainers[postgres]==4.13.2",
+    "psycopg[binary]==3.3.5",
+]
+
+[tool.uv.sources]
+analysis = { workspace = true }
+agent = { workspace = true }
+mcp-server = { workspace = true }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+# §1.8's proof starts a Postgres container and serves three services over loopback sockets,
+# which is the cost `make verify` exists to hold back from the gate.
+markers = ["authenticity: §1's proofs — starts containers, minutes long (make verify)"]
+addopts = "-m 'not authenticity'"

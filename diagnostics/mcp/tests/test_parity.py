@@ -28,7 +28,6 @@ from pathlib import Path
 
 import pytest
 from analysis.app import app as analysis_app
-from fastapi.testclient import TestClient
 from mcp import Client
 from mcp_server import contract, server
 from mcp_server.config import Settings
@@ -37,7 +36,10 @@ from mcp_server.diagnose import DIAGNOSE_TOOL
 
 def served_operation_ids() -> set[str]:
     """Every operation the REST binding actually serves."""
-    schema = TestClient(analysis_app).get("/openapi.json").json()
+    # `app.openapi()` rather than a request to `/openapi.json`: M5 stopped serving that
+    # route, because an unauthenticated endpoint enumerating every other one is not an
+    # exception §1.8 should have to carry. Same document, same generator.
+    schema = analysis_app.openapi()
     return {
         operation["operationId"]
         for item in schema["paths"].values()

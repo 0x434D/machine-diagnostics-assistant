@@ -14,10 +14,72 @@ export type Part = components["schemas"]["Part"];
 const AGENT = "/api/agent";
 const ANALYSIS = "/api/analysis";
 
-export async function fetchPart(serial: string): Promise<Part> {
+/** No token presented, or the one presented is invalid, expired, or for another issuer.
+ * Every diagnostics endpoint answers this the same way (§10.5) and says nothing more --
+ * see `auth.tokens.verify`'s docstring for why the reason stays server-side. */
+export class UnauthorizedError extends Error {}
+
+/** Authenticated, but the role on the token is not the one this action requires. Kept
+ * distinct from `UnauthorizedError` because the server deliberately makes the same
+ * distinction (§14) and collapsing them back into one message on the client would spend it. */
+export class ForbiddenError extends Error {}
+
+/** What the reader should be told for a failure from `ask` or `fetchPart`.
+ *
+ * 401 and 403 carry their own message already (`refuseIfDenied` below); anything else has
+ * no more specific fact to add than its own message.
+ */
+export function describeFailure(reason: unknown): string {
+  if (reason instanceof UnauthorizedError) {
+    return "Not signed in. Paste a token above and try again.";
+  }
+  if (reason instanceof ForbiddenError) {
+    return reason.message;
+  }
+  return String(reason);
+}
+
+function authHeaders(token: string | null): HeadersInit {
+  return token === null || token === ""
+    ? {}
+    : { Authorization: `Bearer ${token}` };
+}
+
+function isDetailBody(value: unknown): value is { detail: string } {
+  if (typeof value !== "object" || value === null) return false;
+  return typeof (value as { detail?: unknown }).detail === "string";
+}
+
+/** The server's `{"detail": "..."}` body for a 401 or 403 (§10.5), or the status line if
+ * whatever answered was not JSON -- a refusal is still a refusal even if something in front
+ * of the service (a proxy, a gateway timeout page) answered instead of it. */
+async function detailOf(response: Response): Promise<string> {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (!contentType.includes("application/json")) return response.statusText;
+  const body: unknown = await response.json();
+  return isDetailBody(body) ? body.detail : response.statusText;
+}
+
+/** Turns the two refusals §10.5 makes distinguishable into the errors above, so a caller
+ * can tell "not signed in" from "signed in as the wrong role" without re-reading the
+ * status code itself. Every other status is left to the caller, unchanged. */
+async function refuseIfDenied(response: Response): Promise<void> {
+  if (response.status !== 401 && response.status !== 403) return;
+  const message = await detailOf(response);
+  throw response.status === 401
+    ? new UnauthorizedError(message)
+    : new ForbiddenError(message);
+}
+
+export async function fetchPart(
+  serial: string,
+  token: string | null,
+): Promise<Part> {
   const response = await fetch(
     `${ANALYSIS}/parts/${encodeURIComponent(serial)}`,
+    { headers: authHeaders(token) },
   );
+  await refuseIfDenied(response);
   if (!response.ok) {
     throw new Error(`${serial}: ${response.status} ${response.statusText}`);
   }
@@ -28,9 +90,36 @@ export async function fetchPart(serial: string): Promise<Part> {
  *
  * `inspection` is null for a part that has not reached S3 — the ordinary state of every
  * serial between the press and the camera — which is a third case and not an image. */
-export function imageUrl(part: Part): string | null {
+export function imagePath(part: Part): string | null {
   const url = part.inspection?.image_url ?? null;
   return url === null ? null : `${ANALYSIS}${url}`;
+}
+
+/** The reject image, as bytes, fetched under the reader's own identity.
+ *
+ * **This exists because a browser cannot put an `Authorization` header on an `<img>`.**
+ * `GET /parts/{serial}/image` refuses an unauthenticated request like every other endpoint
+ * since M5, and the element the panel used to render pointed straight at it — so the image
+ * a quality engineer opens a citation *for* silently failed to load. §7.2: a citation you
+ * cannot open is barely a citation, and that applies hardest to the evidence itself.
+ *
+ * The alternative was a short-lived signed query parameter on the endpoint, and it was not
+ * taken. It would be a second credential shape — minted somewhere, verified somewhere,
+ * expiring on its own schedule — beside the one `auth.tokens.verify` implements, which is
+ * the duplication the `auth` package exists to prevent; and it would put a credential in a
+ * URL, where browser history, `Referer` and every access log downstream keep a copy. This
+ * costs one `revokeObjectURL` in the caller instead, which is local and checkable.
+ */
+export async function fetchImage(
+  path: string,
+  token: string | null,
+): Promise<Blob> {
+  const response = await fetch(path, { headers: authHeaders(token) });
+  await refuseIfDenied(response);
+  if (!response.ok) {
+    throw new Error(`${path}: ${response.status} ${response.statusText}`);
+  }
+  return await response.blob();
 }
 
 /**
@@ -41,6 +130,7 @@ export function imageUrl(part: Part): string | null {
  */
 export async function ask(
   question: string,
+  token: string | null,
   onProgress: (message: string) => void,
 ): Promise<Answer> {
   // No AbortSignal parameter. There is nothing to cancel: the Ask button is disabled for
@@ -48,9 +138,10 @@ export async function ask(
   // parameter no caller supplies is a guess about a future that has not arrived.
   const response = await fetch(`${AGENT}/ask`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json", ...authHeaders(token) },
     body: JSON.stringify({ question }),
   });
+  await refuseIfDenied(response);
   if (!response.ok || response.body === null) {
     throw new Error(`ask failed: ${response.status} ${response.statusText}`);
   }
