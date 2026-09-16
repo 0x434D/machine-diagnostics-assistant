@@ -44,7 +44,7 @@ class AnthropicProvider:
         )
 
         calls = [
-            ToolCall(name=block.name, arguments=cast(dict[str, str], block.input))
+            ToolCall(id=block.id, name=block.name, arguments=block.input)
             for block in response.content
             if block.type == "tool_use" and block.name != "answer"
         ]

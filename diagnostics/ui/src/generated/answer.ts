@@ -21,6 +21,8 @@ export type Caveats = string[];
 export type DerivedRoot = string;
 export type AgentRoot = string;
 export type Reasoning = string;
+export type Question = string;
+export type Readings = string[];
 
 export interface MachineAgentAnswerObject63 {
   findings?: Findings;
@@ -28,6 +30,7 @@ export interface MachineAgentAnswerObject63 {
   method: Method;
   caveats?: Caveats;
   contradiction?: Contradiction | null;
+  clarification?: Clarification | null;
   [k: string]: unknown;
 }
 export interface Finding {
@@ -57,5 +60,19 @@ export interface Contradiction {
   derived_root: DerivedRoot;
   agent_root: AgentRoot;
   reasoning: Reasoning;
+  [k: string]: unknown;
+}
+/**
+ * §6.7's one sanctioned question back, as an object rather than a sentence.
+ *
+ * Asking is a refusal to investigate, so it has to be as inspectable as an answer: §8.1
+ * scores "asked when it should not have" as its own case class, and a question hidden
+ * inside `answer_markdown` could only be scored by reading prose. `readings` are the
+ * investigations that would have differed — fewer than two of them is not ambiguity, and
+ * the validator says so rather than letting a caveat ship as a question.
+ */
+export interface Clarification {
+  question: Question;
+  readings: Readings;
   [k: string]: unknown;
 }

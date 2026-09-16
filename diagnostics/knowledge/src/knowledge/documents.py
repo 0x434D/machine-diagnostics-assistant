@@ -83,6 +83,17 @@ _ALARM_CODE = re.compile(r"^A-\d{3}$")
 """Alarm codes are open-ended — §4.1 adds them as the plant grows — so the guard is on the
 shape rather than on a list that would have to be edited alongside every new alarm."""
 
+
+def is_alarm_code(value: str) -> bool:
+    """Whether `value` has the shape of an alarm code.
+
+    Public because the front-matter is not the only place a code is read: the agent reads
+    them out of a question too, and a second regex there would be the same rule written
+    twice and one place for it to drift.
+    """
+    return bool(_ALARM_CODE.match(value))
+
+
 _FENCE = "---"
 
 DEFAULT_ROOT: Path = Path(__file__).resolve().parents[4] / "knowledge"
@@ -124,7 +135,7 @@ class Facets:
         _check("dimensions", self.dimensions, DIMENSIONS)
         _check("stations", self.stations, STATIONS)
         for code in self.alarm_codes:
-            if not _ALARM_CODE.match(code):
+            if not is_alarm_code(code):
                 raise KnowledgeError(f"alarm_codes: {code!r} is not an alarm code")
 
     def as_mapping(self) -> Mapping[str, frozenset[str]]:

@@ -38,9 +38,28 @@ class Settings(BaseSettings):
     #: and reaches no network; anthropic reads ANTHROPIC_API_KEY from the environment.
     provider: str = "scripted"
 
-    #: §6.2's retrieval budget in its M1 form: the tool loop is bounded so a provider that
-    #: keeps asking cannot run forever.
-    tool_budget: int = 4
+    #: §6.1 step 5's budget: the tool loop is bounded so a provider that keeps asking
+    #: cannot run forever. Exhausting it produces a partial answer that says what it could
+    #: not finish (§6.8), never a silently truncated one, so the number is a cost ceiling
+    #: rather than a correctness guard — six is two more turns than the longest scripted
+    #: investigation needs (list the stops, open one, answer).
+    tool_budget: int = 6
+
+    #: §6.8: "after several consecutive failures the run aborts with an honest message."
+    #: Consecutive, not total: a model that works around one refused call is working, and
+    #: one that cannot get anything back is not. Three is the point at which retrying has
+    #: stopped being a retry.
+    tool_failure_limit: int = 3
+
+    #: What stage 2 assumes when the question carries no time expression, or one the shift
+    #: calendar does not understand (§6.7 row one). It is an expression rather than a
+    #: duration because the agent does no date arithmetic: /time/resolve resolves this the
+    #: same way it resolves anything the model read out of the question.
+    default_time_expression: str = "this shift"
+
+    #: §6.4: the composer may write a summary sentence. Below this many findings it does
+    #: not, because a summary of one finding is that finding again.
+    summary_after_findings: int = 2
 
     # §6.2's knowledge base. Mounted at the repository's top level on a developer machine
     # and laid down at the same path inside the image, so neither has to be told.

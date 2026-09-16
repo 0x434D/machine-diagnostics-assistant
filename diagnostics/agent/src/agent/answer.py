@@ -48,6 +48,29 @@ class Method(BaseModel):
     provider: str = "unknown"
 
 
+class Clarification(BaseModel):
+    """§6.7's one sanctioned question back, as an object rather than a sentence.
+
+    Asking is a refusal to investigate, so it has to be as inspectable as an answer: §8.1
+    scores "asked when it should not have" as its own case class, and a question hidden
+    inside `answer_markdown` could only be scored by reading prose. `readings` are the
+    investigations that would have differed — fewer than two of them is not ambiguity, and
+    the validator says so rather than letting a caveat ship as a question.
+    """
+
+    question: str
+    readings: list[str]
+
+    @model_validator(mode="after")
+    def _check_readings(self) -> Clarification:
+        if len(self.readings) < 2:
+            raise ValueError(
+                "a clarification needs at least two readings (\u00a76.7): one reading is "
+                "an assumption to state in a caveat, not a question to ask"
+            )
+        return self
+
+
 class Contradiction(BaseModel):
     derived_root: str
     agent_root: str
@@ -60,6 +83,19 @@ class Answer(BaseModel):
     method: Method
     caveats: list[str] = Field(default_factory=list)
     contradiction: Contradiction | None = None
+    clarification: Clarification | None = None
+
+    @model_validator(mode="after")
+    def _check_clarification(self) -> Answer:
+        # §6.7 makes asking and answering alternatives: "ask back *or* assume the most
+        # likely one and say so". An answer carrying both has investigated a question it
+        # claimed it could not read, and the reader has no way to know which half to trust.
+        if self.clarification is not None and self.findings:
+            raise ValueError(
+                "an answer that asks back has no findings (\u00a76.7): it either "
+                "investigated or it did not"
+            )
+        return self
 
 
 def validate_basis(

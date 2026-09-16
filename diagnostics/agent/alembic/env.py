@@ -34,7 +34,12 @@ SCHEMA = "agent"
 config = context.config
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # `disable_existing_loggers` defaults to True, which would silence every logger already
+    # configured in this process — including `agent.pipeline`, whose per-call tool log is
+    # §6.1 step 5's "every call logged". A migration run in-process (the tests do, and so
+    # would a service that migrated at startup) would otherwise turn that log off for the
+    # rest of the run, silently and from an unrelated module.
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 
 def database_url() -> str:
