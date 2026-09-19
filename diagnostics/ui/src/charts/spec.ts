@@ -220,6 +220,30 @@ export interface GanttOverlays {
   readonly over?: readonly Record<string, unknown>[];
 }
 
+/** How far apart the two rows of a stacked Gantt sit, in pixels. Small on purpose: the
+ * second row is evidence for the first and the eye has to travel between them. */
+const ROW_GAP = 6;
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** The same layer with no time axis of its own.
+ *
+ * A Gantt that is the upper row of a stacked chart shares the lower row's x scale, so the
+ * two would otherwise draw the same ruler six pixels apart — and an axis between the rows
+ * is exactly the distance that makes reading one against the other guesswork.
+ */
+function withoutTimeAxis(
+  layer: Record<string, unknown>,
+): Record<string, unknown> {
+  const encoding = layer.encoding;
+  if (!isObject(encoding)) return layer;
+  const x = encoding.x;
+  if (!isObject(x)) return layer;
+  return { ...layer, encoding: { ...encoding, x: { ...x, axis: null } } };
+}
+
 /** §7.4's state Gantt, and §7.2's stop timeline: station states across an interval, in
  * §15's five categories.
  *
@@ -231,12 +255,20 @@ export interface GanttOverlays {
  * Every layer carries its own encoding rather than inheriting a top-level one, so an
  * overlay can position itself differently — a gap is a band across every station and not a
  * bar on one of them, and an inherited `y` would have forced it onto a row it is not about.
+ *
+ * `beneath` is a second view under the episodes, on their time axis. An overlay cannot do
+ * that job: a series with a scale of its own — §7.2 draws buffer levels there, which are
+ * carriers and not states — would have to borrow the nominal station axis, and would land
+ * on a row it is not about. A second row has its own y and still shares the one ruler, so
+ * the two can be read against each other. With no second row this returns what it always
+ * did, which is what every chart citation renders.
  */
 export function stateGanttSpec(
   fields: GanttFields,
   rows: readonly Row[],
   title: Record<string, unknown>,
   overlays: GanttOverlays = {},
+  beneath: Record<string, unknown> | null = null,
 ): Record<string, unknown> {
   const values = rows.map((row) => ({
     ...row,
@@ -252,55 +284,67 @@ export function stateGanttSpec(
     x: { field: fields.start, type: "temporal", title: null },
   };
 
+  const layers: Record<string, unknown>[] = [
+    ...(overlays.under ?? []),
+    {
+      data: { values },
+      mark: { type: "bar", cornerRadius: 2, height: { band: 0.7 } },
+      encoding: {
+        ...position,
+        x2: { field: fields.end },
+        color: {
+          field: "__category",
+          type: "nominal",
+          scale: stateScale(),
+          // The five in the order `CATEGORIES` declares them, so the legend reads as
+          // the diagnostic sequence rather than alphabetically.
+          sort: stateScale().domain,
+          legend: { title: "category" },
+        },
+        tooltip: [
+          { field: fields.row, type: "nominal" },
+          { field: fields.state, type: "nominal", title: "state" },
+          { field: "__category", type: "nominal", title: "category" },
+          { field: fields.start, type: "temporal", title: "from" },
+          { field: fields.end, type: "temporal", title: "to" },
+        ],
+      },
+    },
+    {
+      // The second channel, on the mark itself. Without it a reader has to go to the
+      // legend and match a colour, which is the colour being the only channel.
+      data: { values },
+      mark: {
+        type: "text",
+        align: "left",
+        baseline: "middle",
+        dx: 3,
+        fontSize: 11,
+        color: paint.text,
+      },
+      encoding: {
+        ...position,
+        text: { field: "__glyph", type: "nominal" },
+      },
+    },
+    ...(overlays.over ?? []),
+  ];
+
+  const head = { $schema: VEGA_LITE, ...title, ...config() };
+  if (beneath === null) return { ...head, layer: layers };
+
   return {
-    $schema: VEGA_LITE,
-    ...title,
-    ...config(),
-    layer: [
-      ...(overlays.under ?? []),
-      {
-        data: { values },
-        mark: { type: "bar", cornerRadius: 2, height: { band: 0.7 } },
-        encoding: {
-          ...position,
-          x2: { field: fields.end },
-          color: {
-            field: "__category",
-            type: "nominal",
-            scale: stateScale(),
-            // The five in the order `CATEGORIES` declares them, so the legend reads as
-            // the diagnostic sequence rather than alphabetically.
-            sort: stateScale().domain,
-            legend: { title: "category" },
-          },
-          tooltip: [
-            { field: fields.row, type: "nominal" },
-            { field: fields.state, type: "nominal", title: "state" },
-            { field: "__category", type: "nominal", title: "category" },
-            { field: fields.start, type: "temporal", title: "from" },
-            { field: fields.end, type: "temporal", title: "to" },
-          ],
-        },
-      },
-      {
-        // The second channel, on the mark itself. Without it a reader has to go to the
-        // legend and match a colour, which is the colour being the only channel.
-        data: { values },
-        mark: {
-          type: "text",
-          align: "left",
-          baseline: "middle",
-          dx: 3,
-          fontSize: 11,
-          color: paint.text,
-        },
-        encoding: {
-          ...position,
-          text: { field: "__glyph", type: "nominal" },
-        },
-      },
-      ...(overlays.over ?? []),
-    ],
+    ...head,
+    vconcat: [{ layer: layers.map(withoutTimeAxis) }, beneath],
+    // The one ruler both rows are read off. Without it Vega-Lite gives each row a time
+    // scale of its own, and two rows with different domains drawn one above the other is
+    // the picture that makes a wrong reading look like a checked one.
+    resolve: { scale: { x: "shared" } },
+    spacing: ROW_GAP,
+    // Plotting areas aligned rather than whole views: the second row carries the axis and
+    // the legends differ in width, and without this the two time scales would start at
+    // different pixels.
+    bounds: "flush",
   };
 }
 

@@ -123,7 +123,15 @@ const DETAIL: StopDetail = {
       reason_buffer: "B3_4",
     },
   ],
-  buffer_levels: [],
+  // §4.1 publishes a level only when a carrier moves through, so these are the movements
+  // that emptied B3_4 at 01:29:50 — the instant `derivation.links[0]` names as the reason
+  // S4 starved twenty seconds later, and the series that instant is read off.
+  buffer_levels: [
+    { buffer: "B3_4", at: "2026-09-12T01:29:20Z", level: 2 },
+    { buffer: "B3_4", at: "2026-09-12T01:29:50Z", level: 0 },
+    { buffer: "B2_3", at: "2026-09-12T01:29:10Z", level: 1 },
+    { buffer: "B2_3", at: "2026-09-12T01:29:40Z", level: 0 },
+  ],
   alarms: [],
   derivation: {
     category: "internal",
@@ -325,6 +333,63 @@ test("a stop the service returned no episodes for says so instead of drawing axe
     await screen.findByText(/returned no state episodes for this stop/),
   ).toBeInTheDocument();
   expect(screen.queryByTestId("chart-canvas")).not.toBeInTheDocument();
+});
+
+// --- the buffer levels, which are what the chain was walked over ------------------------------
+
+test("the buffer levels are drawn under the episodes, on the same time axis", async () => {
+  // §5.4 derives the chain *from* buffer levels, and `StopDetail` calls them "the second row
+  // of the same chart… what makes a chain's `buffer_condition_since` checkable by eye". The
+  // dashed rule at 01:29:50 is the walk's conclusion; this row is the evidence for it, and
+  // a reader can only check one against the other if both are on one ruler.
+  stub({});
+
+  at("/timeline?stop=stop-20260912T013000.000000Z");
+  const svg = await drawn();
+  const text = svg.textContent ?? "";
+
+  // Each buffer named on the chart itself and not only in a legend: colour is never the
+  // only channel on this screen.
+  expect(text).toContain("B3_4");
+  expect(text).toContain("B2_3");
+  // The scale the levels are read off — carriers, not station state, and its own axis.
+  expect(text).toContain("carriers");
+  // And Vega drew the whole thing: a two-row specification it refused would render its
+  // refusal here instead, which is the one way a second row quietly becomes no second row.
+  expect(screen.queryByTestId("chart-failure")).toBeNull();
+  expect(
+    screen.getByText(/4 buffer level reading\(s\) for 2 buffer\(s\)/),
+  ).toBeInTheDocument();
+});
+
+test("a stop with no level published draws no second row rather than an empty one", async () => {
+  // §4.1 publishes a level only when a carrier moves through, so a stop with none published
+  // is a fact about the line. A row of axes with nothing between them would read as every
+  // buffer sitting at zero, which is the opposite reading of the same silence.
+  stub({ detail: { ...DETAIL, buffer_levels: [] } });
+
+  at("/timeline?stop=stop-20260912T013000.000000Z");
+  const svg = await drawn();
+
+  expect(svg.textContent ?? "").not.toContain("carriers");
+  expect(screen.getByText(/No buffer level was published/)).toBeInTheDocument();
+  // The episodes are still drawn: "no level was published" is a fact about the buffers,
+  // not about the state history.
+  expect(svg.textContent ?? "").toContain("S4");
+});
+
+test("a two-row chart is drawn at the width of its panel, not at Vega-Lite's default", async () => {
+  // Vega-Lite honours a top-level width on a single or layered view and ignores it on a
+  // stack of rows, so a chart that grew a second row would silently shrink to a default
+  // nobody chose — narrower than the panel, with the same axes and no failure anywhere.
+  stub({});
+
+  at("/timeline?stop=stop-20260912T013000.000000Z");
+  const svg = await drawn();
+
+  // The element reports no width in jsdom, so the chart falls back to its design width —
+  // what matters is that the drawing comes to it rather than to Vega-Lite's own 300.
+  expect(Number(svg.getAttribute("width"))).toBe(640);
 });
 
 // --- §4.4's three situations -----------------------------------------------------------------

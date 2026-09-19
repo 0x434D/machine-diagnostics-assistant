@@ -11,7 +11,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { compile, type TopLevelSpec } from "vega-lite";
-import { View, parse } from "vega";
+import { View, parse, type Spec } from "vega";
 
 /** The width a chart draws at when the element reports none.
  *
@@ -25,6 +25,46 @@ const DESIGN_WIDTH = 640;
 function measure(element: HTMLElement | null): number {
   const width = element?.clientWidth ?? 0;
   return width > 0 ? width : DESIGN_WIDTH;
+}
+
+/** The specification compiled and sized to the panel it is about to be drawn in.
+ *
+ * A single or a layered view takes the width and the request to fit at its top level, and
+ * the whole drawing — axes, legend and title included — then comes to exactly that width.
+ *
+ * A stack of rows takes neither. Vega-Lite ignores a top-level `width` on a `vconcat` and
+ * warns `fit` back down to `pad`, so a two-row chart asked for the panel's width would draw
+ * at Vega-Lite's own default instead: the responsiveness lost with nothing failing. Its
+ * rows carry the width, which is also what lets them line up against each other under one
+ * shared x scale, and the fit is asked of the compiled **Vega** specification, where that
+ * limit does not exist. `fit-x` and not `fit`, because a row's height here is a station
+ * count or a fixed band and fitting those as well collapses the chart to no height at all
+ * — which is what Vega-Lite's own `fit` refusal is protecting against.
+ *
+ * `hconcat` is left alone deliberately: nothing builds one, and handing every column the
+ * whole panel's width would be worse than the default it gets today.
+ */
+function drawable(spec: Record<string, unknown>, width: number): Spec {
+  const stacked = spec.vconcat;
+  const rows: readonly unknown[] = Array.isArray(stacked) ? stacked : [];
+  const sized =
+    rows.length > 0
+      ? {
+          ...spec,
+          // A copy per row rather than a width written into the caller's object: the
+          // specification belongs to whoever built it and is re-read on the next render.
+          vconcat: rows.map((row) => Object.assign({}, row, { width })),
+        }
+      : { ...spec, width, autosize: { type: "fit", contains: "padding" } };
+
+  // A specification is data on this side of the boundary by design — `DataFree` for §7.4's
+  // fallback and a plain object out of `charts/spec.ts` for the rest — while `TopLevelSpec`
+  // is a union of shapes no record is comparable to. This is where the two meet, and
+  // Vega-Lite's own reading of the object is what actually checks it.
+  const compiled = compile(sized as unknown as TopLevelSpec).spec;
+  return rows.length > 0
+    ? { ...compiled, autosize: { type: "fit-x", contains: "padding" } }
+    : compiled;
 }
 
 export function VegaChart({
@@ -48,12 +88,7 @@ export function VegaChart({
 
     let view: View | null = null;
     try {
-      const sized = {
-        ...spec,
-        width,
-        autosize: { type: "fit", contains: "padding" },
-      };
-      view = new View(parse(compile(sized as TopLevelSpec).spec), {
+      view = new View(parse(drawable(spec, width)), {
         renderer: "svg",
         container: element,
       });
