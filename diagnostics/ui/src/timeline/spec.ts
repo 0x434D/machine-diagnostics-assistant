@@ -12,7 +12,7 @@
  */
 import type { StopDetail } from "../api";
 import type { Row } from "../charts/rows";
-import { chrome } from "../charts/palette";
+import { chrome, seriesRange } from "../charts/palette";
 import { stateGanttSpec, titleBlock } from "../charts/spec";
 
 export type Drawn =
@@ -109,6 +109,110 @@ function gapRows(detail: StopDetail): Row[] {
   }));
 }
 
+function levelRows(detail: StopDetail): Row[] {
+  return detail.buffer_levels.map((point) => ({
+    buffer: point.buffer,
+    at: point.at,
+    level: point.level,
+  }));
+}
+
+/** How tall the buffer row is drawn.
+ *
+ * Fixed, where the Gantt above it grows with the number of stations: this row is one
+ * quantitative scale however wide the line is, and a level series given a station's worth
+ * of height per buffer would dwarf the episodes it is evidence for.
+ */
+const LEVELS_HEIGHT = 96;
+
+/** §5.4's evidence, as the second row of the same chart.
+ *
+ * `StopDetail` calls `buffer_levels` *"the second row of the same chart, and what makes a
+ * chain's `buffer_condition_since` checkable by eye"*. The dashed rule the chain draws at
+ * an empty-or-full instant is the walk's own conclusion; this is the series that conclusion
+ * was read off, on the same ruler — so "B3_4 was empty from 01:29:50" stops being something
+ * a reader takes on trust and becomes something they can see.
+ *
+ * **Stepped, not interpolated.** §4.1 publishes a level only when a carrier moves through
+ * the buffer, so between two published points the level did not drift — it did not change
+ * at all. A straight line between them would draw a movement nothing measured, and the
+ * instant a buffer reached zero would land at the wrong place on the ruler, which is the
+ * one instant this row exists to put in the right one. The points are drawn for the same
+ * reason: where a sample actually is is a fact about the evidence.
+ *
+ * Coloured from the series palette and never the five categories: a buffer is not a station
+ * state, and red there means "this station is the problem" (`tokens.css`). The buffer's name
+ * is written at its last sample as well, because on this screen colour is never the only
+ * channel.
+ */
+function levelsView(levels: readonly Row[]): Record<string, unknown> {
+  const colour = {
+    field: "buffer",
+    type: "nominal",
+    scale: { range: seriesRange() },
+    legend: { title: "buffer" },
+  };
+
+  return {
+    data: { values: levels },
+    height: LEVELS_HEIGHT,
+    layer: [
+      {
+        mark: {
+          type: "line",
+          interpolate: "step-after",
+          point: { filled: true, size: 20 },
+          strokeWidth: 1.5,
+        },
+        encoding: {
+          x: { field: "at", type: "temporal", title: null },
+          y: {
+            field: "level",
+            type: "quantitative",
+            title: "carriers",
+            // Anchored at zero, and this is the one chart where that is not a default: an
+            // empty buffer is the evidence, and an axis that starts above zero draws the
+            // instant it emptied as an ordinary low point.
+            scale: { zero: true },
+          },
+          color: colour,
+          tooltip: [
+            { field: "buffer", type: "nominal" },
+            { field: "level", type: "quantitative", title: "carriers" },
+            { field: "at", type: "temporal", title: "published at" },
+          ],
+        },
+      },
+      {
+        // The name at the end of each series. Computed in the specification rather than in
+        // TypeScript, like the Pareto's cumulative share: what is drawn stays traceable to
+        // what was measured without reading this file.
+        transform: [
+          {
+            window: [{ op: "rank", as: "__latest" }],
+            sort: [{ field: "at", order: "descending" }],
+            groupby: ["buffer"],
+          },
+          { filter: "datum.__latest === 1" },
+        ],
+        mark: {
+          type: "text",
+          align: "left",
+          baseline: "middle",
+          dx: 5,
+          fontSize: 10,
+        },
+        encoding: {
+          x: { field: "at", type: "temporal", title: null },
+          y: { field: "level", type: "quantitative" },
+          color: colour,
+          text: { field: "buffer", type: "nominal" },
+        },
+      },
+    ],
+  };
+}
+
 /** The chart, or why there is no chart to draw.
  *
  * A stop whose timeline came back empty is refused by name rather than drawn as an axis
@@ -129,6 +233,7 @@ export function buildTimeline(detail: StopDetail): Drawn {
   const chain = chainRows(detail);
   const buffers = bufferRows(detail);
   const gaps = gapRows(detail);
+  const levels = levelRows(detail);
   const paint = chrome();
 
   return {
@@ -152,8 +257,12 @@ export function buildTimeline(detail: StopDetail): Drawn {
           ...(buffers.length === 0 ? [] : [bufferLayer(buffers, paint.text)]),
         ],
       },
+      // No second row rather than an empty one: §4.1 publishes a level only when a carrier
+      // moves through, so a stop with none published is a fact about the line, and a set of
+      // axes with nothing between them would read as every buffer sitting at zero.
+      levels.length === 0 ? null : levelsView(levels),
     ),
-    description: describe(detail, episodes.length),
+    description: describe(detail, episodes.length, levels),
   };
 }
 
@@ -301,7 +410,11 @@ function bufferLayer(
  * readable, and a screen reader that got "a chart" would be told a picture exists and
  * nothing about what it derives.
  */
-function describe(detail: StopDetail, episodes: number): string {
+function describe(
+  detail: StopDetail,
+  episodes: number,
+  levels: readonly Row[],
+): string {
   const stations = new Set(detail.timeline.map((episode) => episode.station));
   const links = detail.derivation.links;
   const walk =
@@ -314,10 +427,15 @@ function describe(detail: StopDetail, episodes: number): string {
     detail.coverage.gaps.length === 0
       ? ""
       : ` ${String(detail.coverage.gaps.length)} ingest gap(s) are shaded: inside them the line was not observed.`;
+  const buffers = new Set(levels.map((level) => String(level.buffer)));
+  const beneath =
+    levels.length === 0
+      ? " No buffer level was published over this interval, so the second row is not drawn: §4.1 publishes one only when a carrier moves through."
+      : ` Beneath the episodes, on the same time axis, ${String(levels.length)} buffer level reading(s) for ${String(buffers.size)} buffer(s) — the series each step's empty-or-full instant was read off.`;
 
   return (
     `Station states for stop ${detail.stop.id ?? "(uncitable)"}: ` +
     `${String(episodes)} episode(s) across ${String(stations.size)} station(s), ` +
-    `${detail.history_from_ts} to ${detail.stop.to_ts}. ${walk}${gaps}`
+    `${detail.history_from_ts} to ${detail.stop.to_ts}. ${walk}${gaps}${beneath}`
   );
 }
