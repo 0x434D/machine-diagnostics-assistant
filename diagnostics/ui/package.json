@@ -9,12 +9,14 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "generate": "openapi-typescript ../../contracts/analysis.openapi.yaml -o src/generated/analysis.ts && json2ts ../../contracts/answer.schema.json -o src/generated/answer.ts"
+    "generate": "openapi-typescript ../../contracts/analysis.openapi.yaml -o src/generated/analysis.ts && json2ts ../../contracts/answer.schema.json -o src/generated/answer.ts && json2ts ../../contracts/trace.schema.json -o src/generated/trace.ts"
   },
   "dependencies": {
     "react": "19.3.0",
     "react-dom": "19.3.0",
-    "react-router": "8.4.0"
+    "react-router": "8.4.0",
+    "vega": "6.4.0",
+    "vega-lite": "6.4.3"
   },
   "devDependencies": {
     "@testing-library/dom": "10.4.1",

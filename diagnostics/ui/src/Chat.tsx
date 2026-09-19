@@ -10,6 +10,7 @@ import { useState, type ReactNode } from "react";
 import { ask, describeFailure, type Answer } from "./api";
 import { useAuth } from "./AuthContext";
 import { CitationChip } from "./CitationChip";
+import { ExchangeProvider, type Exchange } from "./citations/exchange";
 
 const EXAMPLE =
   "How many parts were rejected in the last hour, and what were the defects?";
@@ -19,6 +20,11 @@ export function Chat() {
   const [question, setQuestion] = useState(EXAMPLE);
   const [progress, setProgress] = useState<string[]>([]);
   const [answer, setAnswer] = useState<Answer | null>(null);
+  // Which exchange the answer below belongs to (§7.2's `session` event). §7.4's charts are
+  // drawn from the tool calls in this exchange's trace, so a citation cannot be opened
+  // without it — and it arrives before the first step runs, which is what lets a trace be
+  // reached even for a run that then failed.
+  const [exchange, setExchange] = useState<Exchange | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [asking, setAsking] = useState(false);
 
@@ -26,6 +32,7 @@ export function Chat() {
     event.preventDefault();
     setProgress([]);
     setAnswer(null);
+    setExchange(null);
     setError(null);
 
     if (token === null) {
@@ -40,7 +47,10 @@ export function Chat() {
     setAsking(true);
     try {
       setAnswer(
-        await ask(question, token, (line) => setProgress((s) => [...s, line])),
+        await ask(question, token, {
+          progress: (line) => setProgress((s) => [...s, line]),
+          exchange: setExchange,
+        }),
       );
     } catch (reason: unknown) {
       // Shown, not logged. An answer box that silently stays empty is the quiet wrong
@@ -80,15 +90,39 @@ export function Chat() {
         </p>
       )}
 
-      {answer === null ? null : <AnswerView answer={answer} />}
+      {answer === null ? null : (
+        <AnswerView answer={answer} exchange={exchange} />
+      )}
     </section>
   );
 }
 
-function AnswerView({ answer }: { answer: Answer }) {
+function AnswerView({
+  answer,
+  exchange,
+}: {
+  answer: Answer;
+  exchange: Exchange | null;
+}) {
   const citations = (answer.findings ?? []).flatMap(
     (finding) => finding.citations ?? [],
   );
+
+  const evidence =
+    citations.length === 0 ? null : (
+      <p className="citations">
+        Evidence:{" "}
+        {citations.map((citation, index) => (
+          <CitationChip
+            // The index, because two citations of one kind are two referents and several
+            // kinds carry no id at all — §7.4's charts are keyed by a tool call, and two
+            // views of one call are two legitimate chips.
+            key={`${citation.kind}:${String(index)}`}
+            citation={citation}
+          />
+        ))}
+      </p>
+    );
 
   return (
     <article className="answer">
@@ -96,16 +130,12 @@ function AnswerView({ answer }: { answer: Answer }) {
         <p key={paragraph}>{emphasise(paragraph)}</p>
       ))}
 
-      {citations.length === 0 ? null : (
-        <p className="citations">
-          Evidence:{" "}
-          {citations.map((citation) => (
-            <CitationChip
-              key={`${citation.kind}:${citation.id}`}
-              citation={citation}
-            />
-          ))}
-        </p>
+      {/* The exchange the citations below belong to. A `chart` citation names a tool call
+          this run made (§7.4) and can only be resolved inside the run that made it. */}
+      {exchange === null ? (
+        evidence
+      ) : (
+        <ExchangeProvider exchange={exchange}>{evidence}</ExchangeProvider>
       )}
 
       <Trace answer={answer} />

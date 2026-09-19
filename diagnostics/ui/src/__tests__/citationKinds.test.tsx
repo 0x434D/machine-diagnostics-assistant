@@ -14,6 +14,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import generatedAnswerSource from "../generated/answer.ts?raw";
 import { AuthProvider } from "../AuthContext";
 import { CitationChip } from "../CitationChip";
+import { ExchangeProvider } from "../citations/exchange";
 import { TOKEN_STORAGE_KEY } from "../tokenStorage";
 import type { Citation, CitationWindow } from "../generated/answer";
 import type {
@@ -25,6 +26,7 @@ import type {
   PatternReport,
   SignalTrend,
   StopDetail,
+  Trace,
 } from "../api";
 
 const TOKEN = "dev-token-123";
@@ -258,11 +260,51 @@ const SAMPLES: Record<Citation["kind"], Citation> = {
   serial: { kind: "serial", id: "C-000123" },
   lot: { kind: "lot", id: "L-4471" },
   containment: { kind: "containment", serials: ["A-00000007"] },
+  // §7.4's chart: a reference to a tool call this run made, and never any values. The
+  // exchange it belongs to is the page's, not the citation's -- see `citations/exchange`.
+  chart: {
+    kind: "chart",
+    chart_type: "pareto",
+    source: "call_inspection_stats",
+    options: {
+      series: "defect_classes",
+      x: "defect_class",
+      y: "count",
+    },
+    window: CITED_WINDOW,
+  },
 };
+
+/** §7.2's trace for the exchange the chart citation above belongs to. */
+const TRACE: Trace = {
+  sops_loaded: ["CORE-01"],
+  budget: { tool_turns: 2, tool_turns_limit: 6 },
+  timings: { total_ms: 900, model_ms: 700, tools_ms: 200 },
+  tool_calls: [
+    {
+      id: "call_inspection_stats",
+      name: "inspection_stats",
+      arguments: { group_by: "defect_class" },
+      result: {
+        defect_classes: [
+          { defect_class: "misalignment", count: 18 },
+          { defect_class: "contamination", count: 7 },
+          { defect_class: "short_fill", count: 3 },
+        ],
+      },
+      duration_ms: 42,
+      failed: false,
+    },
+  ],
+};
+
+const EXCHANGE = { sessionId: "1f3f2b6e-0000-4000-8000-000000000001", seq: 1 };
 
 /** The kinds the contract declares, read out of the generated union rather than listed. */
 function declaredKinds(): string[] {
-  const declaration = /export type Kind = (.+);/.exec(generatedAnswerSource);
+  const declaration = /export type Kind =([\s\S]+?);/.exec(
+    generatedAnswerSource,
+  );
   const union = declaration?.[1];
   if (union === undefined) {
     throw new Error("generated/answer.ts has no `Kind` union to check against");
@@ -271,6 +313,7 @@ function declaredKinds(): string[] {
 }
 
 function bodyFor(url: string): unknown {
+  if (url.includes("/trace")) return TRACE;
   if (url.includes("/inspection/patterns")) return PATTERNS;
   if (url.includes("/signals/trend")) return TREND;
   if (url.includes("/knowledge/")) return DOCUMENT;
@@ -303,7 +346,11 @@ function stubEveryEndpoint(): ReturnType<typeof vi.fn> {
 function open(citation: Citation): void {
   const view = render(
     <AuthProvider>
-      <CitationChip citation={citation} />
+      {/* The exchange an answer would have provided (§7.4): a chart citation names a tool
+          call, and a tool call belongs to the run that made it. */}
+      <ExchangeProvider exchange={EXCHANGE}>
+        <CitationChip citation={citation} />
+      </ExchangeProvider>
     </AuthProvider>,
   );
   fireEvent.click(

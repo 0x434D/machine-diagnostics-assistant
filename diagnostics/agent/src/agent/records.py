@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 
 class ToolCallRecord(BaseModel):
-    """One call the tool loop made: what was asked of which tool, and what it cost.
+    """One call the tool loop made: what was asked of which tool, what came back, what it cost.
 
     The arguments and not only the name, because §7.2 is explicit about what the trace buys
     — it makes the "did it follow the method" axis checkable by eye — and `list_stops` on
@@ -23,14 +23,36 @@ class ToolCallRecord(BaseModel):
     and this is what became of it.
     """
 
+    id: str
+    """`provider.ToolCall.id` — the identifier that paired this result with the call that
+    asked for it, kept so that §7.4's chart citations can reference it. A chart names a tool
+    call and never a tool: one run may call `inspection_stats` three times with three
+    arguments, and a name would resolve to whichever of the three was looked at first."""
+
     name: str
     arguments: dict[str, object] = Field(default_factory=dict)
+
+    result: dict[str, object]
+    """**What the tool actually answered, kept verbatim.** §7.4: *"the data always comes
+    from a verified tool result"* — so a chart is drawn from this and from nothing else, and
+    the copy that is drawn has to be the copy the model reasoned over. Re-querying the
+    analysis service at render time would be a second read, minutes later, that can disagree
+    with the first: the reader would then be shown a chart of figures the answer above it was
+    never based on, which is the failure §7.4 describes with the invention removed and the
+    authority left in place.
+
+    Required rather than defaulted, for the reason `agent.sessions.trace_of` gives: a run
+    that stopped recording this must fail on the next read rather than reach the UI as a key
+    that is quietly absent, and a chart with no rows is exactly the empty axis that reads as
+    zero."""
+
     duration_ms: float
 
     failed: bool
     """The tool answered with an error. §6.8 hands those back to the model as tool results
     rather than raising, so a run that worked around three failures is indistinguishable in
-    `Method.tools_called` from one whose three calls all succeeded. Here it is not."""
+    `Method.tools_called` from one whose three calls all succeeded. Here it is not — and
+    §7.4 turns on it: a chart may reference a call that succeeded and no other."""
 
 
 class Budget(BaseModel):
@@ -85,3 +107,25 @@ class Feedback(BaseModel):
     useful: bool | None = None
     matched_reality: bool | None = None
     comment: str | None = None
+
+
+#: The same two decorations `agent.answer` applies to its own contract, for the same reason:
+#: a file decorated by hand after generation is a file nothing can compare against.
+SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
+SCHEMA_TITLE = "machine-agent reasoning trace (§7.2)"
+
+
+def json_schema() -> dict[str, object]:
+    """§7.2's trace as JSON Schema, committed to `contracts/` and generated from there.
+
+    It earned a contract at M6. Before this the trace was something the UI showed a summary
+    of out of `Answer.method`; §7.4 makes it something the UI *reads data out of* — a chart
+    references a tool call by id and the result is here — and a hand-written TypeScript type
+    for that would assert the shape of somebody else's response with full confidence and no
+    way to be wrong out loud, which is the one thing `ui/src/api.ts` refuses to do.
+    """
+    return {
+        "$schema": SCHEMA_DIALECT,
+        **Trace.model_json_schema(),
+        "title": SCHEMA_TITLE,
+    }

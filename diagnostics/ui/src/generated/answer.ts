@@ -7,13 +7,30 @@
 
 export type Statement = string;
 export type Basis = "measured" | "derived" | "hypothesis";
-export type Kind = "part" | "stop" | "alarm" | "signal" | "pattern" | "sop" | "serial" | "lot" | "containment";
+export type Kind =
+  "part" | "stop" | "alarm" | "signal" | "pattern" | "sop" | "serial" | "lot" | "containment" | "chart";
 export type Id = string | null;
 export type Station = string | null;
 export type Signal = string | null;
 export type Dimension = string | null;
 export type Key = string | null;
 export type Serials = string[] | null;
+export type ChartType =
+  ("timeseries" | "state_gantt" | "pareto" | "stacked_bar" | "rate_over_time" | "summary_tiles" | "vega_lite") | null;
+export type Source = string | null;
+export type Series = string | null;
+export type X = string | null;
+export type Y = string | null;
+export type Colour = string | null;
+export type End = string | null;
+export type Title = string | null;
+export type Bands = string | null;
+export type BandsSeries = string | null;
+export type BandsX = string | null;
+export type BandsEnd = string | null;
+export type Spec = {
+  [k: string]: unknown;
+} | null;
 export type FromTs = string;
 export type ToTs = string;
 export type Label = string;
@@ -51,12 +68,12 @@ export interface Finding {
 /**
  * §7.3's typed citation: a kind, and exactly the payload that kind's endpoint needs.
  *
- * One model with a per-kind payload rather than nine classes in a discriminated union.
- * The union is the more literal encoding of §7.3 and was weighed: it would give the
- * frontend nine generated types, of which M4 renders none — M6 builds the evidence panel
- * — in exchange for nine constructors here. The validator below gives the same guarantee
- * the union would (a `stop` citation without an id cannot exist) in one place, and §6.3
- * asks for these checks to be structural, which this is.
+ * One model with a per-kind payload rather than one class per kind in a discriminated
+ * union. The union is the more literal encoding of §7.3 and was weighed: it would give
+ * the frontend a generated type per kind, of which M4 renders none — M6 builds the
+ * evidence panel — in exchange for a constructor per kind here. The validators below give
+ * the same guarantee the union would (a `stop` citation without an id cannot exist) in one
+ * place, and §6.3 asks for these checks to be structural, which this is.
  *
  * **`id` rather than §7.3's three spellings.** The spec writes `id` for a stop, `value`
  * for a serial and `lot_code` for a lot. They are one concept — the single string that
@@ -72,8 +89,44 @@ export interface Citation {
   dimension?: Dimension;
   key?: Key;
   serials?: Serials;
+  chart_type?: ChartType;
+  source?: Source;
+  options?: ChartOptions | null;
   window?: CitationWindow | null;
   [k: string]: unknown;
+}
+/**
+ * §7.4's *"it never carries values the model typed"*, as a shape rather than a rule.
+ *
+ * **Every field here is a string**, and that is the whole guarantee: a name is not a
+ * number, so there is no field on this object into which a model could type a figure or a
+ * series of them. What the model chooses is the *reading* — which path in the tool result
+ * holds the rows, which of their fields is the x channel — and never the rows themselves.
+ * A wrong choice draws a chart of the wrong column of real data, which is visible; an
+ * invented figure draws a chart of nothing, which is not, and reads more authoritatively
+ * than a wrong sentence.
+ *
+ * `spec` is the one exception in type and is not one in substance: the free-form fallback
+ * is a whole Vega-Lite object, and the validator below refuses `data` and `datasets` at
+ * every depth of it. The renderer binds the verified tool result in their place.
+ *
+ * `bands` is §7.4's *"stop and alarm periods shaded"*: a **second tool call id**, so the
+ * shading is as referenced as the series under it. Closed to extra fields, because an
+ * option this does not know is either a typo the model will not be told about or a channel
+ * nothing renders.
+ */
+export interface ChartOptions {
+  series?: Series;
+  x?: X;
+  y?: Y;
+  colour?: Colour;
+  end?: End;
+  title?: Title;
+  bands?: Bands;
+  bands_series?: BandsSeries;
+  bands_x?: BandsX;
+  bands_end?: BandsEnd;
+  spec?: Spec;
 }
 /**
  * The interval a claim was made over, carried by the citation that backs it (§7.3).

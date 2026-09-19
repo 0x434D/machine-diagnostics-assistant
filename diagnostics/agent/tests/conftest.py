@@ -117,7 +117,12 @@ def scripted_stream(monkeypatch: pytest.MonkeyPatch) -> None:
         sops_loaded=["CORE-01"],
         tool_calls=[
             ToolCallRecord(
-                name="inspection_stats", arguments={}, duration_ms=1.0, failed=False
+                id="toolu_01",
+                name="inspection_stats",
+                arguments={},
+                result={"parts": 600, "rejects": 30},
+                duration_ms=1.0,
+                failed=False,
             )
         ],
         budget=Budget(tool_turns=1, tool_turns_limit=6),

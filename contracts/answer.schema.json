@@ -1,8 +1,149 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$defs": {
+    "ChartOptions": {
+      "additionalProperties": false,
+      "description": "\u00a77.4's *\"it never carries values the model typed\"*, as a shape rather than a rule.\n\n**Every field here is a string**, and that is the whole guarantee: a name is not a\nnumber, so there is no field on this object into which a model could type a figure or a\nseries of them. What the model chooses is the *reading* \u2014 which path in the tool result\nholds the rows, which of their fields is the x channel \u2014 and never the rows themselves.\nA wrong choice draws a chart of the wrong column of real data, which is visible; an\ninvented figure draws a chart of nothing, which is not, and reads more authoritatively\nthan a wrong sentence.\n\n`spec` is the one exception in type and is not one in substance: the free-form fallback\nis a whole Vega-Lite object, and the validator below refuses `data` and `datasets` at\nevery depth of it. The renderer binds the verified tool result in their place.\n\n`bands` is \u00a77.4's *\"stop and alarm periods shaded\"*: a **second tool call id**, so the\nshading is as referenced as the series under it. Closed to extra fields, because an\noption this does not know is either a typo the model will not be told about or a channel\nnothing renders.",
+      "properties": {
+        "series": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Series"
+        },
+        "x": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "X"
+        },
+        "y": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Y"
+        },
+        "colour": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Colour"
+        },
+        "end": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "End"
+        },
+        "title": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Title"
+        },
+        "bands": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bands"
+        },
+        "bands_series": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bands Series"
+        },
+        "bands_x": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bands X"
+        },
+        "bands_end": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Bands End"
+        },
+        "spec": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Spec"
+        }
+      },
+      "title": "ChartOptions",
+      "type": "object"
+    },
     "Citation": {
-      "description": "\u00a77.3's typed citation: a kind, and exactly the payload that kind's endpoint needs.\n\nOne model with a per-kind payload rather than nine classes in a discriminated union.\nThe union is the more literal encoding of \u00a77.3 and was weighed: it would give the\nfrontend nine generated types, of which M4 renders none \u2014 M6 builds the evidence panel\n\u2014 in exchange for nine constructors here. The validator below gives the same guarantee\nthe union would (a `stop` citation without an id cannot exist) in one place, and \u00a76.3\nasks for these checks to be structural, which this is.\n\n**`id` rather than \u00a77.3's three spellings.** The spec writes `id` for a stop, `value`\nfor a serial and `lot_code` for a lot. They are one concept \u2014 the single string that\nidentifies the referent \u2014 and three names for it would be three renderer paths and\nthree resolver signatures for no difference in meaning. The composite kinds keep their\nown fields, because those genuinely are composites.",
+      "description": "\u00a77.3's typed citation: a kind, and exactly the payload that kind's endpoint needs.\n\nOne model with a per-kind payload rather than one class per kind in a discriminated\nunion. The union is the more literal encoding of \u00a77.3 and was weighed: it would give\nthe frontend a generated type per kind, of which M4 renders none \u2014 M6 builds the\nevidence panel \u2014 in exchange for a constructor per kind here. The validators below give\nthe same guarantee the union would (a `stop` citation without an id cannot exist) in one\nplace, and \u00a76.3 asks for these checks to be structural, which this is.\n\n**`id` rather than \u00a77.3's three spellings.** The spec writes `id` for a stop, `value`\nfor a serial and `lot_code` for a lot. They are one concept \u2014 the single string that\nidentifies the referent \u2014 and three names for it would be three renderer paths and\nthree resolver signatures for no difference in meaning. The composite kinds keep their\nown fields, because those genuinely are composites.",
       "properties": {
         "kind": {
           "enum": [
@@ -14,7 +155,8 @@
             "sop",
             "serial",
             "lot",
-            "containment"
+            "containment",
+            "chart"
           ],
           "title": "Kind",
           "type": "string"
@@ -93,6 +235,50 @@
           ],
           "default": null,
           "title": "Serials"
+        },
+        "chart_type": {
+          "anyOf": [
+            {
+              "enum": [
+                "timeseries",
+                "state_gantt",
+                "pareto",
+                "stacked_bar",
+                "rate_over_time",
+                "summary_tiles",
+                "vega_lite"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chart Type"
+        },
+        "source": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Source"
+        },
+        "options": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ChartOptions"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "window": {
           "anyOf": [

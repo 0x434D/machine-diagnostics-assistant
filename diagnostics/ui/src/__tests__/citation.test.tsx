@@ -221,10 +221,16 @@ test("a citation that does not resolve says so rather than showing nothing", asy
 
 test("a renderer exists for every kind the contract declares", () => {
   // §7.3: adding a citation type means adding a renderer, nothing more — checked against
-  // the generated union itself rather than a copy of today's nine kinds, so a tenth kind
+  // the generated union itself rather than a copy of today's ten kinds, so an eleventh kind
   // added to contracts/answer.schema.json fails here on `pnpm test` rather than only in
   // `tsc`'s far less specific "Record is missing these properties" error.
-  const declaration = /export type Kind = (.+);/.exec(generatedAnswerSource);
+  //
+  // Across lines, because `json2ts` wraps a union it cannot fit on one and did so the day
+  // `chart` was added — at which point a single-line pattern stops matching and the test
+  // that guards the seam starts guarding nothing.
+  const declaration = /export type Kind =([\s\S]+?);/.exec(
+    generatedAnswerSource,
+  );
   const union = declaration?.[1];
   if (union === undefined) {
     throw new Error("generated/answer.ts has no `Kind` union to check against");

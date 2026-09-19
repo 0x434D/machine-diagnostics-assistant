@@ -307,7 +307,16 @@ async def _stages(
                 ],
                 window,
             )
-            checked = await keep(stated, analysis, window=window, loaded=loaded)
+            # §7.4's chart citations resolve against this run's own calls, by id. The
+            # recorder is the single list of what was called, so a chart cannot reference
+            # something the trace does not also show the reader.
+            checked = await keep(
+                stated,
+                analysis,
+                window=window,
+                loaded=loaded,
+                calls={made.id: made for made in recorded.calls},
+            )
             if checked.failed and not retried:
                 # §6.5: the failed ids go back to the model for exactly one retry. Logged
                 # at the same moment, because "the failure is logged so its frequency is
@@ -361,13 +370,26 @@ async def _stages(
             elapsed = _since(started)
             failed = bool(result.get("error"))
 
+            if call.name == "list_stops" and classification.singular:
+                result, note = _one_stop(result)
+                if note is not None:
+                    caveats.append(note)
+
             # §7.2's trace, appended by the loop that made the call. The log line below
             # says the same thing to an operator tailing the service; this is the copy an
             # auditor reads back months later, and neither is derived from the other.
+            #
+            # **After §6.7's assumption is written into the result, not before.** The record
+            # now carries the result itself (§7.4 draws charts from it), and the transcript
+            # two statements down carries the same object — so recording the pre-assumption
+            # copy would put a chart and an answer side by side on the screen, drawn from
+            # two different readings of one call.
             recorded.calls.append(
                 ToolCallRecord(
+                    id=call.id,
                     name=call.name,
                     arguments=dict(call.arguments),
+                    result=dict(result),
                     duration_ms=elapsed,
                     failed=failed,
                 )
@@ -384,11 +406,6 @@ async def _stages(
                 },
             )
             called.append(call.name)
-
-            if call.name == "list_stops" and classification.singular:
-                result, note = _one_stop(result)
-                if note is not None:
-                    caveats.append(note)
 
             record(messages, call, result)
 

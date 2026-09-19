@@ -364,7 +364,25 @@ def _stats_final(stats: Mapping[str, object]) -> dict[str, object]:
                 f"By defect class, counting every class scoring {threshold} or above — so "
                 f"a part with two defects is counted twice: {breakdown}.",
                 "measured",
-                [],
+                # §7.4's Pareto, over the very call this sentence was written from. The
+                # id is `_ask`'s own, so this provider cites a call it really made — which
+                # is the whole claim: the chart references a verified tool result and
+                # carries no figure of its own. Without one citation of this kind nothing
+                # in a keyless run ever draws a chart, and §7.4's renderer would ship
+                # exercised only by its tests.
+                [
+                    {
+                        "kind": "chart",
+                        "chart_type": "pareto",
+                        "source": "call_inspection_stats",
+                        "options": {
+                            "series": "by_defect_class",
+                            "x": "defect_class",
+                            "y": "count",
+                            "title": "Rejects by defect class",
+                        },
+                    }
+                ],
             )
         )
     if threshold is not None and unaccounted:

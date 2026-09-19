@@ -594,3 +594,33 @@ button:disabled {
   cursor: pointer;
   min-height: var(--control-height);
 }
+
+/* --- §7.4's charts ------------------------------------------------------------------- */
+
+/* The chart is the citation, so it sits in the panel rather than beside it. No width of
+   its own: Vega is told the measured width of this box and redraws when it changes, which
+   is what keeps a chart inside a phone-width panel (`--viewport-min`). */
+.chart {
+  margin: 0;
+}
+
+/* An SVG wider than the panel is the one thing a chart can do to the layout that nothing
+   else here does, and on a phone it is horizontal scroll across the whole page. Clipped to
+   the box instead, and the caption underneath says what the picture is. */
+.chart__canvas {
+  overflow-x: auto;
+}
+
+.chart__canvas svg {
+  display: block;
+  max-width: 100%;
+}
+
+/* The chart's own sentence, for a reader who is checking the picture against the answer
+   above it. Not decoration: §7.4's claim is that the chart is evidence, and evidence that
+   does not say what it is a picture of is decoration. */
+.chart__caption {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin-top: var(--space-2);
+}

@@ -13,12 +13,29 @@ from __future__ import annotations
 
 from agent.answer import Citation, Finding
 from agent.citations import keep, resolves
+from agent.records import ToolCallRecord
 from agent.tools import AnalysisClient
 
 from .fakes import WINDOWS, FakeAnalysis, alarm_list, pattern_report
 
 WINDOW = WINDOWS["last hour"]
 ROUTED = frozenset({"SOP-01", "CORE-01", "CORE-02", "DP-11"})
+
+
+def _call(identifier: str, *, failed: bool = False) -> ToolCallRecord:
+    return ToolCallRecord(
+        id=identifier,
+        name="inspection_stats",
+        arguments={"group_by": "defect_class"},
+        result={"error": True} if failed else {"defect_classes": []},
+        duration_ms=1.0,
+        failed=failed,
+    )
+
+
+#: What the tool loop made, as `keep` and `resolves` are given it. Only the chart kind
+#: reads this; every other kind resolves against the analysis service.
+CALLS = {"toolu_ok": _call("toolu_ok"), "toolu_bad": _call("toolu_bad", failed=True)}
 
 
 def _client(fake: FakeAnalysis) -> AnalysisClient:
@@ -38,7 +55,9 @@ def _finding(*citations: Citation, basis: str = "measured") -> Finding:
 
 
 async def _resolves(citation: Citation, fake: FakeAnalysis) -> bool:
-    return await resolves(citation, _client(fake), window=WINDOW, loaded=ROUTED)
+    return await resolves(
+        citation, _client(fake), window=WINDOW, loaded=ROUTED, calls=CALLS
+    )
 
 
 # --- every kind reaches an endpoint ----------------------------------------------------
@@ -133,6 +152,7 @@ async def test_two_containment_scopes_are_two_referents_even_if_they_render_alik
         _client(fake),
         window=WINDOW,
         loaded=ROUTED,
+        calls=CALLS,
     )
 
     assert len(checked.kept) == 1
@@ -150,6 +170,67 @@ async def test_a_containment_scope_resolves_every_serial_in_it() -> None:
     assert not await _resolves(
         Citation(kind="containment", serials=["A-00000007", "A-99999999"]), fake
     )
+
+
+def _chart(source: str, **options: object) -> Citation:
+    return Citation(
+        kind="chart",
+        chart_type="pareto",
+        source=source,
+        options={
+            "series": "defect_classes",
+            "x": "defect_class",
+            "y": "count",
+            **options,
+        },  # type: ignore[arg-type]  # pydantic coerces the mapping
+    )
+
+
+async def test_a_chart_resolves_against_a_tool_call_this_run_actually_made() -> None:
+    """§7.4: the data always comes from a verified tool result, so what has to exist is the
+    call. A `source` naming one this run never made is a chart with nothing behind it — and
+    a wrong chart reads far more authoritatively than a wrong sentence."""
+    fake = FakeAnalysis()
+
+    assert await _resolves(_chart("toolu_ok"), fake)
+    assert not await _resolves(_chart("toolu_invented"), fake)
+
+
+async def test_a_chart_may_not_be_drawn_from_a_call_that_failed() -> None:
+    """§6.8 hands a tool failure back to the model as a result, so a failed call has a
+    result object — `{"error": true, "detail": ...}`. Drawing that would put a chart of a
+    connection refusal under a sentence, on the same axes a real one would use."""
+    fake = FakeAnalysis()
+
+    assert not await _resolves(_chart("toolu_bad"), fake)
+
+
+async def test_the_bands_behind_a_chart_are_as_referenced_as_the_series() -> None:
+    """§7.4's first built-in shades stop and alarm periods behind a process value, and
+    those come from a second call. A band from a call that never happened is the same
+    invention as a series from one, over a larger part of the picture."""
+    fake = FakeAnalysis()
+
+    assert await _resolves(_chart("toolu_ok", bands="toolu_ok"), fake)
+    assert not await _resolves(_chart("toolu_ok", bands="toolu_invented"), fake)
+    assert not await _resolves(_chart("toolu_ok", bands="toolu_bad"), fake)
+
+
+async def test_a_chart_with_no_call_behind_it_takes_its_claim_with_it() -> None:
+    """The whole point of resolving it: §6.5 removes the claim, visibly, rather than
+    letting the answer ship with a chart the reader would trust."""
+    fake = FakeAnalysis()
+
+    checked = await keep(
+        [_finding(_chart("toolu_invented"))],
+        _client(fake),
+        window=WINDOW,
+        loaded=ROUTED,
+        calls=CALLS,
+    )
+
+    assert checked.kept == []
+    assert checked.failed == ["chart:pareto from toolu_invented"]
 
 
 # --- the check that is not "does it exist" ---------------------------------------------
@@ -179,6 +260,7 @@ async def test_a_routed_procedure_that_does_not_exist_is_still_refused() -> None
         _client(fake),
         window=WINDOW,
         loaded=frozenset({"SOP-99"}),
+        calls=CALLS,
     )
 
 
@@ -198,6 +280,7 @@ async def test_unresolvable_claims_are_removed_and_the_answer_says_so() -> None:
         _client(fake),
         window=WINDOW,
         loaded=ROUTED,
+        calls=CALLS,
     )
 
     assert len(checked.kept) == 1
@@ -212,7 +295,9 @@ async def test_a_fully_verified_set_is_returned_unchanged() -> None:
     fake = FakeAnalysis(known={"A-00000007"})
     findings = [_finding(Citation(kind="part", id="A-00000007"))]
 
-    checked = await keep(findings, _client(fake), window=WINDOW, loaded=ROUTED)
+    checked = await keep(
+        findings, _client(fake), window=WINDOW, loaded=ROUTED, calls=CALLS
+    )
 
     assert checked.kept == findings
     assert checked.failed == []
@@ -232,6 +317,7 @@ async def test_a_window_scoped_report_is_read_once_per_pass() -> None:
         _client(fake),
         window=WINDOW,
         loaded=ROUTED,
+        calls=CALLS,
     )
 
     assert [name for name, _ in fake.calls].count("fetch:list_alarms") == 1

@@ -13,8 +13,11 @@ import type {
   CitationWindow,
   MachineAgentAnswerObject63,
 } from "./generated/answer";
+import type { MachineAgentReasoningTrace72 } from "./generated/trace";
+import type { Exchange } from "./citations/exchange";
 
 export type Answer = MachineAgentAnswerObject63;
+export type Trace = MachineAgentReasoningTrace72;
 export type Part = components["schemas"]["Part"];
 export type Alarm = components["schemas"]["Alarm"];
 export type ComponentAssembly = components["schemas"]["ComponentAssembly"];
@@ -304,6 +307,25 @@ export async function fetchSignalTrend(
   });
 }
 
+/** §7.2's reasoning trace for one answered exchange.
+ *
+ * The agent rather than the analysis service, and under the reader's own identity: a session
+ * belongs to whoever opened it, and the endpoint refuses a trace that is not the caller's
+ * (§10.5). §7.4's charts are drawn from the tool results inside it — a chart references a
+ * call by id, and the stored result is the copy the model reasoned over. Re-querying the
+ * analysis service instead would be a second read, minutes later, which can disagree with
+ * the first and would put a chart under an answer that was never based on it.
+ */
+export async function fetchTrace(
+  exchange: Exchange,
+  token: string | null,
+): Promise<Trace> {
+  const path =
+    `${AGENT}/sessions/${encodeURIComponent(exchange.sessionId)}` +
+    `/messages/${encodeURIComponent(String(exchange.seq))}/trace`;
+  return (await (await request(path, token)).json()) as Trace;
+}
+
 /** §3.4: a good part has no image, and that is not a missing value.
  *
  * `inspection` is null for a part that has not reached S3 — the ordinary state of every
@@ -344,7 +366,14 @@ export async function fetchImage(
 export async function ask(
   question: string,
   token: string | null,
-  onProgress: (message: string) => void,
+  report: {
+    progress: (message: string) => void;
+    /** The `session` event, which arrives **before** any step has run. Reported as it
+     * lands rather than returned with the answer, because §7.2 wants the trace reachable
+     * for an answer that never arrives — and an exchange handed over at the end would be
+     * lost by exactly the run that most needs looking into. */
+    exchange: (exchange: Exchange) => void;
+  },
 ): Promise<Answer> {
   // No AbortSignal parameter. There is nothing to cancel: the Ask button is disabled for
   // the duration, so a second stream cannot start while the first is running, and a
@@ -362,7 +391,10 @@ export async function ask(
   let answer: Answer | null = null;
   for await (const [event, data] of events(response.body)) {
     if (event === "progress") {
-      onProgress((JSON.parse(data) as { message: string }).message);
+      report.progress((JSON.parse(data) as { message: string }).message);
+    } else if (event === "session") {
+      const named = JSON.parse(data) as { session_id: string; seq: number };
+      report.exchange({ sessionId: named.session_id, seq: named.seq });
     } else if (event === "answer") {
       answer = JSON.parse(data) as Answer;
     }

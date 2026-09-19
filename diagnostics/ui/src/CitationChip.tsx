@@ -2,13 +2,15 @@
  *
  * §7.3: adding a citation type means adding a renderer and nothing else. RENDERERS is that
  * seam, and at M6 every kind in the vocabulary is behind it — each resolving to the
- * endpoint §7.3 names for it, and each rendering what came back rather than a placeholder
- * repeating what the chip already said.
+ * endpoint §7.3 names for it, or, for `chart`, to the tool call §7.4 makes its referent —
+ * and each rendering what came back rather than a placeholder repeating what the chip
+ * already said.
  */
 import type { ReactElement } from "react";
 
 import type { Citation } from "./generated/answer";
 import { EvidencePanel } from "./EvidencePanel";
+import { ChartPanel, chartLabel } from "./charts/ChartPanel";
 import { Openable } from "./citations/Openable";
 import {
   AlarmPanel,
@@ -34,6 +36,9 @@ function describe(citation: Citation): string {
   }
   if (citation.kind === "containment") {
     return `${String(citation.serials?.length ?? 0)} part(s)`;
+  }
+  if (citation.kind === "chart") {
+    return chartLabel(citation);
   }
   // `id` is optional on the type because the composite kinds above have no use for it, not
   // because an id-shaped citation may lack one — a missing id here is the server sending
@@ -147,6 +152,18 @@ export const RENDERERS: Record<
   containment: (citation) => (
     <ContainmentPanel serials={citation.serials ?? []} />
   ),
+  // The one kind whose referent is not a row in the database but a tool call this run made
+  // (§7.4). It resolves through §7.2's trace for the exchange the answer came from, which
+  // is why it takes the whole citation and reads the page's exchange rather than an id.
+  chart: (citation) =>
+    citation.chart_type != null && citation.source != null ? (
+      <ChartPanel citation={citation} />
+    ) : (
+      <Unaddressed
+        citation={citation}
+        missing={absent(citation, ["chart_type", "source"])}
+      />
+    ),
 };
 
 export function CitationChip({ citation }: { citation: Citation }) {

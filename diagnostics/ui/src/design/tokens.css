@@ -141,6 +141,24 @@
      mistaken for knowing it. */
   --category-unknown: #ff00ff;
   --category-unknown-tint: #ffe6ff;
+
+  /* --- Colour: charting a dimension that is not station state (§7.4) ----------------- */
+  /* A defect class, a carrier, a feeder lane. **Deliberately not the five category hues
+     above**: there, red means "this station is the problem" and amber means "this station
+     is waiting for it", and painting defect class 3 red would spend that meaning on a
+     value that carries none. Two colour languages on one screen is normally the failure —
+     this is the case where collapsing them into one would be, because the categories are a
+     claim about cause and consequence and a defect class is a name.
+
+     Six, and charts using them label their marks directly as well, so a seventh value
+     recycling the first colour is a legibility annoyance rather than a wrong reading.
+     Colour is never the only channel here either (ISA-101). */
+  --chart-series-1: #0b62d1;
+  --chart-series-2: #8250df;
+  --chart-series-3: #bc4c00;
+  --chart-series-4: #1b7c83;
+  --chart-series-5: #9a6700;
+  --chart-series-6: #6e7781;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -183,6 +201,14 @@
     --category-transitioning-tint: #10243e;
 
     --category-unknown-tint: #3a0c3a;
+
+    /* Same six, lifted for contrast against a dark ground. */
+    --chart-series-1: #5aa0ff;
+    --chart-series-2: #d2a8ff;
+    --chart-series-3: #ffa657;
+    --chart-series-4: #56d4dd;
+    --chart-series-5: #d29922;
+    --chart-series-6: #9198a1;
   }
 }
 

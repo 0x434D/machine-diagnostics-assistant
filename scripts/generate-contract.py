@@ -17,7 +17,8 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "diagnostics/analysis/src"))
 sys.path.insert(0, str(ROOT / "diagnostics/agent/src"))
 
-from agent.answer import json_schema
+from agent.answer import json_schema as answer_schema
+from agent.records import json_schema as trace_schema
 from analysis.app import app
 
 HEADER = """# Generated from diagnostics/analysis (FastAPI) and committed as the contract.
@@ -38,8 +39,14 @@ def main() -> None:
     print(f"wrote {openapi}")
 
     answer = ROOT / "contracts/answer.schema.json"
-    answer.write_text(json.dumps(json_schema(), indent=2) + "\n")
+    answer.write_text(json.dumps(answer_schema(), indent=2) + "\n")
     print(f"wrote {answer}")
+
+    # §7.2's trace became a contract at M6, when §7.4 made the UI read a tool result out of
+    # it rather than show a summary of the answer's own `method`.
+    trace = ROOT / "contracts/trace.schema.json"
+    trace.write_text(json.dumps(trace_schema(), indent=2) + "\n")
+    print(f"wrote {trace}")
 
 
 if __name__ == "__main__":

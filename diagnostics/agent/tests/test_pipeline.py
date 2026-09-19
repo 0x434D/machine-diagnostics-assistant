@@ -27,8 +27,10 @@ import logging
 
 import pytest
 from agent.answer import Answer, CitationWindow
+from agent.classify import CLASSIFY_TOOL
 from agent.config import Settings
 from agent.pipeline import Progress, longest, run, stream
+from agent.provider import ProviderReply, ToolCall
 from agent.providers_scripted import DISCLOSURE, ScriptedProvider
 from agent.records import Trace
 
@@ -945,3 +947,157 @@ async def test_a_kind_that_takes_no_window_ships_without_one() -> None:
     )
 
     assert _cited_windows(answer)["part"] is None
+
+
+# --- §7.4: a chart is a citation, and its data is a tool call this run made -------------
+#
+# Proven without a model in the half that matters: whether a *model* would pick a fitting
+# chart type is §8.1's statistics-and-charts class. What is proven here is that a chart
+# naming a call the run never made, or one that failed, cannot reach the reader — and that
+# the interval its axes are labelled with is the calendar's.
+
+
+class ChartingProvider:
+    """A model that calls one tool and then cites a chart against it.
+
+    `InventingProvider` finals immediately and so makes no calls, which is exactly the
+    situation a chart must not be drawn in — so this one is needed to show the other side:
+    a chart whose `source` is a call that really happened.
+    """
+
+    name = "charting"
+
+    def __init__(self, source: str) -> None:
+        self._source = source
+        self._called = False
+
+    async def call(
+        self,
+        system: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> ProviderReply:
+        if [str(tool.get("name")) for tool in tools] == [CLASSIFY_TOOL["name"]]:
+            return await ScriptedProvider().call(system, messages, tools)
+        if not self._called:
+            self._called = True
+            return ProviderReply(
+                tool_calls=[
+                    ToolCall(
+                        id="call_inspection_stats",
+                        name="inspection_stats",
+                        arguments={"group_by": "defect_class"},
+                    )
+                ]
+            )
+        return ProviderReply(
+            final={
+                "findings": [
+                    {
+                        "statement": "Misalignment is the largest class.",
+                        "basis": "measured",
+                        "citations": [
+                            {
+                                "kind": "chart",
+                                "chart_type": "pareto",
+                                "source": self._source,
+                                "options": {
+                                    "series": "defect_classes",
+                                    "x": "defect_class",
+                                    "y": "count",
+                                },
+                                # A window the model typed, to be overwritten like any other.
+                                "window": {
+                                    "from_ts": "2026-03-01T00:00:00Z",
+                                    "to_ts": "2026-03-01T01:00:00Z",
+                                    "label": "an interval the model typed",
+                                },
+                            }
+                        ],
+                    }
+                ],
+                "caveats": [],
+            }
+        )
+
+
+async def _charted(source: str) -> Answer:
+    fake = FakeAnalysis({"inspection_stats": stats(600, 30, [])})
+    return await run(
+        STATS_QUESTION,
+        settings=Settings(),
+        analysis=as_client(fake),
+        provider=ChartingProvider(source),
+    )
+
+
+async def test_a_chart_citing_a_call_this_run_made_reaches_the_reader() -> None:
+    """The other side of every refusal below: a guard that removed all of them would pass
+    those tests while making the feature unreachable."""
+    answer = await _charted("call_inspection_stats")
+
+    charts = [
+        citation
+        for finding in answer.findings
+        for citation in finding.citations
+        if citation.kind == "chart"
+    ]
+    assert len(charts) == 1
+    assert charts[0].source == "call_inspection_stats"
+
+
+async def test_a_chart_citing_a_call_that_never_happened_takes_its_claim_with_it() -> (
+    None
+):
+    """§7.4's reason, applied: a chart drawn from nothing reads far more authoritatively
+    than a wrong sentence, so the claim goes and the answer says it went."""
+    answer = await _charted("call_that_never_happened")
+
+    assert answer.findings == []
+    assert any("could not be verified" in caveat for caveat in answer.caveats)
+
+
+async def test_a_charts_axes_are_labelled_with_the_calendars_window() -> None:
+    """The same rule §7.3 applies to a pattern cell, for the same reason. Every tool result
+    a chart reads was computed over this run's window; an axis labelled with any other
+    interval is §7.4's failure moved from the values to the ruler."""
+    answer = await _charted("call_inspection_stats")
+
+    carried = answer.findings[0].citations[0].window
+    assert carried is not None
+    assert carried.label == WINDOWS["last hour"].label
+    assert "an interval the model typed" not in answer.model_dump_json()
+
+
+async def test_the_scripted_provider_charts_the_call_it_really_made() -> None:
+    """§7.4's renderer would otherwise ship exercised only by its own tests.
+
+    `ScriptedProvider` is the default and needs no credentials, so what it cites is what a
+    keyless run — and the demo — actually shows. Its Pareto names the `inspection_stats`
+    call it made moments earlier, which is the whole of §7.4 in the one configuration
+    anybody can run: the chart references a verified tool result and carries no figure.
+
+    That it *survives* is the assertion. §6.5 would have removed it had the id been one the
+    run never made, so a green here is the verification agreeing with the citation.
+    """
+    fake = FakeAnalysis({"inspection_stats": stats(600, 30, [])})
+
+    answer = await _run(STATS_QUESTION, fake)
+
+    charts = [
+        citation
+        for finding in answer.findings
+        for citation in finding.citations
+        if citation.kind == "chart"
+    ]
+    # One chart, cited twice: §6.5's composer gives its summary the citations of the
+    # findings it summarises, so the same referent appears under both.
+    assert {(chart.chart_type, chart.source) for chart in charts} == {
+        ("pareto", "call_inspection_stats")
+    }
+    first = charts[0]
+    assert first.options is not None
+    assert first.options.series == "by_defect_class"
+    # And the window it is labelled with is the calendar's, not one this provider typed.
+    assert first.window is not None
+    assert first.window.label == WINDOWS["last hour"].label
