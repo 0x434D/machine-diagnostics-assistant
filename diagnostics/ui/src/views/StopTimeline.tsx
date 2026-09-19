@@ -13,25 +13,25 @@
  * does is *invent* one: `/time/resolve` resolves a phrase against the shift calendar (§5.3)
  * and the two instant boxes take instants. A browser computing "last night" for itself would
  * be the guess §5.3 exists to prevent, one layer further out.
+ *
+ * **And it asks that question with `time/ShiftWindow`, the same control the containment form
+ * asks it with.** This screen kept its own copy of the phrase picker for one milestone, which
+ * is one milestone too many: two pickers can disagree, and a reader who resolved "this shift"
+ * here and "this shift" there would have no way to see that the two views were answering
+ * about different intervals. What stays local is the pair of instant boxes, because here they
+ * submit a query and there they seed a form.
  */
 import { useEffect, useState, type FormEvent } from "react";
 import { useSearchParams } from "react-router";
 
-import {
-  describeFailure,
-  fetchStop,
-  fetchStops,
-  resolveTime,
-  type StopDetail,
-  type StopList,
-} from "../api";
-import { useAuth } from "../AuthContext";
+import { fetchStop, fetchStops, type StopDetail, type StopList } from "../api";
 import { VegaChart } from "../charts/VegaChart";
 import { CitationPanel } from "../citations/CitationPanel";
 import { Chain } from "../citations/panels";
 import { useResolution } from "../citations/useResolution";
 import { CoverageNote, coverageVerdict, type CoverageKind } from "../coverage";
 import { StateBadge } from "../design/StateBadge";
+import { ShiftWindowForm, useShiftWindow } from "../time/ShiftWindow";
 import { buildTimeline } from "../timeline/spec";
 
 export function StopTimeline() {
@@ -40,12 +40,31 @@ export function StopTimeline() {
   const to = params.get("to") ?? "";
   const stop = params.get("stop");
 
+  // On no phrase. Every other view that resolves one opens on `DEFAULT_PHRASE`, and this one
+  // must not: a window in this address is read immediately, so a phrase resolved on arrival
+  // would put a window nobody asked for in the address and the stops in it on the screen.
+  const shift = useShiftWindow(null);
+
   /** A window change drops the selected stop: the stop that was on the screen belongs to
    * the interval that was on the screen, and leaving its chart under a different window's
    * list would put two intervals on one page with nothing saying which is which. */
   function chooseWindow(nextFrom: string, nextTo: string): void {
     setParams(new URLSearchParams({ from: nextFrom, to: nextTo }));
   }
+
+  // What the calendar resolved goes into the address, because in this view the address *is*
+  // the window — the link a colleague is sent, and what a reload lands on.
+  const resolved = shift.resolution;
+  useEffect(() => {
+    if (resolved === null) return;
+    chooseWindow(resolved.window.from_ts, resolved.window.to_ts);
+    // `chooseWindow` is deliberately absent from the dependencies, as `useResolution` leaves
+    // out its loader and for the same reason: it is rebuilt on every render, and the
+    // `setParams` it closes over is itself rebuilt whenever the location changes — so
+    // depending on either would re-run this effect on the navigation it had just performed.
+    // `resolved` is the identity of the answer this navigation belongs to, and re-asking a
+    // phrase produces a new one even when the instants come back the same.
+  }, [resolved]);
 
   function chooseStop(identifier: string): void {
     const next = new URLSearchParams(params);
@@ -64,7 +83,8 @@ export function StopTimeline() {
         under every view.
       </p>
 
-      <WindowPicker from={from} to={to} onChoose={chooseWindow} />
+      <ShiftWindowForm shift={shift} from={from} to={to} />
+      <Instants from={from} to={to} onChoose={chooseWindow} />
 
       {from !== "" && to !== "" ? (
         <StopsInWindow
@@ -89,9 +109,13 @@ export function StopTimeline() {
   );
 }
 
-/** The window, changed the two ways that involve no guessing: a phrase the shift calendar
- * understands, and a pair of instants. */
-function WindowPicker({
+/** The other way to choose a window: two instants, for a reader who already has an interval.
+ *
+ * The phrases above are resolved by the service and never by this browser. These two are not
+ * resolved at all — they are taken as written — so the only judgement made here is refusing
+ * what is not an instant, which is the one thing that must not be guessed at.
+ */
+function Instants({
   from,
   to,
   onChoose,
@@ -100,13 +124,11 @@ function WindowPicker({
   to: string;
   onChoose: (from: string, to: string) => void;
 }) {
-  const { token } = useAuth();
   const [draft, setDraft] = useState({ from, to });
   const [refusal, setRefusal] = useState<string | null>(null);
-  const [resolving, setResolving] = useState(false);
 
-  // The address is the window, so a link opened, a stop citation followed or a back button
-  // pressed has to arrive in the boxes as well as in the chart.
+  // The address is the window, so a link opened, a stop citation followed, a phrase resolved
+  // or a back button pressed has to arrive in the boxes as well as in the chart.
   useEffect(() => {
     setDraft({ from, to });
   }, [from, to]);
@@ -128,45 +150,8 @@ function WindowPicker({
     onChoose(draft.from, draft.to);
   }
 
-  function submitPhrase(event: FormEvent<HTMLFormElement>): void {
-    event.preventDefault();
-    const form = new FormData(event.currentTarget);
-    const expression = String(form.get("expression") ?? "").trim();
-    if (expression === "") return;
-
-    setResolving(true);
-    resolveTime(expression, token)
-      .then((resolution) => {
-        setRefusal(null);
-        onChoose(resolution.window.from_ts, resolution.window.to_ts);
-      })
-      .catch((reason: unknown) => {
-        // Not swallowed: the service's 422 carries every expression that *would* have
-        // worked, which is the half of the refusal that lets a reader try again.
-        setRefusal(describeFailure(reason));
-      })
-      .finally(() => {
-        setResolving(false);
-      });
-  }
-
   return (
     <div className="timeline__window">
-      <form className="timeline__phrase" onSubmit={submitPhrase}>
-        <label htmlFor="expression">
-          A phrase the shift calendar understands
-        </label>
-        <input
-          id="expression"
-          name="expression"
-          defaultValue=""
-          placeholder="last night"
-        />
-        <button type="submit" disabled={resolving}>
-          {resolving ? "Resolving…" : "Resolve"}
-        </button>
-      </form>
-
       <form className="timeline__instants" onSubmit={submitInstants}>
         <label htmlFor="from">From (UTC)</label>
         <input
