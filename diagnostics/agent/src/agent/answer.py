@@ -61,6 +61,14 @@ rather than code, and therefore safe to accept from a model — and it is the on
 carries a specification of its own.
 """
 
+CHART_FALLBACK: ChartType = "vega_lite"
+"""Which of the seven is the fallback, named once.
+
+`pipeline.SYSTEM` tells the model what the menu is by subtracting this from `ChartType`,
+so a seventh built-in is offered to the model by adding it to the type above and nowhere
+else. A menu typed out in a prompt is a menu that drifts from the schema beside it.
+"""
+
 #: What each kind must carry for its resolver to run, and — by exclusion — what it must not.
 #: One table, two uses: `Citation` validates against it, and `agent.citations` dispatches on
 #: it, so a kind cannot be added to the vocabulary without a resolver noticing.
@@ -291,16 +299,18 @@ class Citation(BaseModel):
                 f"a {self.chart_type!r} chart needs options.series — the path to the rows "
                 f"inside the tool result it references"
             )
-        if self.chart_type == "vega_lite":
+        if self.chart_type == CHART_FALLBACK:
             if self.options.spec is None:
                 raise ValueError(
-                    "the 'vega_lite' fallback is its specification; options.spec is missing"
+                    f"the {CHART_FALLBACK!r} fallback is its specification; options.spec "
+                    f"is missing"
                 )
             return self
         if self.options.spec is not None:
             raise ValueError(
                 f"a {self.chart_type!r} chart is one of §7.4's built-in types and is "
-                f"drawn from its own options; remove options.spec, or use 'vega_lite'"
+                f"drawn from its own options; remove options.spec, or use "
+                f"{CHART_FALLBACK!r}"
             )
         return self
 
@@ -493,3 +503,42 @@ def json_schema() -> dict[str, object]:
         **Answer.model_json_schema(),
         "title": SCHEMA_TITLE,
     }
+
+
+ANSWER_TOOL_NAME = "answer"
+"""The name the model's final turn carries, and the name `providers_anthropic` reads it by.
+
+A constant rather than the same literal in two files, because the two agreeing *is* the
+mechanism: a tool nothing declares and a branch nothing can reach look identical from
+either file on its own, which is how M4 shipped a real provider that could not produce an
+answer at all.
+"""
+
+ANSWER_TOOL: dict[str, object] = {
+    "name": ANSWER_TOOL_NAME,
+    "description": (
+        "Deliver the finished answer. Call this when the investigation is complete, or "
+        "when it cannot be completed and the answer is what was found before it stopped. "
+        "Every claim is a finding with its basis and the citations that back it, and the "
+        "prose renders those findings and says nothing they do not. Nothing is read out "
+        "of text: an answer written as a message instead of as this call does not reach "
+        "the reader."
+    ),
+    # §6.9's structured output, guaranteed the way that section names it: a
+    # schema-constrained tool call. The schema is the one `json_schema()` generates and
+    # `contracts/answer.schema.json` is generated from — never a second copy written out
+    # beside it, which would drift from the contract the UI's types come from and be
+    # discovered by a reader noticing that a model kept omitting a field.
+    #
+    # `$schema` is dropped and nothing else is: it declares which dialect the document is
+    # written in, which is a fact about the file rather than about the input the model has
+    # to produce. Everything the shape needs — `$defs`, `$ref`, the enums, the descriptions
+    # the models carry — is handed over whole.
+    "input_schema": {
+        key: value for key, value in json_schema().items() if key != "$schema"
+    },
+}
+"""§6.3's *"the model produces structured findings through a tool call"*, declared.
+
+`pipeline.TOOLS` is where it reaches the model, beside the operations it investigates with.
+"""

@@ -42,11 +42,22 @@ from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from time import perf_counter
+from typing import get_args
 
 import httpx
 from knowledge.documents import KnowledgeBase
 
-from agent.answer import Answer, Clarification, Contradiction, Finding, Method
+from agent.answer import (
+    ANSWER_TOOL,
+    ANSWER_TOOL_NAME,
+    CHART_FALLBACK,
+    Answer,
+    ChartType,
+    Clarification,
+    Contradiction,
+    Finding,
+    Method,
+)
 from agent.citations import keep, stamped
 from agent.classify import Classification, classify, corrections
 from agent.compose import compose
@@ -59,12 +70,40 @@ from agent.tools import TOOL_DEFINITIONS, AnalysisClient, Window
 
 LOG = logging.getLogger(__name__)
 
+TOOLS: list[dict[str, object]] = [*TOOL_DEFINITIONS, ANSWER_TOOL]
+"""§6.1 step 5's tool set: the operations the model investigates with, and the one tool it
+answers through.
+
+One list rather than a second argument to the provider, because under §6.9 the structured
+answer *is* a tool call: every turn the model chooses between reading more and answering,
+and that choice is only offered if both are declared together. M4 declared only the
+fifteen, so `AnthropicProvider` — which reads the final answer out of a tool call by name —
+had no name to find, and a real model could not finish a run at all. Nothing went red,
+because without a key nothing reaches that branch.
+"""
+
+_BUILT_IN_CHARTS = ", ".join(
+    kind for kind in get_args(ChartType) if kind != CHART_FALLBACK
+)
+
 SYSTEM = (
     "Answer only from tool results and the documents below. Name cause and consequence "
     "separately. Anything that rests on a pattern is a hypothesis and carries its evidence "
     "strength. Cite everything. State what is missing rather than filling it. Recommend "
     "only documented actions. If you disagree with the computed propagation, say so and "
-    "show your reasoning. This system is read-only: it cannot act on the plant."
+    "show your reasoning. This system is read-only: it cannot act on the plant. "
+    f"Deliver the answer by calling the {ANSWER_TOOL_NAME} tool; what is written as a "
+    "message instead of through it is not read. "
+    # §7.4's vocabulary. The mechanism has existed since M6 Task 5 and nothing told the
+    # model it was there, which makes a chart a feature only the scripted provider can use.
+    "A chart is a citation on the finding it supports, not a picture beside it. It carries "
+    f"three things: a type — one of {_BUILT_IN_CHARTS}, or {CHART_FALLBACK} with a "
+    "Vega-Lite specification for a reading none of those expresses; the id of a tool call "
+    "this run made, as its source; and options saying which path in that call's result "
+    "holds the rows and which field each channel reads. It carries no figures of its "
+    "own: the renderer draws the "
+    "stored result of the call it names, so cite a call whose result holds what you want "
+    "drawn, and call the tool again with the arguments you need if it does not."
 )
 
 DECLINE = (
@@ -291,7 +330,7 @@ async def _stages(
         turns += 1
         recorded.turns = turns
         started = perf_counter()
-        reply = await provider.call(system, messages, TOOL_DEFINITIONS)
+        reply = await provider.call(system, messages, TOOLS)
         recorded.model_ms += _since(started)
 
         if reply.final is not None:
