@@ -294,13 +294,16 @@ services:
       # Every number is configuration (§10.3). An hour is long enough that a question and its
       # follow-ups fit inside one token and short enough that a leaked one expires.
       ISSUER_TOKEN_LIFETIME_MINUTES: "${ISSUER_TOKEN_LIFETIME_MINUTES:-60}"
-    # **diag-net and nothing else.** It publishes no port -- diag-net is internal, so it
-    # cannot -- and the browser reaches it only through the UI's own origin, which is why the
-    # UI joins diag-net below. It must never reach field-net or anything of the plant's: the
-    # plant authenticates separately and the two identity mechanisms stay disjoint by
-    # construction (§10.5, CLAUDE.md's fifth invariant,
-    # plant/simulator/tests/test_identity_boundary.py).
-    networks: [diag-net]
+    # **edge-net, and nothing else.** It publishes no port, so the browser reaches it only
+    # through the UI's own origin -- and the alternative, putting it on the internal
+    # diag-net, would have forced the UI's nginx onto the network that holds Postgres. Of
+    # the two containers that then gain reach, the browser-facing one is the wrong one to
+    # widen. This service has no database and needs nothing diag-net offers.
+    #
+    # It must never reach field-net or anything of the plant's: the plant authenticates
+    # separately and the two identity mechanisms stay disjoint by construction (§10.5,
+    # CLAUDE.md's fifth invariant, plant/simulator/tests/test_identity_boundary.py).
+    networks: [edge-net]
 
   ui:
     <<: *runtime
@@ -316,13 +319,10 @@ services:
       - "127.0.0.1:${UI_PORT:-5173}:8080"
     # It proxies to the agent and the analysis service by name, and has never heard of
     # OPC UA. edge-net for both, and never field-net.
-    #
-    # **diag-net as well, since M6, and only to reach the issuer.** The issuer must not be
-    # published to the host, so the login form's POST has to arrive through this origin like
-    # every other request the browser makes -- which means nginx has to be on a network the
-    # issuer is on. The reach this grants is nginx's, not the browser's: `nginx.conf` serves
-    # three fixed proxy locations and no general one, so nothing here can address Postgres.
-    networks: [edge-net, diag-net]
+    # Since M6 it also proxies the login form's POST to the issuer, which sits on edge-net
+    # for exactly that reason -- so this container still joins one network, and the browser
+    # -facing process stays off the internal one Postgres is on.
+    networks: [edge-net]
 
 volumes:
   diagnostics-db:
