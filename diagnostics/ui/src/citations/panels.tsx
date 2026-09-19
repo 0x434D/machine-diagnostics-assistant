@@ -9,6 +9,7 @@
  * — §4.4 and §6.5 both rest on those not collapsing into a blank.
  */
 import { Fragment } from "react";
+import { Link } from "react-router";
 
 import {
   fetchAlarm,
@@ -22,6 +23,7 @@ import {
   type StopDetail,
 } from "../api";
 import type { CitationWindow } from "../generated/answer";
+import { coverageVerdict } from "../coverage";
 import { StateBadge } from "../design/StateBadge";
 import { CitationPanel, NotInTheAnswer } from "./CitationPanel";
 import { PartLinks } from "./PartLinks";
@@ -59,7 +61,7 @@ export function StopPanel({ identifier }: { identifier: string }) {
             <dt>Category</dt>
             <dd>{detail.stop.category ?? "not derived"}</dd>
             <dt>Coverage</dt>
-            <dd>{describeCoverage(detail.coverage)}</dd>
+            <dd>{coverageVerdict(detail.coverage).sentence}</dd>
             <dt>Alarms</dt>
             {/* An annotation and nothing more: §3.3 warns that "the first station to raise
                 an alarm" is circular, so the chain below is computed without these. */}
@@ -75,6 +77,18 @@ export function StopPanel({ identifier }: { identifier: string }) {
             </dd>
           </dl>
           <Chain derivation={detail.derivation} />
+          {/* §7.2's timeline, at this stop and therefore over this stop's own interval.
+              The id resolves to the same stop whatever window it was cited from (§5.3), so
+              the link lands on the interval the claim was made about rather than on a
+              recent one the screen would have had to pick. */}
+          <p className="evidence__note">
+            <Link
+              to={`/timeline?stop=${encodeURIComponent(detail.stop.id ?? identifier)}`}
+            >
+              Open this stop on the timeline
+            </Link>{" "}
+            — the chain above, drawn on the axis it was walked over.
+          </p>
         </>
       )}
     </CitationPanel>
@@ -85,8 +99,16 @@ export function StopPanel({ identifier }: { identifier: string }) {
  *
  * Whole rather than as its verdict, because §6.5 means the agent to be able to contradict
  * it — and a reader can only check a contradiction against reasoning that is on the screen.
+ *
+ * Exported because §7.2's stop timeline writes the same chain out beneath the axis it draws
+ * it on. Two renderings of one derivation would be two places for "no chain was walked" to
+ * start meaning different things.
  */
-function Chain({ derivation }: { derivation: StopDetail["derivation"] }) {
+export function Chain({
+  derivation,
+}: {
+  derivation: StopDetail["derivation"];
+}) {
   return (
     <section className="derivation">
       <h4 className="derivation__title">Propagation chain</h4>
@@ -407,7 +429,7 @@ export function PatternPanel({
               α {report.alpha}, {report.correction.replace(/_/g, " ")}{" "}
               correction, minimum sample {report.minimum_sample};{" "}
               {report.significant_count} significant cell(s) in the whole
-              report. {describeCoverage(report.coverage)}
+              report. {coverageVerdict(report.coverage).sentence}
             </p>
           </>
         );
@@ -541,17 +563,6 @@ function WindowNote({ window }: { window: CitationWindow }) {
       <span className="mono">{window.from_ts}</span> →{" "}
       <span className="mono">{window.to_ts}</span>.
     </p>
-  );
-}
-
-function describeCoverage(coverage: StopDetail["coverage"]): string {
-  if (coverage.fully_covered) {
-    return "complete — no ingest gap over this interval";
-  }
-  return (
-    `${(coverage.covered_fraction * 100).toFixed(1)} % covered, ` +
-    `${String(coverage.gaps.length)} ingest gap(s): an absence here may be the gateway's ` +
-    "rather than the line's"
   );
 }
 

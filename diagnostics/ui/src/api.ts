@@ -27,6 +27,10 @@ export type PatternReport = components["schemas"]["PatternReport"];
 export type PatternValue = components["schemas"]["PatternValue"];
 export type SignalTrend = components["schemas"]["SignalTrend"];
 export type StopDetail = components["schemas"]["StopDetail"];
+export type StopList = components["schemas"]["StopList"];
+export type StateEpisode = components["schemas"]["StateEpisode"];
+export type Coverage = components["schemas"]["Coverage"];
+export type TimeResolution = components["schemas"]["TimeResolution"];
 
 /** Same-origin, and forwarded by the dev server or nginx. See vite.config.ts. */
 const AGENT = "/api/agent";
@@ -97,19 +101,38 @@ function authHeaders(token: string | null): HeadersInit {
     : { Authorization: `Bearer ${token}` };
 }
 
-function isDetailBody(value: unknown): value is { detail: string } {
+function isDetailBody(value: unknown): value is { detail: unknown } {
   if (typeof value !== "object" || value === null) return false;
-  return typeof (value as { detail?: unknown }).detail === "string";
+  return "detail" in value;
 }
 
-/** The server's `{"detail": "..."}` body for a 401 or 403 (§10.5), or the status line if
- * whatever answered was not JSON -- a refusal is still a refusal even if something in front
- * of the service (a proxy, a gateway timeout page) answered instead of it. */
+/** A `detail` as a sentence, whatever shape the service wrote it in.
+ *
+ * A deliberate refusal is a string, FastAPI's validation error is a list, and a refusal that
+ * carries something the caller can act on is an object: `/time/resolve` answers an
+ * expression it does not understand with **the list of ones it does**, because "a near-miss
+ * guessed wrong is the worst of the three possible outcomes". Collapsing that into
+ * `422 Unprocessable Entity` would throw away the half of the refusal a reader needs.
+ */
+function sentence(detail: unknown): string {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) return detail.map(sentence).join("; ");
+  if (typeof detail === "object" && detail !== null) {
+    return Object.entries(detail)
+      .map(([name, value]) => `${name}: ${sentence(value)}`)
+      .join(" — ");
+  }
+  return String(detail);
+}
+
+/** The server's `{"detail": ...}` body (§10.5), or the status line if whatever answered was
+ * not JSON -- a refusal is still a refusal even if something in front of the service (a
+ * proxy, a gateway timeout page) answered instead of it. */
 async function detailOf(response: Response): Promise<string> {
   const contentType = response.headers.get("content-type") ?? "";
   if (!contentType.includes("application/json")) return response.statusText;
   const body: unknown = await response.json();
-  return isDetailBody(body) ? body.detail : response.statusText;
+  return isDetailBody(body) ? sentence(body.detail) : response.statusText;
 }
 
 /** Turns the two refusals §10.5 makes distinguishable into the errors above, so a caller
@@ -177,7 +200,12 @@ async function request(url: string, token: string | null): Promise<Response> {
     throw new NotFoundError(await detailOf(response));
   }
   if (!response.ok) {
-    throw new Error(`${response.status} ${response.statusText}`);
+    // The body and not only the status line: a service that refused and said why is the
+    // one failure a reader can act on without opening the network tab, and `/time/resolve`
+    // puts the whole of what would have worked in it.
+    throw new Error(
+      `${response.status} ${response.statusText} — ${await detailOf(response)}`,
+    );
   }
   return response;
 }
@@ -213,6 +241,35 @@ export async function fetchStop(
     `/stops/${encodeURIComponent(identifier)}`,
     token,
   );
+}
+
+/** §5.3's `/stops?from&to`: which stops a window holds, and what the data under it is.
+ *
+ * The coverage rides along and is not decoration — a stop list is a claim about *absence*,
+ * and an ingest gap is an absence that looks exactly the same from here.
+ */
+export async function fetchStops(
+  from: string,
+  to: string,
+  token: string | null,
+): Promise<StopList> {
+  return await getAnalysis<StopList>("/stops", token, { from, to });
+}
+
+/** §5.3's `/time/resolve`: a phrase against the shift calendar, resolved by code.
+ *
+ * **The browser does not compute what "last night" means either.** §5.3 puts this endpoint
+ * in the contract so that a window is never guessed, and a frontend doing the arithmetic
+ * itself against the reader's own timezone would be the same guess one layer out — with the
+ * shift boundaries and the DST transitions §3.2 defines nowhere in sight.
+ */
+export async function resolveTime(
+  expression: string,
+  token: string | null,
+): Promise<TimeResolution> {
+  return await getAnalysis<TimeResolution>("/time/resolve", token, {
+    expression,
+  });
 }
 
 /** §5.3's `/alarms/{id}`, added at M6 so an `alarm` citation has somewhere to open. */

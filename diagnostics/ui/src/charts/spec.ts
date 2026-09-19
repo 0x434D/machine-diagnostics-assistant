@@ -67,7 +67,15 @@ function config(): Record<string, unknown> {
   };
 }
 
-/** The heading over every chart: what it is, and the interval it is a reading of.
+/** A chart's title block: what it is, and the interval it is a reading of. */
+export function titleBlock(
+  text: string,
+  subtitle: string,
+): Record<string, unknown> {
+  return { title: { text, subtitle } };
+}
+
+/** The heading over every chart drawn from a citation.
  *
  * The window is the one the pipeline stamped (§7.3) and never one the screen chose — a
  * chart labelled with a different interval is §7.4's failure with the values left true and
@@ -78,12 +86,10 @@ function heading(
   fallback: string,
   window: CitationWindow | null,
 ): Record<string, unknown> {
-  return {
-    title: {
-      text: citation.options?.title ?? fallback,
-      subtitle: window === null ? "" : window.label,
-    },
-  };
+  return titleBlock(
+    citation.options?.title ?? fallback,
+    window === null ? "" : window.label,
+  );
 }
 
 /** Which of the option names a type reads, checked against the rows before anything draws.
@@ -194,13 +200,110 @@ function timeseries(
   };
 }
 
-/** §7.4: station states across a window, in §15's five categories.
+/** Which fields of its rows a Gantt reads: when an episode began and ended, which row of
+ * the chart it belongs on, and which PackML state it is. Names, never values. */
+export interface GanttFields {
+  readonly start: string;
+  readonly end: string;
+  readonly row: string;
+  readonly state: string;
+}
+
+/** Anything else drawn on the same axis, under the episodes or over them.
+ *
+ * §7.2's stop timeline puts §5.4's chain and §4.4's ingest gaps onto this chart, and it is
+ * the *same* chart — one station per row, one bar per episode, coloured by category. A
+ * second implementation of it would be a second colour language the day either changed.
+ */
+export interface GanttOverlays {
+  readonly under?: readonly Record<string, unknown>[];
+  readonly over?: readonly Record<string, unknown>[];
+}
+
+/** §7.4's state Gantt, and §7.2's stop timeline: station states across an interval, in
+ * §15's five categories.
  *
  * Coloured by category rather than by state, for the reason `design/stateCategory.ts`
  * gives at length: fifteen PackML states in fifteen colours hides the one distinction the
  * chart exists to show. The glyph rides on each bar and again in the legend, so the
  * distinction survives with the colour gone.
+ *
+ * Every layer carries its own encoding rather than inheriting a top-level one, so an
+ * overlay can position itself differently — a gap is a band across every station and not a
+ * bar on one of them, and an inherited `y` would have forced it onto a row it is not about.
  */
+export function stateGanttSpec(
+  fields: GanttFields,
+  rows: readonly Row[],
+  title: Record<string, unknown>,
+  overlays: GanttOverlays = {},
+): Record<string, unknown> {
+  const values = rows.map((row) => ({
+    ...row,
+    // Derived, not supplied: `categoryFor` is §3.3's table and the same one `StateBadge`
+    // reads, so a bar and a badge for one state cannot disagree.
+    __category: categoryLabel(row[fields.state]),
+    __glyph: categoryGlyph(row[fields.state]),
+  }));
+
+  const paint = chrome();
+  const position = {
+    y: { field: fields.row, type: "nominal", title: null },
+    x: { field: fields.start, type: "temporal", title: null },
+  };
+
+  return {
+    $schema: VEGA_LITE,
+    ...title,
+    ...config(),
+    layer: [
+      ...(overlays.under ?? []),
+      {
+        data: { values },
+        mark: { type: "bar", cornerRadius: 2, height: { band: 0.7 } },
+        encoding: {
+          ...position,
+          x2: { field: fields.end },
+          color: {
+            field: "__category",
+            type: "nominal",
+            scale: stateScale(),
+            // The five in the order `CATEGORIES` declares them, so the legend reads as
+            // the diagnostic sequence rather than alphabetically.
+            sort: stateScale().domain,
+            legend: { title: "category" },
+          },
+          tooltip: [
+            { field: fields.row, type: "nominal" },
+            { field: fields.state, type: "nominal", title: "state" },
+            { field: "__category", type: "nominal", title: "category" },
+            { field: fields.start, type: "temporal", title: "from" },
+            { field: fields.end, type: "temporal", title: "to" },
+          ],
+        },
+      },
+      {
+        // The second channel, on the mark itself. Without it a reader has to go to the
+        // legend and match a colour, which is the colour being the only channel.
+        data: { values },
+        mark: {
+          type: "text",
+          align: "left",
+          baseline: "middle",
+          dx: 3,
+          fontSize: 11,
+          color: paint.text,
+        },
+        encoding: {
+          ...position,
+          text: { field: "__glyph", type: "nominal" },
+        },
+      },
+      ...(overlays.over ?? []),
+    ],
+  };
+}
+
 function stateGantt(
   citation: Citation,
   rows: readonly Row[],
@@ -216,64 +319,17 @@ function stateGantt(
   );
   if (problem !== null) return { refused: problem };
 
-  const state = String(options.colour);
-  const values = rows.map((row) => ({
-    ...row,
-    // Derived, not supplied: `categoryFor` is §3.3's table and the same one `StateBadge`
-    // reads, so a bar and a badge for one state cannot disagree.
-    __category: categoryLabel(row[state]),
-    __glyph: categoryGlyph(row[state]),
-  }));
-
-  const paint = chrome();
   return {
-    spec: {
-      $schema: VEGA_LITE,
-      ...heading(citation, "station states across the window", window),
-      ...config(),
-      data: { values },
-      encoding: {
-        y: { field: options.y, type: "nominal", title: null },
-        x: { field: options.x, type: "temporal", title: null },
+    spec: stateGanttSpec(
+      {
+        start: String(options.x),
+        end: String(options.end),
+        row: String(options.y),
+        state: String(options.colour),
       },
-      layer: [
-        {
-          mark: { type: "bar", cornerRadius: 2, height: { band: 0.7 } },
-          encoding: {
-            x2: { field: options.end },
-            color: {
-              field: "__category",
-              type: "nominal",
-              scale: stateScale(),
-              // The five in the order `CATEGORIES` declares them, so the legend reads as
-              // the diagnostic sequence rather than alphabetically.
-              sort: stateScale().domain,
-              legend: { title: "category" },
-            },
-            tooltip: [
-              { field: options.y, type: "nominal" },
-              { field: state, type: "nominal", title: "state" },
-              { field: "__category", type: "nominal", title: "category" },
-              { field: options.x, type: "temporal", title: "from" },
-              { field: options.end, type: "temporal", title: "to" },
-            ],
-          },
-        },
-        {
-          // The second channel, on the mark itself. Without it a reader has to go to the
-          // legend and match a colour, which is the colour being the only channel.
-          mark: {
-            type: "text",
-            align: "left",
-            baseline: "middle",
-            dx: 3,
-            fontSize: 11,
-            color: paint.text,
-          },
-          encoding: { text: { field: "__glyph", type: "nominal" } },
-        },
-      ],
-    },
+      rows,
+      heading(citation, "station states across the window", window),
+    ),
   };
 }
 

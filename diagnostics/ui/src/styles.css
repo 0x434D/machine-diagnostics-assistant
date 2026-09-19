@@ -561,27 +561,32 @@ button:disabled {
   overflow-x: auto;
 }
 
-.trend {
+.trend,
+.episodes {
   border-collapse: collapse;
   font-size: var(--text-sm);
   font-variant-numeric: tabular-nums;
 }
 
-.trend caption {
+.trend caption,
+.episodes caption {
   color: var(--text-muted);
   text-align: start;
   padding-bottom: var(--space-2);
 }
 
 .trend th,
-.trend td {
+.trend td,
+.episodes th,
+.episodes td {
   border-bottom: var(--border-width) solid var(--border);
   padding: var(--space-1) var(--space-3) var(--space-1) 0;
   text-align: start;
   white-space: nowrap;
 }
 
-.trend th {
+.trend th,
+.episodes th {
   color: var(--text-muted);
   font-weight: var(--weight-medium);
 }
@@ -623,4 +628,90 @@ button:disabled {
   color: var(--text-muted);
   font-size: var(--text-sm);
   margin-top: var(--space-2);
+}
+
+/* --- §7.2's stop timeline ------------------------------------------------------------- */
+
+.timeline {
+  display: grid;
+  gap: var(--space-4);
+  max-width: var(--measure-wide);
+}
+
+.timeline__lede {
+  color: var(--text-muted);
+  margin: 0;
+  max-width: var(--measure-prose);
+}
+
+/* The window, changed two ways that involve no guessing. One row on a desk and two on a
+   phone: it is one decision either way, so the forms wrap rather than hide behind a menu. */
+.timeline__window {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+
+.timeline__phrase,
+.timeline__instants {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.timeline__phrase label,
+.timeline__instants label {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  width: 100%;
+}
+
+/* The global rule gives an input the width of its container, which inside a flex row is
+   the whole row. Here they sit beside their buttons instead. */
+.timeline__window input {
+  flex: 1 1 12rem;
+  max-width: var(--measure-field);
+  width: auto;
+}
+
+.timeline__empty,
+.timeline__uncitable {
+  border-inline-start: var(--border-width-marker) solid var(--border-strong);
+  color: var(--text-muted);
+  display: inline-block;
+  max-width: var(--measure-prose);
+  padding-inline-start: var(--space-3);
+}
+
+.timeline__stops {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  list-style: none;
+  margin: var(--space-3) 0 0;
+  padding: 0;
+}
+
+/* The stop whose chart is below, marked as chosen. `aria-pressed` is the state itself
+   rather than a class beside it, so the marking and the announcement cannot drift. */
+.timeline__stops button[aria-pressed="true"] {
+  background: var(--accent-tint);
+  border-color: var(--accent);
+}
+
+.timeline__gaps {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin: var(--space-2) 0 0;
+  padding-inline-start: var(--space-5);
+}
+
+.timeline__episodes {
+  margin-top: var(--space-4);
+}
+
+.timeline__episodes summary {
+  cursor: pointer;
+  min-height: var(--control-height);
 }

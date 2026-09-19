@@ -8,6 +8,7 @@
  */
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { MemoryRouter } from "react-router";
 
 // Vite's `?raw` suffix reads the generated file as text, so the enumeration below runs
 // against the union `json2ts` wrote rather than against a copy of it kept here.
@@ -346,11 +347,16 @@ function stubEveryEndpoint(): ReturnType<typeof vi.fn> {
 function open(citation: Citation): void {
   const view = render(
     <AuthProvider>
-      {/* The exchange an answer would have provided (§7.4): a chart citation names a tool
-          call, and a tool call belongs to the run that made it. */}
-      <ExchangeProvider exchange={EXCHANGE}>
-        <CitationChip citation={citation} />
-      </ExchangeProvider>
+      {/* A router, because a panel may send the reader somewhere: a stop opens onto §7.2's
+          timeline at its own stop. In the application that address is a real one; here it
+          only has to exist. */}
+      <MemoryRouter>
+        {/* The exchange an answer would have provided (§7.4): a chart citation names a tool
+            call, and a tool call belongs to the run that made it. */}
+        <ExchangeProvider exchange={EXCHANGE}>
+          <CitationChip citation={citation} />
+        </ExchangeProvider>
+      </MemoryRouter>
     </AuthProvider>,
   );
   fireEvent.click(
