@@ -20,12 +20,17 @@ import { describeFailure, resolveTime, type TimeResolution } from "../api";
 import { useAuth } from "../AuthContext";
 import { LineClock } from "./LineClock";
 
-/** The window a containment opens on, before anybody chooses anything.
+/** The phrase a view opens on, for the views that open on one.
  *
  * The shift that is running rather than the last completed one: a containment is asked
  * about what the line is making now, and the shift it is making it in is the interval an
  * operator already has in their head. It is an *open* window and the screen says so —
  * `closed` is in the response for exactly that.
+ *
+ * **The stop timeline opens on no phrase at all**, and that is not an oversight. Its window
+ * is also its query: a window in the address is read straight away, so a phrase resolved on
+ * arrival would be a reading of an interval nobody asked about. A containment's default
+ * fills a form and fetches nothing, which is what lets it have one.
  */
 export const DEFAULT_PHRASE = "this shift";
 
@@ -51,8 +56,8 @@ export const SHIFT_PHRASES = [
 ] as const;
 
 export interface ShiftWindow {
-  /** The phrase the service was last asked for. */
-  readonly asked: string;
+  /** The phrase the service was last asked for, or null while nothing has been asked. */
+  readonly asked: string | null;
   /** The last window the service resolved. Null only before the first answer, and
    * **unchanged by a refusal**: a phrase the calendar does not understand must not empty
    * the window a reader already had. */
@@ -63,18 +68,41 @@ export interface ShiftWindow {
   readonly ask: (expression: string) => void;
 }
 
-/** Resolves a phrase against the shift calendar, starting with `DEFAULT_PHRASE`. */
-export function useShiftWindow(): ShiftWindow {
+/** One request to the calendar. `attempt` is what makes asking twice for one phrase two
+ * asks rather than one.
+ *
+ * Without it a reader who resolved "last shift", then edited the instants by hand, then
+ * pressed "last shift" again would be pressing a dead control: the expression has not
+ * changed, so nothing re-resolves and nothing puts the shift's own instants back.
+ */
+interface Request {
+  readonly expression: string | null;
+  readonly attempt: number;
+}
+
+/** Resolves a phrase against the shift calendar.
+ *
+ * `initial` is the phrase the view opens on; `null` opens on none and asks the service
+ * nothing until the reader chooses. `DEFAULT_PHRASE` says why the two views differ there.
+ */
+export function useShiftWindow(
+  initial: string | null = DEFAULT_PHRASE,
+): ShiftWindow {
   const { token } = useAuth();
-  const [asked, setAsked] = useState<string>(DEFAULT_PHRASE);
+  const [request, setRequest] = useState<Request>({
+    expression: initial,
+    attempt: 0,
+  });
   const [resolution, setResolution] = useState<TimeResolution | null>(null);
   const [refusal, setRefusal] = useState<string | null>(null);
-  const [resolving, setResolving] = useState(true);
+  const [resolving, setResolving] = useState(initial !== null);
 
+  const { expression, attempt } = request;
   useEffect(() => {
+    if (expression === null) return undefined;
     let current = true;
     setResolving(true);
-    resolveTime(asked, token)
+    resolveTime(expression, token)
       .then((next) => {
         if (!current) return;
         setRefusal(null);
@@ -92,9 +120,20 @@ export function useShiftWindow(): ShiftWindow {
     return () => {
       current = false;
     };
-  }, [asked, token]);
+  }, [expression, attempt, token]);
 
-  return { asked, resolution, refusal, resolving, ask: setAsked };
+  return {
+    asked: expression,
+    resolution,
+    refusal,
+    resolving,
+    ask: (next: string) => {
+      setRequest((previous) => ({
+        expression: next,
+        attempt: previous.attempt + 1,
+      }));
+    },
+  };
 }
 
 /** The service's words for this interval, while the interval is still the one it resolved.
@@ -213,6 +252,11 @@ function InForce({
   label: string | null;
 }) {
   if (from === "" || to === "") {
+    // Nothing asked and no window: there is no interval in force to state. A view that
+    // opens on no phrase says for itself why it is waiting, and a sentence here would put
+    // that reason on the screen twice.
+    if (shift.asked === null) return null;
+
     return (
       <p className="shift__inforce" data-testid="window-in-force">
         {shift.resolving

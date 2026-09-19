@@ -667,15 +667,14 @@ button:disabled {
   max-width: var(--measure-prose);
 }
 
-/* The window, changed two ways that involve no guessing. One row on a desk and two on a
-   phone: it is one decision either way, so the forms wrap rather than hide behind a menu. */
+/* The instants, for a reader who already has an interval. The phrases beside them are the
+   shared `.shift` control, which carries its own layout. */
 .timeline__window {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-4);
 }
 
-.timeline__phrase,
 .timeline__instants {
   align-items: end;
   display: flex;
@@ -683,7 +682,6 @@ button:disabled {
   gap: var(--space-2);
 }
 
-.timeline__phrase label,
 .timeline__instants label {
   color: var(--text-muted);
   font-size: var(--text-sm);
@@ -1199,8 +1197,8 @@ button:disabled {
   width: 100%;
 }
 
-/* As in the timeline's picker: the global rule would give this input the whole flex row,
-   and it sits beside its button instead. */
+/* As with the timeline's instant boxes: the global rule would give this input the whole
+   flex row, and it sits beside its button instead. */
 .shift__phrase input {
   flex: 1 1 12rem;
   max-width: var(--measure-field);
@@ -1209,7 +1207,7 @@ button:disabled {
 
 /* The interval in force, and how far the line's clock has run. Marked with the same bar
    the state language gives a fact that changes how the rest of the screen reads — which
-   window a containment set is for is exactly such a fact. */
+   window a containment set or a list of stops is for is exactly such a fact. */
 .shift__inforce,
 .shift__clock {
   border-inline-start: var(--border-width-marker) solid var(--border-strong);

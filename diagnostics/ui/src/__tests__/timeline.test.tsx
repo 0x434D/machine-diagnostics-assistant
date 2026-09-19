@@ -25,6 +25,7 @@ import { ENCODINGS } from "../design/stateCategory";
 import { TOKEN_STORAGE_KEY } from "../tokenStorage";
 import type {
   Coverage,
+  LineStatus,
   PlantStatus,
   StopDetail,
   StopList,
@@ -219,6 +220,21 @@ const PLANT_STATUS: PlantStatus = {
   clockAvailable: true,
 };
 
+/** Where the line's own clock has reached, which the shared window control shows beside the
+ * interval the calendar resolved. §5.3 allows simulated time to sit ahead of the wall clock
+ * `/time/resolve` answers against, and this is the line that lets a reader see it. */
+const LINE_STATUS: LineStatus = {
+  as_of: "2026-09-12T06:00:00Z",
+  latest_data_at: WINDOW.to_ts,
+  staleness_seconds: 14_400,
+  live: false,
+  live_within_seconds: 120,
+  stations: [],
+  buffers: [],
+  active_alarms: [],
+  last_part_out: null,
+};
+
 /** Every endpoint this view reaches, answering with the fixtures above. */
 function stub(bodies: {
   list?: StopList;
@@ -230,9 +246,11 @@ function stub(bodies: {
       ? PLANT_STATUS
       : url.includes("/time/resolve")
         ? (bodies.resolution ?? RESOLUTION)
-        : /\/stops\/[^?]/.test(url)
-          ? (bodies.detail ?? DETAIL)
-          : (bodies.list ?? listOf(COMPLETE));
+        : url.includes("/line/status")
+          ? LINE_STATUS
+          : /\/stops\/[^?]/.test(url)
+            ? (bodies.detail ?? DETAIL)
+            : (bodies.list ?? listOf(COMPLETE));
     return Promise.resolve(
       new Response(JSON.stringify(body), {
         headers: { "Content-Type": "application/json" },
@@ -243,17 +261,27 @@ function stub(bodies: {
   return fetchMock;
 }
 
-/** Which URLs this view asked the **analysis service** for.
- *
- * The shell stands a plant status banner over every view, and it reads the edge gateway —
- * so `fetch` is called on arrival at any address and "nothing was read" can no longer be a
- * statement about `fetch`. What these tests pin is that no window means no history is read,
- * which is a claim about the service the history lives in.
- */
+/** Which URLs this view asked the **analysis service** for. */
 function readFromAnalysis(fetchMock: ReturnType<typeof vi.fn>): string[] {
   return fetchMock.mock.calls
     .map((call) => String(call[0]))
     .filter((url) => url.startsWith("/api/analysis"));
+}
+
+/** Of those, the ones that read the line's **history**.
+ *
+ * Two endpoints are about choosing a window rather than reading through one, and both are
+ * reached before any window exists: the shell's plant banner reads the gateway on arrival at
+ * every address, and the shared window control reads `/line/status` so that the calendar's
+ * answer can be seen beside the clock the data actually has. "No window means nothing is
+ * read" was always a claim about the history, not about `fetch` — so it is asserted against
+ * the endpoints the history lives behind, and a fourth endpoint added later is caught here
+ * rather than excused.
+ */
+function historyRead(fetchMock: ReturnType<typeof vi.fn>): string[] {
+  return readFromAnalysis(fetchMock).filter(
+    (url) => !url.includes("/time/resolve") && !url.includes("/line/status"),
+  );
 }
 
 function at(address: string) {
@@ -482,13 +510,17 @@ test("a gap over the stop itself is shaded on the chart, not left off it", async
 
 test("no window means nothing is read", async () => {
   // A default window would be a reading of an interval nobody asked about, under a heading
-  // that does not say so.
+  // that does not say so. The shared window control *has* a default phrase — the containment
+  // form opens on it — so this view passing none is a decision, and this is where it is held.
   const fetchMock = stub({});
 
   at("/timeline");
 
   expect(await screen.findByText(/No window yet/)).toBeInTheDocument();
-  expect(readFromAnalysis(fetchMock)).toEqual([]);
+  expect(historyRead(fetchMock)).toEqual([]);
+  expect(
+    readFromAnalysis(fetchMock).some((url) => url.includes("/time/resolve")),
+  ).toBe(false);
 });
 
 test("a phrase is resolved by the shift calendar and not by the browser", async () => {
@@ -499,15 +531,17 @@ test("a phrase is resolved by the shift calendar and not by the browser", async 
 
   at("/timeline");
   fireEvent.change(
-    screen.getByLabelText("A phrase the shift calendar understands"),
+    screen.getByLabelText("Another phrase the calendar understands"),
     { target: { value: "last night" } },
   );
   fireEvent.click(screen.getByRole("button", { name: "Resolve" }));
 
   await waitFor(() => {
-    expect(readFromAnalysis(fetchMock)[0]).toContain(
-      "/time/resolve?expression=last+night",
-    );
+    expect(
+      readFromAnalysis(fetchMock).some((url) =>
+        url.includes("/time/resolve?expression=last+night"),
+      ),
+    ).toBe(true);
   });
   // And the window it resolved to is the one the stops are then read over.
   await waitFor(() => {
@@ -527,7 +561,8 @@ test("a phrase the calendar does not understand is answered with the ones it doe
   // worked in the refusal. Collapsing that into "422" would throw away the half a reader
   // can act on.
   // By URL: the refusal belongs to `/time/resolve`, and handing it to the shell's plant
-  // status banner as well would put the list of understood phrases on the screen twice.
+  // status banner or to the line clock as well would put the list of understood phrases on
+  // the screen three times over, where one assertion would match whichever came first.
   vi.stubGlobal(
     "fetch",
     vi.fn((url: string) =>
@@ -536,23 +571,30 @@ test("a phrase the calendar does not understand is answered with the ones it doe
           ? new Response(JSON.stringify(PLANT_STATUS), {
               headers: { "Content-Type": "application/json" },
             })
-          : new Response(
-              JSON.stringify({
-                detail: {
-                  message:
-                    "no understood time expression matches 'yesterdayish'",
-                  understood: ["last night", "last shift", "yesterday"],
+          : url.includes("/line/status")
+            ? new Response(JSON.stringify(LINE_STATUS), {
+                headers: { "Content-Type": "application/json" },
+              })
+            : new Response(
+                JSON.stringify({
+                  detail: {
+                    message:
+                      "no understood time expression matches 'yesterdayish'",
+                    understood: ["last night", "last shift", "yesterday"],
+                  },
+                }),
+                {
+                  status: 422,
+                  headers: { "Content-Type": "application/json" },
                 },
-              }),
-              { status: 422, headers: { "Content-Type": "application/json" } },
-            ),
+              ),
       ),
     ),
   );
 
   at("/timeline");
   fireEvent.change(
-    screen.getByLabelText("A phrase the shift calendar understands"),
+    screen.getByLabelText("Another phrase the calendar understands"),
     { target: { value: "yesterdayish" } },
   );
   fireEvent.click(screen.getByRole("button", { name: "Resolve" }));
@@ -575,7 +617,59 @@ test("something that is not an instant is refused rather than parsed loosely", a
   fireEvent.click(screen.getByRole("button", { name: "Show stops" }));
 
   expect(await screen.findByText(/is not an instant/)).toBeInTheDocument();
-  expect(readFromAnalysis(fetchMock)).toEqual([]);
+  expect(historyRead(fetchMock)).toEqual([]);
+});
+
+test("a phrase chip is one click, and the window it resolves to lands in the address", async () => {
+  // The six phrases the containment form offers are offered here too, from the one list
+  // that is held against the service's own (`test_phrase_parity.py`). What must not happen
+  // is the click resolving a window and leaving the address on the old one: the address is
+  // this view's window, so a chip that changed only the chart would produce a link that
+  // opens somewhere else.
+  const fetchMock = stub({});
+
+  at("/timeline");
+  fireEvent.click(screen.getByRole("button", { name: "last night" }));
+
+  await waitFor(() => {
+    expect(
+      readFromAnalysis(fetchMock).some((url) =>
+        url.includes("/time/resolve?expression=last+night"),
+      ),
+    ).toBe(true);
+  });
+  // The instants the calendar resolved to, in the boxes — which are fed from the address.
+  expect(await screen.findByDisplayValue(WINDOW.from_ts)).toBeInTheDocument();
+  expect(screen.getByDisplayValue(WINDOW.to_ts)).toBeInTheDocument();
+  // And the calendar's own name for the interval, beside the instants it means.
+  expect(screen.getByTestId("window-in-force")).toHaveTextContent(
+    RESOLUTION.label,
+  );
+});
+
+test("re-asking the phrase already in force puts its window back", async () => {
+  // A chip that is not marked as pressed has to do something when pressed. After a window
+  // typed by hand the chip is unmarked and the phrase is unchanged, which is exactly the
+  // state in which a picker keyed only on the expression becomes a dead control.
+  stub({});
+
+  at("/timeline");
+  fireEvent.click(screen.getByRole("button", { name: "last night" }));
+  await screen.findByDisplayValue(WINDOW.from_ts);
+
+  fireEvent.change(screen.getByLabelText("From (UTC)"), {
+    target: { value: "2026-09-12T00:00:00Z" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Show stops" }));
+  expect(screen.getByLabelText("From (UTC)")).toHaveValue(
+    "2026-09-12T00:00:00Z",
+  );
+
+  fireEvent.click(screen.getByRole("button", { name: "last night" }));
+
+  await waitFor(() => {
+    expect(screen.getByLabelText("From (UTC)")).toHaveValue(WINDOW.from_ts);
+  });
 });
 
 test("choosing a stop reads that stop, and the window stays in the address", async () => {
