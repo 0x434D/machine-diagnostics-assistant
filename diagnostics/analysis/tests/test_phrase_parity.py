@@ -1,4 +1,5 @@
-"""§7.2's containment form offers time phrases, and this service owns the list.
+"""§7.2's containment form and its stop timeline both offer time phrases, and this
+service owns the list.
 
 `UNDERSTOOD_EXPRESSIONS` is the whole of what `/time/resolve` resolves, and the form in
 `diagnostics/ui/src/time/ShiftWindow.tsx` offers six of them as one click each. That is a

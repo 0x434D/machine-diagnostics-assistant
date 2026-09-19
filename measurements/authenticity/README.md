@@ -693,14 +693,18 @@ The wall clock is the honest reading of a question a human asks, and the residua
 window a person names that the data does not reach — is made visible by the line status the
 containment form shows rather than hidden by moving the anchor. Recorded here and for §15.
 
-**Three things on the screen are not covered by anything above, and are named rather than
+**One thing on the screen is not covered by anything above, and is named rather than
 counted.** The buffer-level row under §7.2's stop timeline has no text equivalent beneath the
 chart the way the episodes do, so it is the one part of that view that exists only as a
-picture. `shell.test.tsx` stubs no fetch, so two of its tests let the plant banner reach
-jsdom's own; that is a test-hygiene defect and not a product one, and it was left to the agent
-that owns the file. And `StopTimeline` carries its own copy of the shift-phrase picker that
-`useShiftWindow` owns — a plain duplication, left because the file belonged to another task at
-the time.
+picture.
+
+Two others stood here when this section was written and were closed before the milestone
+landed, which is why they are recorded as closed rather than deleted. `StopTimeline` carried
+its own copy of the shift-phrase picker `useShiftWindow` owns; adopting the shared one
+uncovered a defect the duplication had been hiding, in that `useShiftWindow` re-resolved only
+when the *expression* changed — so re-pressing a phrase after hand-editing the instants was a
+dead control, in the containment form as well. And `shell.test.tsx` now stubs `fetch` instead
+of letting two of its tests reach jsdom's own.
 
 **What M5 left half-served is now half-served differently.** §10.5's admin row reads *"raw
 model exchange and system prompts"*, and M5 recorded that `GET /prompts` served the fixed
