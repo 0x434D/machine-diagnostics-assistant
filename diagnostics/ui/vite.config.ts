@@ -23,6 +23,14 @@ const proxy = {
     rewrite: (path: string) => path.replace(/^\/api\/issuer/, ""),
     changeOrigin: true,
   },
+  // The edge gateway, for §7.2's plant status banner. Read-only: the banner asks `/status`
+  // and the browser has no other business with the boundary process (§4.5). The default is
+  // the port `diagnostics/compose.yml` publishes it on.
+  "/api/gateway": {
+    target: process.env.VITE_GATEWAY_URL ?? "http://localhost:8080",
+    rewrite: (path: string) => path.replace(/^\/api\/gateway/, ""),
+    changeOrigin: true,
+  },
 };
 
 export default defineConfig({

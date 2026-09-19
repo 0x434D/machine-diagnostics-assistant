@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "\u00a77.2's two questions, and the comment beside them.\n\nBoth questions are independently answerable and `agent.feedback` is nullable in both\ncolumns for exactly that reason: `None` is *not answered*, which is a different claim\nfrom *no*. One model in both directions, so answering one question now and the other one\nlater is two requests rather than a form that has to be filled in at once.\n\n**Nothing here withdraws an answer.** \u00a77.2 asks two questions and offers no third state\nto move back to, and a `null` that cleared a stored answer would make the ordinary case\n\u2014 submitting the second question without resending the first \u2014 erase the first.",
+  "properties": {
+    "useful": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Useful"
+    },
+    "matched_reality": {
+      "anyOf": [
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Matched Reality"
+    },
+    "comment": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Comment"
+    }
+  },
+  "title": "machine-agent answer feedback (\u00a77.2)",
+  "type": "object"
+}

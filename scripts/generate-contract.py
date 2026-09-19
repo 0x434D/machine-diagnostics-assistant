@@ -1,4 +1,4 @@
-"""Regenerate the two files in contracts/ from the code that serves them.
+"""Regenerate the files in contracts/ from the code that serves them.
 
 The committed files are what the frontend's TypeScript is generated from, and a test in
 each package fails when a committed file and the live definition disagree — so an API
@@ -18,6 +18,7 @@ sys.path.insert(0, str(ROOT / "diagnostics/analysis/src"))
 sys.path.insert(0, str(ROOT / "diagnostics/agent/src"))
 
 from agent.answer import json_schema as answer_schema
+from agent.records import feedback_json_schema as feedback_schema
 from agent.records import json_schema as trace_schema
 from analysis.app import app
 
@@ -47,6 +48,13 @@ def main() -> None:
     trace = ROOT / "contracts/trace.schema.json"
     trace.write_text(json.dumps(trace_schema(), indent=2) + "\n")
     print(f"wrote {trace}")
+
+    # §7.2's two questions became a contract at M6 Task 8, when the UI started asking them:
+    # the endpoint answers with everything now stored rather than with an echo of the
+    # request, so its response is a shape the frontend reads.
+    feedback = ROOT / "contracts/feedback.schema.json"
+    feedback.write_text(json.dumps(feedback_schema(), indent=2) + "\n")
+    print(f"wrote {feedback}")
 
 
 if __name__ == "__main__":

@@ -113,6 +113,7 @@ class Feedback(BaseModel):
 #: a file decorated by hand after generation is a file nothing can compare against.
 SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema"
 SCHEMA_TITLE = "machine-agent reasoning trace (§7.2)"
+FEEDBACK_TITLE = "machine-agent answer feedback (§7.2)"
 
 
 def json_schema() -> dict[str, object]:
@@ -128,4 +129,20 @@ def json_schema() -> dict[str, object]:
         "$schema": SCHEMA_DIALECT,
         **Trace.model_json_schema(),
         "title": SCHEMA_TITLE,
+    }
+
+
+def feedback_json_schema() -> dict[str, object]:
+    """`Feedback` as JSON Schema, for the same reason the trace has one.
+
+    The endpoint answers with **everything now stored** for the message rather than with an
+    echo of the request, because that is what lets a client that answered one question render
+    both without asking again — so the response is a shape the UI reads rather than a status
+    it ignores, and the three-state `bool | None` in it is exactly the distinction a
+    hand-written `boolean` would flatten.
+    """
+    return {
+        "$schema": SCHEMA_DIALECT,
+        **Feedback.model_json_schema(),
+        "title": FEEDBACK_TITLE,
     }

@@ -7,17 +7,25 @@
  * because it is the one service a production deployment replaces rather than reimplements
  * (§10.5), and generating a contract for something meant to be thrown away would assert
  * that it is part of the system's surface.
+ *
+ * `PlantStatus` is the second exception and the reason is different: the gateway is C# and
+ * serves no schema document, so there is nothing in `contracts/` to generate it from. It is
+ * therefore written out below **and read through a parser that refuses a response it does
+ * not recognise** — which is what gives the hand-written shape the way of being wrong out
+ * loud that a generated one gets for free. See `plantStatusOf`.
  */
 import type { components } from "./generated/analysis";
 import type {
   CitationWindow,
   MachineAgentAnswerObject63,
 } from "./generated/answer";
+import type { MachineAgentAnswerFeedback72 } from "./generated/feedback";
 import type { MachineAgentReasoningTrace72 } from "./generated/trace";
 import type { Exchange } from "./citations/exchange";
 
 export type Answer = MachineAgentAnswerObject63;
 export type Trace = MachineAgentReasoningTrace72;
+export type Feedback = MachineAgentAnswerFeedback72;
 export type Part = components["schemas"]["Part"];
 export type AffectedParts = components["schemas"]["AffectedParts"];
 export type Alarm = components["schemas"]["Alarm"];
@@ -41,6 +49,23 @@ const ANALYSIS = "/api/analysis";
 /** The development issuer publishes no port of its own — it sits on the internal diag-net
  * and nginx forwards to it there — so this origin is the only way a browser reaches it. */
 const ISSUER = "/api/issuer";
+/** The edge gateway, for §7.2's plant status banner and for nothing else. The browser reads
+ * its `/status` and never writes: §4.5 is that nothing crosses to the plant from here, and a
+ * screen that could reach the boundary process for anything but a read would be the first
+ * step towards contradicting it. */
+const GATEWAY = "/api/gateway";
+
+/** Which service a same-origin path belongs to, for a failure that never reached one.
+ *
+ * "The analysis service could not be reached" was what every such failure said, back when it
+ * was the only thing `request` fetched — and an unreachable *gateway* reported under the
+ * analysis service's name sends a reader to look at the wrong container. */
+function serviceAt(url: string): string {
+  if (url.startsWith(AGENT)) return "the agent";
+  if (url.startsWith(GATEWAY)) return "the edge gateway";
+  if (url.startsWith(ANALYSIS)) return "the analysis service";
+  return "the service";
+}
 
 /** No token presented, or the one presented is invalid, expired, or for another issuer.
  * Every diagnostics endpoint answers this the same way (§10.5) and says nothing more --
@@ -200,17 +225,27 @@ export async function signIn(
  * renderer written in a hurry collapses, and nine chances to collapse it is nine chances
  * for an unresolvable citation to render as an empty panel.
  */
-async function request(url: string, token: string | null): Promise<Response> {
+async function request(
+  url: string,
+  token: string | null,
+  /** A body and a method, for the one POST that goes through here (§7.2's feedback).
+   * The alternative was a second function with this one's six failure branches copied
+   * into it, which is six more chances to collapse the branch that matters. */
+  init: RequestInit = {},
+): Promise<Response> {
   let response: Response;
   try {
-    response = await fetch(url, { headers: authHeaders(token) });
+    response = await fetch(url, {
+      ...init,
+      headers: { ...authHeaders(token), ...init.headers },
+    });
   } catch (reason: unknown) {
     // `fetch` rejects only when the request never completed: no connection, no DNS, the
     // browser offline, the load aborted. That is a specific condition with a specific
     // recovery — the rendered "could not be reached" state — and nothing further along is
     // caught here, so a failure while *reading* the response still propagates.
     throw new UnreachableError(
-      `the analysis service could not be reached (${String(reason)})`,
+      `${serviceAt(url)} could not be reached (${String(reason)})`,
     );
   }
   await refuseIfDenied(response);
@@ -443,10 +478,140 @@ export async function fetchTrace(
   exchange: Exchange,
   token: string | null,
 ): Promise<Trace> {
-  const path =
+  return (await (
+    await request(`${messageAt(exchange)}/trace`, token)
+  ).json()) as Trace;
+}
+
+/** Where §7.2's trace and feedback both hang: the **question's** row in `agent.messages`,
+ * which is the seq the `session` event announced before the pipeline took a step. */
+function messageAt(exchange: Exchange): string {
+  return (
     `${AGENT}/sessions/${encodeURIComponent(exchange.sessionId)}` +
-    `/messages/${encodeURIComponent(String(exchange.seq))}/trace`;
-  return (await (await request(path, token)).json()) as Trace;
+    `/messages/${encodeURIComponent(String(exchange.seq))}`
+  );
+}
+
+/** §7.2's two questions, answered one at a time.
+ *
+ * Send only the question that was just answered. The server `COALESCE`s per column, so the
+ * other one is left as it was found — which is the ordinary case, an operator saying the
+ * answer was useful now and coming back an hour later having been to the machine. The
+ * response is **everything now stored**, not an echo of this request, so the caller renders
+ * both answers from it without asking again.
+ */
+export async function submitFeedback(
+  exchange: Exchange,
+  answers: Feedback,
+  token: string | null,
+): Promise<Feedback> {
+  const response = await request(`${messageAt(exchange)}/feedback`, token, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(answers),
+  });
+  return (await response.json()) as Feedback;
+}
+
+/** What the gateway says about itself (§7.2's plant status banner).
+ *
+ * Hand-written, unlike everything above it, because the gateway is C# and publishes no
+ * schema document — see this file's header. Only the fields the banner reads are named; a
+ * response carrying more is not a disagreement, and the parser below ignores the rest.
+ */
+export interface PlantStatus {
+  /** `disconnected | connecting | waiting_for_history | backfilling | live`, as the gateway
+   * spells it. Kept a `string` rather than narrowed to those five: a gateway that learns a
+   * sixth is a fact this screen has to be able to report, and a union would make it a
+   * runtime refusal of a response that is perfectly valid. */
+  readonly state: string;
+  /** The `SourceTimestamp` of the last event **this gateway process** read — simulated time
+   * (§4.2), never the wall clock. Null after a restart that has read nothing yet, which is a
+   * statement about the gateway and not about how far the stored history reaches. */
+  readonly lastEventSourceTs: string | null;
+  /** 0.0 – 1.0, and 0.0 while there is no backfill to report progress for. */
+  readonly backfillProgress: number;
+  /** Records written to the local queue and not yet into Postgres. Above zero, the analysis
+   * service cannot see the most recent minutes at all. */
+  readonly queueDepth: number;
+  /** Subscription overflows: the plant told the gateway it had missed values (§4.4). */
+  readonly overflowCount: number;
+  /** False when the plant publishes no clock phase, so the gateway cannot tell catch-up
+   * from live and may have backfilled a history still being written (§4.3). */
+  readonly clockAvailable: boolean;
+}
+
+/** The gateway's `/status` body, refused rather than coerced.
+ *
+ * This is what a generated type would have given for nothing: a way for the hand-written
+ * shape above to be *wrong out loud*. A missing field read as `undefined` would render as a
+ * banner reporting an unrecognised plant state or an absent history — both of which are real
+ * conditions with real meanings — so a disagreement about the response would arrive as a
+ * plausible sentence about the plant rather than as the parsing failure it is.
+ */
+function plantStatusOf(body: unknown): PlantStatus {
+  if (typeof body !== "object" || body === null || Array.isArray(body)) {
+    throw misread("the body is not an object");
+  }
+  const row = body as Record<string, unknown>;
+  return {
+    state: text(row, "state"),
+    lastEventSourceTs: optionalText(row, "lastEventSourceTs"),
+    backfillProgress: count(row, "backfillProgress"),
+    queueDepth: count(row, "queueDepth"),
+    overflowCount: count(row, "overflowCount"),
+    clockAvailable: flag(row, "clockAvailable"),
+  };
+}
+
+function misread(what: string): Error {
+  return new Error(
+    `the gateway answered /status with something this application cannot read: ${what}`,
+  );
+}
+
+function text(row: Record<string, unknown>, name: string): string {
+  const value = row[name];
+  if (typeof value !== "string") throw misread(`${name} is not a string`);
+  return value;
+}
+
+function optionalText(
+  row: Record<string, unknown>,
+  name: string,
+): string | null {
+  const value = row[name];
+  if (value === null || value === undefined) return null;
+  if (typeof value !== "string") {
+    throw misread(`${name} is neither a string nor absent`);
+  }
+  return value;
+}
+
+function count(row: Record<string, unknown>, name: string): number {
+  const value = row[name];
+  if (typeof value !== "number") throw misread(`${name} is not a number`);
+  return value;
+}
+
+function flag(row: Record<string, unknown>, name: string): boolean {
+  const value = row[name];
+  if (typeof value !== "boolean") throw misread(`${name} is not a boolean`);
+  return value;
+}
+
+/** §7.2's plant status banner, from the one process that knows: the gateway itself.
+ *
+ * Not from the analysis service's `/line/status`, which answers the neighbouring question —
+ * how old the newest *row* is — and cannot tell a plant that is shut down from a gateway
+ * that is. The banner's whole job is that distinction, so it asks the boundary directly.
+ */
+export async function fetchPlantStatus(
+  token: string | null,
+): Promise<PlantStatus> {
+  return plantStatusOf(
+    await (await request(`${GATEWAY}/status`, token)).json(),
+  );
 }
 
 /** §3.4: a good part has no image, and that is not a missing value.

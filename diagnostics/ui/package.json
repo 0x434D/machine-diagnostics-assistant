@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "generate": "openapi-typescript ../../contracts/analysis.openapi.yaml -o src/generated/analysis.ts && json2ts ../../contracts/answer.schema.json -o src/generated/answer.ts && json2ts ../../contracts/trace.schema.json -o src/generated/trace.ts"
+    "generate": "openapi-typescript ../../contracts/analysis.openapi.yaml -o src/generated/analysis.ts && json2ts ../../contracts/answer.schema.json -o src/generated/answer.ts && json2ts ../../contracts/trace.schema.json -o src/generated/trace.ts && json2ts ../../contracts/feedback.schema.json -o src/generated/feedback.ts"
   },
   "dependencies": {
     "react": "19.3.0",

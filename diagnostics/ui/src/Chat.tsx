@@ -8,9 +8,13 @@
 import { useState, type ReactNode } from "react";
 
 import { ask, describeFailure, type Answer } from "./api";
+import { ContradictionBanner } from "./answer/ContradictionBanner";
+import { FeedbackForm } from "./answer/FeedbackForm";
+import { ReasoningTrace } from "./answer/ReasoningTrace";
 import { useAuth } from "./AuthContext";
 import { CitationChip } from "./CitationChip";
 import { ExchangeProvider, type Exchange } from "./citations/exchange";
+import { PlantStatusBanner } from "./plant/PlantStatusBanner";
 
 const EXAMPLE =
   "How many parts were rejected in the last hour, and what were the defects?";
@@ -63,6 +67,11 @@ export function Chat() {
 
   return (
     <section className="chat">
+      {/* Above the question, not under the answer: which of the three situations the
+          boundary is in changes how the answer that follows should be read, and a reader
+          who meets it afterwards has already read the answer without it. */}
+      <PlantStatusBanner />
+
       <form onSubmit={submit}>
         <label htmlFor="question">Ask the line</label>
         <textarea
@@ -107,6 +116,9 @@ function AnswerView({
   const citations = (answer.findings ?? []).flatMap(
     (finding) => finding.citations ?? [],
   );
+  // §6.5's field is optional *and* nullable, and both mean the same thing here: the agent
+  // did not disagree. Collapsed once rather than twice at the branch below.
+  const contradiction = answer.contradiction ?? null;
 
   const evidence =
     citations.length === 0 ? null : (
@@ -126,6 +138,13 @@ function AnswerView({
 
   return (
     <article className="answer">
+      {/* Above the prose, because §6.5 says the UI renders it prominently and because the
+          answer underneath was written by one of the two sides it reports. A reader who
+          meets the disagreement after the conclusion has already taken the conclusion. */}
+      {contradiction === null ? null : (
+        <ContradictionBanner contradiction={contradiction} />
+      )}
+
       {answer.answer_markdown.split("\n\n").map((paragraph) => (
         <p key={paragraph}>{emphasise(paragraph)}</p>
       ))}
@@ -138,7 +157,16 @@ function AnswerView({
         <ExchangeProvider exchange={exchange}>{evidence}</ExchangeProvider>
       )}
 
-      <Trace answer={answer} />
+      <ReasoningTrace answer={answer} exchange={exchange} />
+
+      {exchange === null ? (
+        <p className="feedback__unaddressed">
+          This answer was not addressed by the stream, so feedback on it has
+          nowhere to be recorded.
+        </p>
+      ) : (
+        <FeedbackForm exchange={exchange} />
+      )}
     </article>
   );
 }
@@ -159,33 +187,4 @@ function emphasise(paragraph: string): ReactNode[] {
     .map((part, index) =>
       index % 2 === 1 ? <em key={`${String(index)}-${part}`}>{part}</em> : part,
     );
-}
-
-function Trace({ answer }: { answer: Answer }) {
-  const { method } = answer;
-  const tools = method.tools_called ?? [];
-  const sops = method.sops_used ?? [];
-
-  return (
-    <details className="trace">
-      {/* §7.2's reasoning trace. It is stored for the audit trail regardless, so showing
-          it costs nothing — and an answer whose workings are hidden is asking to be
-          trusted rather than checked. */}
-      <summary>How this was answered</summary>
-      <dl>
-        <dt>Provider</dt>
-        <dd>{method.provider ?? "unknown"}</dd>
-        <dt>Tools called</dt>
-        <dd>{tools.length === 0 ? "none" : tools.join(", ")}</dd>
-        <dt>Budget used</dt>
-        <dd>{method.budget_used ?? 0}</dd>
-        <dt>SOPs used</dt>
-        <dd>
-          {sops.length === 0
-            ? "none — knowledge routing arrives at M4"
-            : sops.join(", ")}
-        </dd>
-      </dl>
-    </details>
-  );
 }
