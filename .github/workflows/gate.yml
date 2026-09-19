@@ -81,8 +81,13 @@ jobs:
               - '.nvmrc'
               - 'Makefile'
             # Source changes cannot break an image build — the Dockerfile copies whatever is
-            # there. Dependency and Dockerfile changes can. Filtering on those keeps four
-            # image builds off every pull request without letting a broken build reach main.
+            # there. Dependency and Dockerfile changes can, and this filter is still written
+            # for them — but it no longer gates a build. `make scan-images` is the only thing
+            # in either workflow that builds an image, and it moved to weekly.yml, so the job
+            # below produces the SBOM and nothing else. **Nothing on this gate builds an
+            # image**, which is why `make images` could spend three days unable to build the
+            # diagnostics services with nothing red: Monday's schedule was the next thing due
+            # to notice.
             images:
               - '**/Dockerfile'
               - '**/.dockerignore'
