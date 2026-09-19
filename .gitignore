@@ -41,3 +41,6 @@ build/
 # because Docker needs one; inside the repo so they are visible while a run is in flight.
 .authenticity-queue/
 .r1-queue/
+
+# Worktrees for concurrent subagents: real git worktrees, not content of this repository.
+.claude/worktrees/
