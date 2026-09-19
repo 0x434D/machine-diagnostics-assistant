@@ -81,8 +81,16 @@ jobs:
               - '.nvmrc'
               - 'Makefile'
             # Source changes cannot break an image build — the Dockerfile copies whatever is
-            # there. Dependency and Dockerfile changes can. Filtering on those keeps four
-            # image builds off every pull request without letting a broken build reach main.
+            # there. Dependency and Dockerfile changes can, so those are what this filter
+            # watches, and the job below builds all nine images and writes the SBOM when one
+            # of them moves.
+            #
+            # The build was absent from this gate between 2026-09-12 and now, because
+            # `make scan-images` was the only thing in either workflow that built an image and
+            # it moved to weekly.yml whole. That is the entire reason `make images` could
+            # spend three days unable to build the diagnostics services with nothing red: the
+            # commit that broke it changed `diagnostics/Dockerfile`, which this filter matches,
+            # into a job that no longer built anything.
             images:
               - '**/Dockerfile'
               - '**/.dockerignore'
@@ -208,12 +216,20 @@ jobs:
           cache-dependency-glob: |
             plant/uv.lock
             diagnostics/uv.lock
-      # `make scan-images` is deliberately NOT here. Its verdict depends on when Trivy's
-      # vulnerability database last refreshed, so a CVE published by a third party fails a PR
-      # about something else — the identical failure Directory.Build.props already carves
-      # NU19xx out of warnings-as-errors to avoid. It runs in weekly.yml instead, where a
-      # failure means "go patch something" rather than "your PR is stuck". `make sbom` stays:
-      # it is a function of the lockfiles and the image, so it is deterministic.
+      # The build, on the pull request that changes a Dockerfile or a lock file. It is
+      # deterministic — either the nine images build from this tree or they do not — which is
+      # the same property that keeps `make sbom` below on the gate, and it is what a filter
+      # matching `**/Dockerfile` was always for. Without it a broken build reaches main and
+      # waits for Monday, which is how `diagnostics/Dockerfile` moved to a repository-root
+      # context in Compose and not in the Makefile and stayed that way for three days.
+      - run: make images
+      # `make scan-images` is deliberately NOT here, and adding the build above does not
+      # change that. Its verdict depends on when Trivy's vulnerability database last
+      # refreshed, so a CVE published by a third party fails a PR about something else — the
+      # identical failure Directory.Build.props already carves NU19xx out of
+      # warnings-as-errors to avoid. It runs in weekly.yml instead, where a failure means "go
+      # patch something" rather than "your PR is stuck". `make sbom` stays for the same
+      # reason `make images` now does: it is a function of the lockfiles and the image.
       - run: make sbom
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         # Keep the SBOM even when the scan fails — a failing scan is exactly when someone
