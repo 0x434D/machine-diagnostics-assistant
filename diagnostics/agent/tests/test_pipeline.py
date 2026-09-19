@@ -26,16 +26,22 @@ from __future__ import annotations
 import logging
 
 import pytest
-from agent.answer import Answer
+from agent.answer import Answer, CitationWindow
+from agent.classify import CLASSIFY_TOOL
 from agent.config import Settings
 from agent.pipeline import Progress, longest, run, stream
+from agent.provider import ProviderReply, ToolCall
 from agent.providers_scripted import DISCLOSURE, ScriptedProvider
-from agent.tools import AnalysisClient
+from agent.records import Trace
 
 from .fakes import (
+    WINDOWS,
     FakeAnalysis,
+    InventingProvider,
+    as_client,
     coverage,
     line_status,
+    pattern_report,
     stats,
     stop,
     stop_detail,
@@ -47,21 +53,13 @@ STATS_QUESTION = "how many rejects in the last hour?"
 STOP_QUESTION = "why did the line stand last night?"
 
 
-def _client(fake: FakeAnalysis) -> AnalysisClient:
-    """The fake satisfies the methods the pipeline uses. Cast rather than made to inherit:
-    a Protocol extracted from `AnalysisClient` would exist only to satisfy these tests, and
-    CLAUDE.md refuses an abstraction with one implementation."""
-    return fake  # type: ignore[return-value]  # see the docstring
-
-
 async def _run(question: str, fake: FakeAnalysis, **kwargs: object) -> Answer:
     return await run(
         question,
-        "s1",
         # `object` so a test can override any one setting by name; BaseSettings validates
         # each field, so a wrong type or an unknown name fails here rather than passing.
         settings=Settings(**kwargs),  # type: ignore[arg-type]  # BaseSettings validates
-        analysis=_client(fake),
+        analysis=as_client(fake),
         provider=ScriptedProvider(),
     )
 
@@ -625,20 +623,70 @@ async def test_the_pipeline_reports_each_step_before_the_answer(
         item
         async for item in stream(
             STATS_QUESTION,
-            "s1",
             settings=Settings(),
-            analysis=_client(fake_analysis),
+            analysis=as_client(fake_analysis),
             provider=ScriptedProvider(),
         )
     ]
 
-    assert isinstance(items[-1], Answer), "the answer is not the last item"
+    assert isinstance(items[-1], Trace), "the trace does not close the stream"
+    assert isinstance(items[-2], Answer), "the answer does not precede the trace"
     progress = [item.message for item in items if isinstance(item, Progress)]
-    assert len(items) == len(progress) + 1, "more than one answer was streamed"
+    assert len(items) == len(progress) + 2, "more than one answer was streamed"
     assert any("classif" in line for line in progress)
     assert any("coverage" in line for line in progress)
     assert any("inspection_stats" in line for line in progress)
     assert any("citation" in line for line in progress)
+
+
+async def test_the_trace_records_what_the_run_actually_did(
+    fake_analysis: FakeAnalysis,
+) -> None:
+    """§7.2 names what the trace holds: the SOPs loaded, every tool call with its arguments
+    and timings, and the budget spent. Read off the same run the answer came from, because
+    a trace that can disagree with the run it describes is worse than none."""
+    items = [
+        item
+        async for item in stream(
+            STATS_QUESTION,
+            settings=Settings(),
+            analysis=as_client(fake_analysis),
+            provider=ScriptedProvider(),
+        )
+    ]
+    answer = next(item for item in items if isinstance(item, Answer))
+    trace = next(item for item in items if isinstance(item, Trace))
+
+    assert trace.sops_loaded == answer.method.sops_used
+    assert [call.name for call in trace.tool_calls] == answer.method.tools_called
+    assert trace.budget.tool_turns == answer.method.budget_used
+    assert trace.budget.tool_turns_limit == Settings().tool_budget
+    assert all(call.duration_ms >= 0 for call in trace.tool_calls)
+    assert trace.timings.total_ms >= trace.timings.tools_ms + trace.timings.model_ms
+
+
+async def test_a_tool_failure_the_model_worked_around_is_in_the_trace() -> None:
+    """§6.8 hands a failed call back to the model as a tool result, so the run recovers and
+    the answer says nothing about it. The trace is where it stays visible — an audit trail
+    that recorded only the calls that worked would describe a run that did not happen."""
+    fake = FakeAnalysis(
+        {"inspection_stats": stats(total=600, rejects=30, gaps=[])},
+        flaky={"inspection_stats": "upstream timeout"},
+    )
+
+    items = [
+        item
+        async for item in stream(
+            STATS_QUESTION,
+            settings=Settings(),
+            analysis=as_client(fake),
+            provider=ScriptedProvider(),
+        )
+    ]
+    trace = next(item for item in items if isinstance(item, Trace))
+
+    assert trace.tool_calls[0].failed is True
+    assert any(call.failed is False for call in trace.tool_calls)
 
 
 # --- §6.5: contradiction, and the retry before a claim is removed ----------------------
@@ -788,3 +836,268 @@ async def test_an_unverifiable_citation_gets_one_retry_before_the_claim_goes(
     assert [name for name, _ in fake.calls].count("resolve:get_part") == 2, (
         "the model was not asked a second time"
     )
+
+
+# --- §7.3: the window a citation carries -----------------------------------------------
+#
+# Proven without a model. The interval is the calendar's (stage 2), and the citations the
+# model hands back are rewritten from it before anything is verified or delivered — so what
+# is asserted here is not that a model behaves, but that it cannot reach the field at all.
+
+
+def _windowed_final(window: dict[str, str] | None) -> dict[str, object]:
+    """One finding citing a pattern, a signal and a part, with `window` as the model left it.
+
+    Three kinds on one finding rather than three findings, so the two that take a window and
+    the one that does not are decided by the same pass over the same claim.
+    """
+    pattern: dict[str, object] = {"kind": "pattern", "dimension": "carrier", "key": "7"}
+    part: dict[str, object] = {"kind": "part", "id": "A-00000007"}
+    if window is not None:
+        pattern["window"] = window
+        part["window"] = window
+    return {
+        "findings": [
+            {
+                "statement": "Carrier 7 is over-represented among the rejects.",
+                "basis": "measured",
+                "citations": [
+                    pattern,
+                    {"kind": "signal", "station": "S2", "signal": "JoiningForce"},
+                    part,
+                ],
+            }
+        ],
+        "caveats": [],
+    }
+
+
+async def _windowed_answer(question: str, window: dict[str, str] | None) -> Answer:
+    fake = FakeAnalysis({"inspection_patterns": pattern_report("carrier", "7")})
+    return await run(
+        question,
+        settings=Settings(),
+        analysis=as_client(fake),
+        provider=InventingProvider(_windowed_final(window)),
+    )
+
+
+def _cited_windows(answer: Answer) -> dict[str, CitationWindow | None]:
+    return {
+        citation.kind: citation.window
+        for finding in answer.findings
+        for citation in finding.citations
+    }
+
+
+@pytest.mark.parametrize(
+    ("question", "phrase"),
+    [(STOP_QUESTION, "last night"), (STATS_QUESTION, "last hour")],
+)
+async def test_a_windowed_citation_carries_the_window_the_question_resolved_to(
+    question: str, phrase: str
+) -> None:
+    """§7.3 writes a `window` into the `pattern` and `signal` citations, and this is the
+    window the answer was computed over — not a recent default the reader's screen picked.
+
+    Two questions rather than one, because a citation that always carried the same interval
+    would satisfy a single case and be a constant rather than a window.
+    """
+    expected = WINDOWS[phrase]
+
+    answer = await _windowed_answer(question, None)
+
+    for kind in ("pattern", "signal"):
+        carried = _cited_windows(answer)[kind]
+        assert carried is not None, f"the {kind} citation shipped without a window"
+        assert carried.from_ts == expected.start
+        assert carried.to_ts == expected.end
+        assert carried.label == expected.label
+
+
+async def test_a_window_the_model_typed_does_not_reach_the_reader() -> None:
+    """The reason the field is written here and not by the model: a window it could type
+    into a citation is data drawn onto the panel that citation opens (§7.4), and a panel
+    showing real rows under a sentence that was never about them reads authoritatively."""
+    invented = {
+        "from_ts": "2026-03-01T00:00:00Z",
+        "to_ts": "2026-03-01T01:00:00Z",
+        "label": "an interval the model typed",
+    }
+
+    answer = await _windowed_answer(STOP_QUESTION, invented)
+
+    carried = _cited_windows(answer)["pattern"]
+    assert carried is not None
+    assert carried.label == WINDOWS["last night"].label
+    assert "an interval the model typed" not in answer.model_dump_json()
+
+
+async def test_a_kind_that_takes_no_window_ships_without_one() -> None:
+    """§7.3 gives a window to the two kinds whose endpoints need one. `GET /parts/{serial}`
+    takes none, and a window beside a citation that does not use it is an interval a reader
+    would take for a qualification on the claim."""
+    answer = await _windowed_answer(
+        STOP_QUESTION,
+        {
+            "from_ts": "2026-03-01T00:00:00Z",
+            "to_ts": "2026-03-01T01:00:00Z",
+            "label": "an interval the model typed",
+        },
+    )
+
+    assert _cited_windows(answer)["part"] is None
+
+
+# --- §7.4: a chart is a citation, and its data is a tool call this run made -------------
+#
+# Proven without a model in the half that matters: whether a *model* would pick a fitting
+# chart type is §8.1's statistics-and-charts class. What is proven here is that a chart
+# naming a call the run never made, or one that failed, cannot reach the reader — and that
+# the interval its axes are labelled with is the calendar's.
+
+
+class ChartingProvider:
+    """A model that calls one tool and then cites a chart against it.
+
+    `InventingProvider` finals immediately and so makes no calls, which is exactly the
+    situation a chart must not be drawn in — so this one is needed to show the other side:
+    a chart whose `source` is a call that really happened.
+    """
+
+    name = "charting"
+
+    def __init__(self, source: str) -> None:
+        self._source = source
+        self._called = False
+
+    async def call(
+        self,
+        system: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> ProviderReply:
+        if [str(tool.get("name")) for tool in tools] == [CLASSIFY_TOOL["name"]]:
+            return await ScriptedProvider().call(system, messages, tools)
+        if not self._called:
+            self._called = True
+            return ProviderReply(
+                tool_calls=[
+                    ToolCall(
+                        id="call_inspection_stats",
+                        name="inspection_stats",
+                        arguments={"group_by": "defect_class"},
+                    )
+                ]
+            )
+        return ProviderReply(
+            final={
+                "findings": [
+                    {
+                        "statement": "Misalignment is the largest class.",
+                        "basis": "measured",
+                        "citations": [
+                            {
+                                "kind": "chart",
+                                "chart_type": "pareto",
+                                "source": self._source,
+                                "options": {
+                                    "series": "defect_classes",
+                                    "x": "defect_class",
+                                    "y": "count",
+                                },
+                                # A window the model typed, to be overwritten like any other.
+                                "window": {
+                                    "from_ts": "2026-03-01T00:00:00Z",
+                                    "to_ts": "2026-03-01T01:00:00Z",
+                                    "label": "an interval the model typed",
+                                },
+                            }
+                        ],
+                    }
+                ],
+                "caveats": [],
+            }
+        )
+
+
+async def _charted(source: str) -> Answer:
+    fake = FakeAnalysis({"inspection_stats": stats(600, 30, [])})
+    return await run(
+        STATS_QUESTION,
+        settings=Settings(),
+        analysis=as_client(fake),
+        provider=ChartingProvider(source),
+    )
+
+
+async def test_a_chart_citing_a_call_this_run_made_reaches_the_reader() -> None:
+    """The other side of every refusal below: a guard that removed all of them would pass
+    those tests while making the feature unreachable."""
+    answer = await _charted("call_inspection_stats")
+
+    charts = [
+        citation
+        for finding in answer.findings
+        for citation in finding.citations
+        if citation.kind == "chart"
+    ]
+    assert len(charts) == 1
+    assert charts[0].source == "call_inspection_stats"
+
+
+async def test_a_chart_citing_a_call_that_never_happened_takes_its_claim_with_it() -> (
+    None
+):
+    """§7.4's reason, applied: a chart drawn from nothing reads far more authoritatively
+    than a wrong sentence, so the claim goes and the answer says it went."""
+    answer = await _charted("call_that_never_happened")
+
+    assert answer.findings == []
+    assert any("could not be verified" in caveat for caveat in answer.caveats)
+
+
+async def test_a_charts_axes_are_labelled_with_the_calendars_window() -> None:
+    """The same rule §7.3 applies to a pattern cell, for the same reason. Every tool result
+    a chart reads was computed over this run's window; an axis labelled with any other
+    interval is §7.4's failure moved from the values to the ruler."""
+    answer = await _charted("call_inspection_stats")
+
+    carried = answer.findings[0].citations[0].window
+    assert carried is not None
+    assert carried.label == WINDOWS["last hour"].label
+    assert "an interval the model typed" not in answer.model_dump_json()
+
+
+async def test_the_scripted_provider_charts_the_call_it_really_made() -> None:
+    """§7.4's renderer would otherwise ship exercised only by its own tests.
+
+    `ScriptedProvider` is the default and needs no credentials, so what it cites is what a
+    keyless run — and the demo — actually shows. Its Pareto names the `inspection_stats`
+    call it made moments earlier, which is the whole of §7.4 in the one configuration
+    anybody can run: the chart references a verified tool result and carries no figure.
+
+    That it *survives* is the assertion. §6.5 would have removed it had the id been one the
+    run never made, so a green here is the verification agreeing with the citation.
+    """
+    fake = FakeAnalysis({"inspection_stats": stats(600, 30, [])})
+
+    answer = await _run(STATS_QUESTION, fake)
+
+    charts = [
+        citation
+        for finding in answer.findings
+        for citation in finding.citations
+        if citation.kind == "chart"
+    ]
+    # One chart, cited twice: §6.5's composer gives its summary the citations of the
+    # findings it summarises, so the same referent appears under both.
+    assert {(chart.chart_type, chart.source) for chart in charts} == {
+        ("pareto", "call_inspection_stats")
+    }
+    first = charts[0]
+    assert first.options is not None
+    assert first.options.series == "by_defect_class"
+    # And the window it is labelled with is the calendar's, not one this provider typed.
+    assert first.window is not None
+    assert first.window.label == WINDOWS["last hour"].label

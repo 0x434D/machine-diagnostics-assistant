@@ -31,12 +31,21 @@ at collection instead of being skipped by pattern.
 simply broken, satisfies "no token is refused" perfectly. So each endpoint is also called
 *with* a `user` token and must not answer 401 — the door has to be a door.
 
-**What this does not establish.** That the issuer is one. There is no issuer in this
-milestone: `auth.testing` mints from a keypair in memory and `scripts/mint-token.py` from one
-on disk, both standing where Zitadel will. So §14's other identity line — *"adding Google or
-Microsoft as a login option is demonstrably an admin-UI task: no code change, no redeploy"* —
-is not demonstrated by anything here and is not demonstrated anywhere else either. The M5
-plan ruled that out deliberately and `measurements/authenticity/README.md` records it.
+**The one service deliberately outside this enumeration is the issuer.** M6 made the
+development issuer a service (`diagnostics/issuer`), and its two endpoints are open by
+definition: a token endpoint that required a token would be a door openable only from the
+inside, and a public key set is public. §14's sentence is about the endpoints that answer
+questions about the plant, and the three applications enumerated below are all of them. The
+issuer's own refusals — wrong credentials, and no signing key configured — are checked in
+its own package, in process, because what they turn on is arithmetic rather than a socket.
+
+**What this does not establish.** That the issuer is one worth being. The one that now runs
+is a development issuer: it signs with a keypair `scripts/mint-token.py` generated, its
+accounts are a value in `diagnostics/compose.yml`, and it brokers nothing. So §14's other
+identity line — *"adding Google or Microsoft as a login option is demonstrably an admin-UI
+task: no code change, no redeploy"* — is not demonstrated by anything here and is not
+demonstrated anywhere else either. The M5 plan ruled that out deliberately, M6's plan repeats
+the line in as many words, and `measurements/authenticity/README.md` records it.
 
 Marked `authenticity` and run by `make verify`.
 """

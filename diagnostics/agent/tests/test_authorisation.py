@@ -26,7 +26,9 @@ remaining two rows — approving improvement-loop proposals and managing users �
 nowhere, and inventing one to gate would be gating a thing that does not exist.
 
 Asking a question is not an admin row: `POST /ask` is the first line of that matrix and is
-open to `user`, which the tests below assert rather than assume."""
+open to `user`, which the tests below assert rather than assume. Neither is reading the
+trace of an answer or giving feedback on it — §7.2 puts both under the answer the asker is
+reading, and `app.trace` says why the admin row next to them is a different thing."""
 
 OPEN: frozenset[tuple[str, str]] = frozenset()
 """Deliberate exceptions. There are none, and `agent.app` says why the interactive docs and
@@ -43,6 +45,8 @@ def test_the_walk_finds_every_route() -> None:
         ("POST", "/ask"),
         ("GET", "/prompts"),
         ("POST", "/knowledge/reload"),
+        ("GET", "/sessions/{session_id}/messages/{seq}/trace"),
+        ("POST", "/sessions/{session_id}/messages/{seq}/feedback"),
     }
 
 

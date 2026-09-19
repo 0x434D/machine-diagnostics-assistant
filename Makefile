@@ -27,20 +27,23 @@ WARNASERROR := -warnaserror
 # --- The development issuer ----------------------------------------------------------------
 # §14 made every diagnostics endpoint refuse an unauthenticated request — the gateway's
 # /status and /reconcile, the agent's /ask, the analysis service's queries — and that includes
-# the calls the demo targets below make. M5 was ruled slim and builds no IdP, so
-# scripts/mint-token.py is the issuer: it keeps a gitignored keypair, generates it on first
-# use, prints the public key the services verify against, and mints the tokens to present.
+# the calls the demo targets below make. M6 made the development issuer a service
+# (diagnostics/issuer), but the keypair is still scripts/mint-token.py's: it is generated on
+# first use into a gitignored .dev-issuer/, and both halves are configured from here — the
+# public one into the four validators, the private one into the issuer container.
 #
 # Both of the two below are shell command substitutions embedded in recipes, NOT make
 # variables that $(shell ...) would expand. A $(shell ...) here runs on every invocation of
 # this file, so `make check` would mint a token it has no use for on every commit.
 MINT := cd $(CURDIR)/diagnostics && uv run --frozen python $(CURDIR)/scripts/mint-token.py
 
-# Configures the stack with the key the demo's own tokens are signed by, overriding anything
-# in diagnostics/.env or the shell. That override is the point rather than a rudeness: this
-# demo mints from the development issuer, so a stack pointed at any other key would refuse
-# every request it makes.
-DEV_PUBLIC_KEY = AUTH_PUBLIC_KEY="$$($(MINT) --public-key)"
+# Configures the stack with the keypair the demo's own tokens are signed by, overriding
+# anything in diagnostics/.env or the shell. That override is the point rather than a
+# rudeness: this demo mints from the development issuer, so a stack pointed at any other key
+# would refuse every request it makes — and the issuer container has to sign with the half
+# that matches, or a person logging in at the UI would be refused by every service while the
+# demo's own curl calls sailed through.
+DEV_ISSUER_KEYS = AUTH_PUBLIC_KEY="$$($(MINT) --public-key)" ISSUER_PRIVATE_KEY="$$($(MINT) --private-key)"
 
 # `user`, not `admin`. Every endpoint the demo calls is in §10.5's user column, and minting
 # the more privileged token would leave the demo unable to tell "open to an operator" from
@@ -128,6 +131,44 @@ define in-frontend
 	else echo "skip [no $(1) in this checkout]: $(2)"; fi
 endef
 
+# Every image the two stacks build, one row each: `name:context:dockerfile:package`. The
+# fourth field is empty for the images whose Dockerfile takes no PACKAGE build argument, and
+# both paths are written from the repository root so that a row can be read without knowing
+# which directory its Compose file sits in.
+#
+# This list is the single statement of what `images` builds and `scan-images` scans, and
+# plant/simulator/tests/test_compose_invariants.py holds it against both Compose files — a
+# service with a `build:` block and no row here fails `make check`. That test is the point of
+# the list: what stood here before was one hand-written build call per image plus a comment
+# saying how many there were, and the comment was the only thing counting.
+#
+# Postgres has no row because it is pulled by digest rather than built, and `pki-init` has
+# none because it is the simulator image under another command — a row per *image*, not per
+# container.
+IMAGES := \
+  simulator:plant:plant/Dockerfile:simulator \
+  inspection:plant:plant/Dockerfile:inspection \
+  plant-hmi:plant:plant/hmi/Dockerfile \
+  analysis:.:diagnostics/Dockerfile:analysis \
+  agent:.:diagnostics/Dockerfile:agent \
+  mcp-server:.:diagnostics/Dockerfile:mcp-server \
+  issuer:.:diagnostics/Dockerfile:issuer \
+  edge-gateway:.:diagnostics/gateway/Dockerfile \
+  diagnostics-ui:.:diagnostics/ui/Dockerfile
+
+# $(1) a row, $(2) a 1-based field number.
+image-field = $(word $(2),$(subst :, ,$(1)))
+IMAGE_NAMES := $(foreach row,$(IMAGES),$(call image-field,$(row),1))
+
+# One literal newline. `$(foreach)` joins its results with spaces and `define` drops the
+# newline before its own `endef`, so without this the nine build commands expand onto a single
+# recipe line and the second one becomes an argument to the first. Deleting the blank lines
+# empties it silently.
+define newline
+
+
+endef
+
 # BuildKit attaches attestations only on an exporter that can carry them; the default docker
 # exporter drops them silently, which is why this writes an OCI layout rather than loading into
 # the daemon. `tar=false` makes that layout a directory: Trivy reads an OCI *directory* and a
@@ -135,30 +176,25 @@ endef
 # found". BUILDKIT_SBOM_SCAN_* widen the scan past the final stage — without them a multi-stage
 # build's SBOM omits everything the builder installed (handbook §9).
 #
-# $(1) build context, $(2) Dockerfile, $(3) image name, $(4) extra build args. Every image in
-# the repository goes through here: four of the seven did, and the three that did not were the
-# gateway, the diagnostics UI and the plant HMI — so `scan-images` passed over the one
-# container that sits on field-net. A second hardcoded copy per Dockerfile is how that
-# happened, and one macro with a context and a file is what stops it happening again.
-define build-image-at
-	SOURCE_DATE_EPOCH=$(SOURCE_EPOCH) docker buildx build $(1) \
-	  --file $(2) \
+# Every image in the repository goes through here, driven by one row of $(IMAGES) above.
+# $(1) is that row. The shape this replaced was a hand-written call per image plus a comment
+# counting them, and it rotted in both halves at once: a Dockerfile moved to a
+# repository-root context in Compose and not here, and two containers arrived with no line
+# here at all. A row that carries its own context, file and package is what stops a build
+# from disagreeing with the Compose service it is supposed to be.
+define build-image
+	SOURCE_DATE_EPOCH=$(SOURCE_EPOCH) docker buildx build $(call image-field,$(1),2) \
+	  --file $(call image-field,$(1),3) \
 	  --builder $(BUILDER) \
-	  $(4) \
+	  $(if $(call image-field,$(1),4),--build-arg PACKAGE=$(call image-field,$(1),4)) \
 	  --build-arg BUILDKIT_SBOM_SCAN_CONTEXT=true \
 	  --build-arg BUILDKIT_SBOM_SCAN_STAGE=true \
 	  --sbom=generator=$(SYFT) --provenance=true \
 	  --label org.opencontainers.image.source="$(IMAGE_SOURCE)" \
 	  --label org.opencontainers.image.revision="$$(git rev-parse HEAD)" \
 	  --label org.opencontainers.image.created="$$(date -u -d @$(SOURCE_EPOCH) +%Y-%m-%dT%H:%M:%SZ)" \
-	  --tag machine-agent/$(3):$(IMAGE_TAG) \
-	  --output type=oci,tar=false,dest=$(BUILD_DIR)/images/$(3)
-endef
-
-# The four Python services: one Dockerfile per stack, parameterised on the package, built
-# from the stack's own directory. $(1) stack, $(2) package.
-define build-image
-$(call build-image-at,$(1),$(1)/Dockerfile,$(2),--build-arg PACKAGE=$(2))
+	  --tag machine-agent/$(call image-field,$(1),1):$(IMAGE_TAG) \
+	  --output type=oci,tar=false,dest=$(BUILD_DIR)/images/$(call image-field,$(1),1)
 endef
 
 # The /etc/hosts check this used to carry is gone. It existed because the host was
@@ -204,6 +240,7 @@ lint-python: lock-check
 # in it, and a single run sees one name defined twice and stops before checking anything.
 	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini analysis
 	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini auth
+	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini issuer
 	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini agent
 	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini knowledge
 	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini mcp
@@ -237,7 +274,7 @@ m1-demo: preflight
 	@echo "== 2. a foreign client browses the address space"
 	$(MAKE) browse
 	@echo "== 3. diagnostics: connect, wait for the plant's phase, backfill, go live"
-	$(DEV_PUBLIC_KEY) docker compose -f diagnostics/compose.yml up -d --build
+	$(DEV_ISSUER_KEYS) docker compose -f diagnostics/compose.yml up -d --build
 	@until curl -sf $(BEARER) localhost:$${GATEWAY_PORT:-8080}/status | grep -q '"state":"live"'; do \
 	    curl -s $(BEARER) localhost:$${GATEWAY_PORT:-8080}/status; echo; sleep 5; done
 	@echo "== 4. ask, and open the citation"
@@ -435,7 +472,7 @@ m2c-demo: preflight
 	@echo "   with source=operator and no consequences: nobody wrote down what should follow"
 	@echo "   from a fault chosen at a keyboard."
 	@echo "== 4. diagnostics: topology, subscriptions, backfill, live"
-	$(DEV_PUBLIC_KEY) docker compose -f diagnostics/compose.yml up -d --build
+	$(DEV_ISSUER_KEYS) docker compose -f diagnostics/compose.yml up -d --build
 	@until curl -sf $(BEARER) localhost:$${GATEWAY_PORT:-8080}/status | grep -q '"state":"live"'; do \
 	    curl -s $(BEARER) localhost:$${GATEWAY_PORT:-8080}/status; echo; sleep 5; done
 	@echo "== 5. the consequences, out of §5.2's tables and nowhere else"
@@ -532,7 +569,7 @@ m2a-demo: preflight
 	@echo "== 3. a foreign client browses the address space, buffers and all"
 	$(MAKE) browse
 	@echo "== 4. diagnostics: discover the topology, subscribe to 25 streams, backfill, go live"
-	$(DEV_PUBLIC_KEY) docker compose -f diagnostics/compose.yml up -d --build
+	$(DEV_ISSUER_KEYS) docker compose -f diagnostics/compose.yml up -d --build
 	@until curl -sf $(BEARER) localhost:$${GATEWAY_PORT:-8080}/status | grep -q '"state":"live"'; do \
 	    curl -s $(BEARER) localhost:$${GATEWAY_PORT:-8080}/status; echo; sleep 5; done
 	@echo "== 5a. the one thing this stack can check about its own storage"
@@ -575,6 +612,7 @@ test-python: lock-check
 	$(call pytest-package,plant,simulator)
 	$(call pytest-package,plant,inspection)
 	$(call pytest-package,diagnostics,auth)
+	$(call pytest-package,diagnostics,issuer)
 	$(call pytest-package,diagnostics,knowledge)
 	$(call pytest-package,diagnostics,analysis)
 	$(call pytest-package,diagnostics,agent)
@@ -699,34 +737,51 @@ lint-actions:
 lint-commits:
 	uvx $(COMMITTED) $(COMMIT_RANGE)
 
-# All seven containers the two stacks run, so that `scan-images` below covers the whole of
-# what is deployed rather than the subset that happened to share a Dockerfile. Each context
-# and file is the pair its Compose service already declares — the gateway and the UI build
-# from the repository root because they need Directory.Build.props and contracts/
-# respectively, which is why neither fitted the per-stack macro above.
+# Every image both stacks build, so that `scan-images` below covers the whole of what is
+# deployed rather than the subset that happened to share a Dockerfile. Each context and file
+# is the pair its Compose service already declares, which is what $(IMAGES) above exists to
+# keep true; the count in the banner is counted rather than written, because the number that
+# stood here in prose went stale twice in three days and nothing went red either time.
 images:
+# Emptied, not added to. `--output type=oci,tar=false,dest=` APPENDS a manifest to an OCI
+# layout that is already there, so a second build leaves index.json naming two images —
+# `plant-hmi:<yesterday>` and `plant-hmi:<today>` — and Trivy reads the first, which is the
+# older one. On a runner's fresh checkout this can never happen; on a laptop it means
+# `make scan-images` scans the image you built last time and reports it as today's. It cost
+# this task one confidently wrong answer before the index.json was looked at.
+	@rm -rf $(BUILD_DIR)/images
 	@mkdir -p $(BUILD_DIR)/images
 	@docker buildx inspect $(BUILDER) >/dev/null 2>&1 \
 	  || docker buildx create --name $(BUILDER) --driver docker-container \
 	       --driver-opt image=$(BUILDKIT) >/dev/null
-	$(call build-image,plant,simulator)
-	$(call build-image,plant,inspection)
-	$(call build-image,diagnostics,analysis)
-	$(call build-image,diagnostics,agent)
-	$(call build-image-at,.,diagnostics/gateway/Dockerfile,edge-gateway,)
-	$(call build-image-at,.,diagnostics/ui/Dockerfile,diagnostics-ui,)
-	$(call build-image-at,plant,plant/hmi/Dockerfile,plant-hmi,)
+	@echo "building $(words $(IMAGES)) images: $(IMAGE_NAMES)"
+	$(foreach row,$(IMAGES),$(call build-image,$(row))$(newline))
 
 # Handbook §9: fail on HIGH and CRITICAL "with fixes available". --ignore-unfixed is that
 # second half, and it is not a softening — without it the gate fails on vulnerabilities nobody
 # can act on, which is how a scanner ends up switched off.
+#
+# Over $(IMAGE_NAMES) rather than over `$(BUILD_DIR)/images/*/`, which is the same list only
+# when nothing went wrong: a build that half-failed leaves an empty layout directory behind,
+# and globbing it would scan that. Named inputs make a missing image a Trivy failure rather
+# than one fewer iteration.
+#
+# Every image is scanned before the target fails, rather than stopping at the first. This is
+# the weekly job whose red means "go patch something", and with nine images an early exit
+# answers that for one of them and hides the other eight — so the person patching finds out
+# about the second one by running it again.
 scan-images: images
-	@for img in $(BUILD_DIR)/images/*/; do \
-	  name="$$(basename $$img)"; echo "trivy: $$name"; \
-	  docker run --rm -v "$(CURDIR)/$(BUILD_DIR)/images":/scan:ro $(TRIVY) image \
-	    --input "/scan/$$name" \
-	    --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --quiet || exit 1; \
-	done
+	@failed=""; \
+	 for name in $(IMAGE_NAMES); do \
+	   echo "trivy: $$name"; \
+	   docker run --rm -v "$(CURDIR)/$(BUILD_DIR)/images":/scan:ro $(TRIVY) image \
+	     --input "/scan/$$name" \
+	     --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 --quiet \
+	     || failed="$$failed $$name"; \
+	 done; \
+	 [ -z "$$failed" ] \
+	   || { echo "trivy exited non-zero for:$$failed"; exit 1; }
+	@echo "trivy: $(words $(IMAGE_NAMES)) images scanned, none with a fixable HIGH or CRITICAL"
 
 # uv reads uv.lock directly, so this is a dependency SBOM with no build required — the
 # "at least top-level dependencies" the CRA asks for (handbook §9).
@@ -736,7 +791,7 @@ scan-images: images
 # dependency graphs in this repository and two of them are not in here:
 #
 #   in    plant/uv.lock        -> build/sbom/plant.cdx.json        (simulator, inspection)
-#   in    diagnostics/uv.lock  -> build/sbom/diagnostics.cdx.json  (analysis, agent)
+#   in    diagnostics/uv.lock  -> build/sbom/diagnostics.cdx.json  (analysis, agent, mcp, issuer)
 #   NOT   diagnostics/gateway/Gateway/packages.lock.json           (NuGet, the edge gateway)
 #   NOT   diagnostics/ui/pnpm-lock.yaml AND plant/hmi/pnpm-lock.yaml  (npm, two frontends)
 #
@@ -745,7 +800,7 @@ scan-images: images
 # pin. Stated rather than left to be inferred from a build directory holding two files: an
 # SBOM that silently covers half the dependencies is worse than one that says which half,
 # because the first gets believed. `scan-images` is the other half of the answer and it does
-# cover all seven images, the gateway and both frontends included.
+# cover every image in $(IMAGES), the gateway and both frontends included.
 sbom:
 	@mkdir -p $(BUILD_DIR)/sbom
 	cd plant && uv export --frozen --all-packages --no-dev --format cyclonedx1.5 \

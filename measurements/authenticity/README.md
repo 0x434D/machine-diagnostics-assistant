@@ -26,6 +26,15 @@ compares the returned set against what the plant recorded, outside both stacks, 
 truth never reaches this one. The one non-§1 row, `read_rows == pg_rows`, waits on a runner
 outside both stacks and is argued at the bottom of this file.
 
+**M6 closes no §1 row, and adds a claim of its own.** §1's nine links stop at the tool layer;
+M6 builds the application a person opens, where a wrong figure is believed harder than a wrong
+sentence. Its central claim — *nothing on screen is drawn from anything the model typed* — is
+in the same family and is proved to the same standard below. What M6 changes about the rows
+above is nothing: 1.6's behavioural half and 1.9 are exactly where M5 left them, and the
+reason is exactly the same. **There is still no API key.** Everything this milestone
+demonstrates runs through `ScriptedProvider`, the `answer` tool M6 declares has never been
+sent to a model, and no provider that is a model has produced a sentence in this repository.
+
 ## Provable today
 
 | § | Link | Proof | Runs as |
@@ -526,6 +535,184 @@ equivalent — ruff's datetime rules catch a *naive* timestamp, which is a diffe
 from calling `datetime.now` where the injected clock belongs. Every Python call to
 `datetime.now(UTC)` in the two workspaces today is an injected clock's own definition, which
 is correct; the one added tomorrow that is not is the one nothing would catch.
+
+### M6 adds the claim a screenshot can fake, and is explicit about the browser it never opens
+
+| Claim | Proof | Runs as |
+|---|---|---|
+| §7.3 — **every citation kind resolves**, enumerated from `contracts/answer.schema.json` and each referent read back out of the service that would have to answer for it; and the same ten kinds pointed at referents the database does not hold are refused | `diagnostics/agent/tests/test_authenticity_evidence.py` | `make verify` |
+| §7.4 — **a chart reaching a reader is a reference to a tool call the run made**: `POST /ask` in, §7.2's trace endpoint out, the citation carrying no figure at any depth, its `source` naming a call the trace holds, that call not failed, and the rows it names in that call's stored result | the same file | `make verify` |
+| §7.4 at the renderer — **the picture is a function of the stored result and of nothing else**: the same citation object over two different stored results draws two different pictures, and on the one chart type that prints its figures rather than scaling them, every numeral drawn is a datum | `diagnostics/ui/src/__tests__/authenticity.test.tsx` | `make check` |
+| §7.3's other half — **every address this application asks the analysis service for is a path the generated contract declares**, and `api.ts` is the only module in the tree that writes one | the same file | `make check` |
+| §15 and ISA-101 — **every colour-coded state carries a second channel**, enumerated from the palette and from the stylesheet rather than from the five categories, so a sixth colour or a fourth surface fails | the same file | `make check` |
+| §10.5 — **an unauthenticated visitor gets the login screen and no data**: no route in `ROUTES` mounts and not one request is made to any service, and the same routes mount with a token held | the same file | `make check` |
+
+**The claim is split across two files because the boundary it is about runs between them.**
+Whether a citation opens onto something real is a question for ten endpoints, and answering
+it against a stub would be a statement about the stub — so that half runs against §5.3's
+service on a loopback socket over real Postgres, in the package that owns §6.5's resolver.
+Whether the picture a reader sees came from that result is a question about a rendering, and
+no service can answer it. **The document the two halves meet over is
+`contracts/trace.schema.json`**: the Python side asserts that the real agent's trace endpoint
+serves a call whose stored result holds the cited rows, and the frontend side asserts that a
+renderer handed a trace of that shape draws those rows and nothing else. Neither side
+invents the shape, and nothing in this repository joins them in a browser.
+
+**Why one is behind `make verify` and the other is in the gate.** The rule this file has
+applied since M2a is **cost, not category**. The Python file starts a Postgres container and
+serves two applications, which is where §1's own four and M4's and M5's sit. The frontend
+file renders components into jsdom: **12 proofs in 1.3 s**, inside a suite of 191 that takes
+4.3 s. A proof that runs only when somebody deliberately looks is one nobody sees fail, and
+that argument put M2b's traceability, M2c's consequences and M3's analysis proof in the gate
+for the same reason.
+
+**Measured on the run that closed these rows.** The agent package's `authenticity` slice is
+**27 proofs in 14.9 s** — M4's five and M6's 22, sharing one container. Twenty of the 22 are
+the ten kinds twice over. The seed is an hour of simulated history: 120 assemblies at a 30 s
+takt on two carriers, 24 of them rejected on `misalignment`, 120 components from one supplier
+lot with their genealogy, dispositions for every part except the ten inside a five-minute
+outfeed gap — the stop is seeded by taking the output away, because a stop *is* the absence of
+output — and one alarm. Sixty parts per carrier is not a round number: below
+`/inspection/patterns`' own sample gate the carrier dimension is not tested at all, and a
+`pattern` citation's referent is a cell of that report, so a thinner seed would have made that
+kind unresolvable for a reason that has nothing to do with the citation.
+
+**Every referent is read back out of the running service rather than chosen here** — the
+serial from `/parts/affected`, the component and the lot from that part's genealogy, the stop
+id from `/stops`, the alarm id from `/alarms`, the station from `/line/status`, the pattern
+cell from `/inspection/patterns` — for the reason M2b's traceability proof resolves a serial
+the database hands it. A referent written into the proof is a statement about the seed.
+
+#### What was falsified, against what
+
+Each break below was applied to the shipped code and the file re-run. The proofs named are
+the ones that failed, and no others did.
+
+| Break | Proof that failed |
+|---|---|
+| the chart resolver stops asking whether the referenced call **failed** | the chart's pairing proof (a chart of §6.8's error object is a chart of the words "connection refused") |
+| `resolves` returns `True` for `part` | the refusal proof, `[part]` **alone** — `[containment]` resolves its serials through a different branch and did not move |
+| `resolves` returns `False` for `pattern` | the resolution proof, `[pattern]` alone |
+| the shipped provider's chart citation becomes a citation of another kind | the end-to-end chart proof (*"the answer carries no chart citation, so this proof measured nothing"*) |
+| the trace records each call but not its **result** | the end-to-end chart proof |
+| `ChartOptions` gains a field that can hold numbers, and the provider fills it | the end-to-end chart proof |
+| `ChartPanel` draws rows of its own instead of `call.result` | both renderer proofs |
+| a summary tile prints a constant instead of its row's value | the exactness proof |
+| `api.ts` asks for `/stop-list` | the contract-path proof |
+| a component builds `/api/analysis/...` for itself | the one-door proof |
+| a fifth agent address appears in `api.ts` | the written-down proof |
+| a sixth `--category-` colour with no glyph and no word | the palette proof |
+| a fourth surface painted from the category palette | the surfaces proof |
+| `StateBadge` renders the glyph and drops the written label | the badge proof |
+| the contradiction banner keeps its colour and loses its heading's words | the third-surface proof |
+| two gateway states share a label; and a reading loses its glyph | the banner proof |
+| the login moves inside the router, so a view mounts without a token | the unauthenticated proof |
+| the shell renders no navigation at all | the two-sided proof beside it |
+
+The second and third rows are what show the two enumerated proofs are not one written twice:
+a resolver that says yes to everything passes the resolution proof and fails the refusal one,
+and a resolver that says no to everything does the reverse. The last row is what stops the
+unauthenticated proof being satisfied by an application that renders nothing at all, which is
+the shape a broken build has.
+
+**The ISA-101 enumeration found a surface, which is what it is for.** Task 3 built
+`StateBadge` with three channels and tested it for them. The stylesheet now paints the same
+five hues on two more things: §7.2's plant status banner, and §6.5's contradiction banner —
+which borrows `held-by-own-fault`, the colour that means *go and look at this*. Both carry
+their own words, and both are now read for them. The proof is written from the stylesheet
+towards the components rather than from `CATEGORIES` outwards, because the failure is always
+one more surface rather than the one everybody remembered.
+
+#### What M6 does **not** demonstrate
+
+**No proof in this repository opens a browser.** Every frontend assertion above runs in
+jsdom, which performs no layout. Three consequences, each stated where it bites rather than
+left to be inferred:
+
+- `src/__tests__/layout.test.tsx` does not measure a rendered page. It reads the stylesheet
+  and reports every horizontal constraint wider than `--viewport-min`, which is the *cause* of
+  horizontal scroll and not the scroll. Its own docstring said Task 9 would make the same check
+  against a real browser. **Task 9 does not**, and the gap is not closed: a page can still
+  scroll sideways because of content — a long serial, a wide table, an SVG — with every
+  declaration in budget.
+- The ISA-101 claim is made on rendered text and on declared tokens. That the five colours are
+  actually distinguishable to a colour-blind reader, or survive a projector, is an argument
+  from the second channel rather than a measurement of the first.
+- Vega's own geometry under jsdom is approximate: there is no canvas, so text is measured by
+  a stub in `vitest.setup.ts`. Nothing above asserts on geometry, and nothing should.
+
+Closing all three needs a browser driver. That is a dependency, and CLAUDE.md says to ask
+before adding one; nobody has been asked. It is written here rather than left to be inferred
+from a green pipeline.
+
+**The real model provider has still never produced an answer.** M6 declares the `answer` tool
+from `contracts/answer.schema.json` and mutation-tests it both ways, which closes the finding
+M6 Task 5 carried out — before it, `AnthropicProvider` branched on a tool name that was
+declared nowhere, so the real provider could not have produced a final at all. **No request
+has ever been sent.** There is no `ANTHROPIC_API_KEY` in this environment, `agent.config`
+defaults `provider` to `scripted`, and every screen, every chart and every citation
+demonstrated by this milestone was produced by keyword matching wearing the interface of a
+model. Read the proofs above as: *the application cannot show a figure that came from outside
+a verified tool result.* Do not read them as: *a model, asked to draw a chart, references the
+right call.*
+
+**§14's other identity line is still not demonstrated.** *"Adding Google or Microsoft as a
+login option is demonstrably an admin-UI task: no code change, no redeploy."* M6 replaced M5's
+paste-a-token field with an actual login screen backed by an actual service, and that is a
+different claim. The issuer is a development issuer: it signs with a keypair
+`scripts/mint-token.py` generated, its accounts are a value in `diagnostics/compose.yml`, and
+it brokers nothing. The login screen says so on screen, in words, which is the honest form of
+a thing that is not what it resembles.
+
+**The issuer serves a JWKS document that nothing fetches.** All four validators still read the
+configured `AUTH_PUBLIC_KEY`. Moving them onto a fetched key set is its own change and half of
+it would leave the stack with two answers to *which key is trusted*, so it was not started.
+The document is served, and no code path in this repository consumes it.
+
+**`api.ts`'s agent addresses are checked by nothing generated.** `contracts/` holds the
+analysis service's OpenAPI document and the agent's three *payload* schemas — the answer, the
+trace and the feedback — and no path document for the agent. So the proof that every analysis
+address is a declared path has no counterpart for `/ask`, `/sessions/{id}/messages/{seq}/trace`
+and its `/feedback` sibling: a route renamed on the agent breaks the trace panel, the feedback
+form and every chart, and the gate stays green. What stands there instead is a list written by
+hand and a test that fails when a fifth address appears — the weakest check in that file, and
+it says so.
+
+**`/parts/affected` carries no coverage the way `/stops` does.** §7.2's containment view now
+names the ingest coverage of its window on screen and in the exported CSV, with a row per gap,
+and it costs a second round trip to `/coverage` to do it. Folding coverage into the affected-
+parts response is a `contracts/` change and was not made on this milestone's authority. Until
+it is, any caller of that endpoint that does not make the second call gets a list that is
+silently short over a holed window.
+
+**`/time/resolve` anchors on the wall clock, not on the plant's.** *"Last night"* is resolved
+against `datetime.now(UTC)` and not against the latest data the gateway holds. This was
+examined at M6 and deliberately **not** changed: anchoring on `latest_data_at` would silently
+redefine every time phrase as *the last one we have data for*, across M3, M4 and M6 at once.
+The wall clock is the honest reading of a question a human asks, and the residual gap — a
+window a person names that the data does not reach — is made visible by the line status the
+containment form shows rather than hidden by moving the anchor. Recorded here and for §15.
+
+**One thing on the screen is not covered by anything above, and is named rather than
+counted.** The buffer-level row under §7.2's stop timeline has no text equivalent beneath the
+chart the way the episodes do, so it is the one part of that view that exists only as a
+picture.
+
+Two others stood here when this section was written and were closed before the milestone
+landed, which is why they are recorded as closed rather than deleted. `StopTimeline` carried
+its own copy of the shift-phrase picker `useShiftWindow` owns; adopting the shared one
+uncovered a defect the duplication had been hiding, in that `useShiftWindow` re-resolved only
+when the *expression* changed — so re-pressing a phrase after hand-editing the instants was a
+dead control, in the containment form as well. And `shell.test.tsx` now stubs `fetch` instead
+of letting two of its tests reach jsdom's own.
+
+**What M5 left half-served is now half-served differently.** §10.5's admin row reads *"raw
+model exchange and system prompts"*, and M5 recorded that `GET /prompts` served the fixed
+prompts while the per-run transcript lived in `agent.traces`, *"which nothing writes to until
+M6"*. M6 writes it and serves it: every tool call with its arguments, its stored result and
+its timings, under §7.2's trace endpoint, and on the screen beneath every answer. What is
+still not served anywhere is the **raw model exchange** — the messages sent and returned. The
+trace is the tool record, not the transcript.
 
 ## Not provable yet
 

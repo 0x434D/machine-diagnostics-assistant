@@ -1,102 +1,1224 @@
-/* Minimal on purpose (§15): the frontend design language is deferred until after M4,
-   because a layout cannot be designed for content whose shape has not been seen. This is
-   enough to read an answer and no more. */
-:root {
-  color-scheme: light dark;
-  font-family: ui-sans-serif, system-ui, sans-serif;
-  line-height: 1.5;
+/* The application, in the language `design/tokens.css` defines.
+ *
+ * Every colour, size, radius and shadow below is a `var(--…)`. That is the contract, not a
+ * convention: a literal here is a decision made in a stylesheet instead of in the token
+ * file, and the next view written by the next task would not know about it.
+ *
+ * Nothing here insists on more horizontal space than `--viewport-min`, and
+ * `__tests__/layout.test.tsx` fails on any rule that starts to — §7.2's tablet at the line
+ * is the same application as the browser on the desk, so a phone-width viewport is a
+ * supported one and not a degraded one. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  line-height: var(--leading-normal);
+  /* The one global guard behind the layout test: a child that manages to demand more width
+     than the viewport is clipped rather than allowed to push the whole page sideways. */
+  overflow-x: hidden;
 }
 
 body {
-  margin: 0 auto;
-  max-width: 44rem;
-  padding: 2rem 1rem;
+  background: var(--surface);
+  color: var(--text);
+  margin: 0;
 }
 
-header p {
-  color: GrayText;
+a {
+  color: var(--accent);
 }
 
-.token-field {
+:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* --- The shell ---------------------------------------------------------------------- */
+
+.shell {
   display: grid;
-  gap: 0.25rem;
-  margin-top: 0.75rem;
-  font-size: 0.85em;
-  max-width: 16rem;
+  /* Bar, navigation, plant status, view, footer. The status is a row of the frame rather
+     than the first thing in a view, because it says whether what the view shows is current
+     and that is true of every view. */
+  grid-template-rows: auto auto auto 1fr auto;
+  min-height: 100dvh;
 }
 
-.token-field__status {
-  color: GrayText;
+.shell__skip {
+  background: var(--surface-raised);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-sm);
+  left: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  position: absolute;
+  top: calc(-1 * var(--space-7));
+  z-index: 2;
 }
 
-form {
+.shell__skip:focus-visible {
+  top: var(--space-2);
+}
+
+.shell__bar {
+  align-items: baseline;
+  background: var(--surface-raised);
+  border-bottom: var(--border-width) solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3) var(--space-5);
+  justify-content: space-between;
+  padding: var(--space-4);
+}
+
+.shell__brand {
   display: grid;
-  gap: 0.5rem;
+  gap: var(--space-1);
+}
+
+.shell__title {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
+  line-height: var(--leading-tight);
+}
+
+.shell__claim {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  max-width: var(--measure-prose);
+}
+
+.shell__nav {
+  background: var(--surface-raised);
+  border-bottom: var(--border-width) solid var(--border);
+  padding: 0 var(--space-4) var(--space-2);
+}
+
+.shell__nav ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.shell__nav a {
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-height);
+  padding: 0 var(--control-padding-inline);
+  text-decoration: none;
+}
+
+.shell__nav a:hover {
+  background: var(--surface-sunken);
+  color: var(--text);
+}
+
+/* `aria-current` rather than a class of our own: the router already marks the current
+   link that way, and styling the attribute means the colour and the thing a screen reader
+   announces cannot drift apart. The underline is the second channel — the colour is not
+   the only thing saying which view you are on. */
+.shell__nav a[aria-current="page"] {
+  background: var(--accent-tint);
+  color: var(--text);
+  font-weight: var(--weight-medium);
+  box-shadow: inset 0 calc(-1 * var(--border-width-strong)) 0 0 var(--accent);
+}
+
+/* The same column as the view beneath it, so the banner and the thing it qualifies read as
+   one page rather than as a strip bolted above one. The gap below it is the view's own top
+   padding. */
+.shell__plant {
+  margin-inline: auto;
+  max-width: var(--measure-wide);
+  padding: var(--space-5) var(--space-4) 0;
+  width: 100%;
+}
+
+.shell__view {
+  margin-inline: auto;
+  max-width: var(--measure-wide);
+  padding: var(--space-5) var(--space-4);
+  width: 100%;
+}
+
+.shell__footer {
+  border-top: var(--border-width) solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  padding: var(--space-3) var(--space-4);
+}
+
+/* --- Identity ----------------------------------------------------------------------- */
+
+.identity {
+  display: grid;
+  gap: var(--space-1);
+  justify-items: start;
+}
+
+.identity__who {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.identity__subject {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.identity__role {
+  background: var(--accent-tint);
+  border-radius: var(--radius-pill);
+  color: var(--text);
+  font-size: var(--text-xs);
+  padding: 0 var(--space-2);
+}
+
+/* Secondary next to the accent-filled primary button the global rule defines: leaving the
+   line and asking a question are not decisions of the same weight, and the bar would read
+   as though signing out were the thing to do. */
+.identity__signout {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.identity__signout:hover {
+  background: var(--surface-sunken);
+  color: var(--text);
+}
+
+/* --- The login ---------------------------------------------------------------------- */
+
+.login {
+  margin-inline: auto;
+  max-width: var(--measure-prose);
+  padding: var(--space-6) var(--space-4);
+}
+
+.login__title {
+  font-size: var(--text-xl);
+  line-height: var(--leading-tight);
+  margin: 0;
+}
+
+.login__claim {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin: var(--space-1) 0 var(--space-6);
+}
+
+.login__form {
+  display: grid;
+  gap: var(--row-gap);
+  /* A username and a password are short values; a paragraph-width box for either invites
+     the reader to expect a paragraph. `--measure-field` is the same cap the token field
+     this replaces used, and it is a maximum, so a narrow viewport still gets the width it
+     has. */
+  max-width: var(--measure-field);
+}
+
+.login__form label {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+/* The claim the milestone's honesty rests on, given the weight of a standing notice rather
+   than of fine print: the marker bar is the same one the state language uses for a fact
+   that changes how the rest of the screen should be read. */
+.login__development {
+  border-inline-start: var(--border-width-marker) solid var(--border-strong);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin-top: var(--space-7);
+  max-width: var(--measure-prose);
+  padding-inline-start: var(--space-3);
+}
+
+.login__development-title {
+  color: var(--text);
+  font-size: var(--text-md);
+  margin: 0 0 var(--space-2);
+}
+
+/* --- The state language ------------------------------------------------------------- */
+
+/* Three channels for one fact. The border colour is the category, the glyph is a distinct
+   shape, and the state name and the category label are words. Remove the colour and the
+   badge still says which of the five it is — which is the requirement, not a nicety. */
+.state-badge {
+  align-items: baseline;
+  background: var(--category-unknown-tint);
+  border-inline-start: var(--border-width-marker) solid var(--category-unknown);
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-1) var(--space-2);
+}
+
+.state-badge[data-category="producing"] {
+  background: var(--category-producing-tint);
+  border-inline-start-color: var(--category-producing);
+}
+
+.state-badge[data-category="waiting-on-others"] {
+  background: var(--category-waiting-on-others-tint);
+  border-inline-start-color: var(--category-waiting-on-others);
+}
+
+.state-badge[data-category="held-by-own-fault"] {
+  background: var(--category-held-by-own-fault-tint);
+  border-inline-start-color: var(--category-held-by-own-fault);
+}
+
+.state-badge[data-category="stopped"] {
+  background: var(--category-stopped-tint);
+  border-inline-start-color: var(--category-stopped);
+}
+
+.state-badge[data-category="transitioning"] {
+  background: var(--category-transitioning-tint);
+  border-inline-start-color: var(--category-transitioning);
+}
+
+.state-badge__glyph {
+  font-size: var(--text-sm);
+  line-height: var(--leading-tight);
+}
+
+.state-badge__state {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.state-badge__category,
+.state-badge__reason {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.state-badge__reason {
+  font-family: var(--font-mono);
+}
+
+.legend {
+  max-width: var(--measure-wide);
+}
+
+.legend summary {
+  cursor: pointer;
+  min-height: var(--control-height);
+}
+
+.legend__lede {
+  color: var(--text-muted);
+  max-width: var(--measure-prose);
+}
+
+.legend__list {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.legend__row {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.legend__row dt,
+.legend__row dd {
+  margin: 0;
+}
+
+.legend__states {
+  color: var(--text-faint);
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+/* --- Views -------------------------------------------------------------------------- */
+
+.placeholder__note {
+  border-inline-start: var(--border-width-marker) solid var(--border-strong);
+  color: var(--text-muted);
+  max-width: var(--measure-prose);
+  padding-inline-start: var(--space-3);
+}
+
+.chat {
+  max-width: var(--measure-prose);
+}
+
+.chat form {
+  display: grid;
+  gap: var(--space-2);
 }
 
 textarea {
+  background: var(--surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
   font: inherit;
-  padding: 0.5rem;
+  padding: var(--space-2);
+  width: 100%;
+}
+
+input {
+  background: var(--surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font: inherit;
+  min-height: var(--control-height);
+  padding: 0 var(--space-2);
+  width: 100%;
 }
 
 button {
+  background: var(--accent);
+  border: var(--border-width) solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--accent-text);
   font: inherit;
   justify-self: start;
-  padding: 0.4rem 1rem;
+  min-height: var(--control-height);
+  padding: 0 var(--control-padding-inline);
+}
+
+button:disabled {
+  background: var(--surface-sunken);
+  border-color: var(--border);
+  color: var(--text-faint);
 }
 
 .progress {
-  color: GrayText;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
   font-variant-numeric: tabular-nums;
 }
 
 .error {
-  border-left: 3px solid crimson;
-  padding-left: 0.75rem;
+  background: var(--danger-tint);
+  border-inline-start: var(--border-width-marker) solid var(--danger);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
 }
 
 .answer {
-  border-top: 1px solid GrayText;
-  margin-top: 1.5rem;
+  border-top: var(--border-width) solid var(--border);
+  margin-top: var(--space-5);
 }
 
 .citation__chip {
-  border: 1px solid GrayText;
-  border-radius: 1rem;
-  font-size: 0.85em;
-  padding: 0.1rem 0.6rem;
+  background: var(--surface-raised);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--text);
+  font-size: var(--text-sm);
+  min-height: var(--control-height);
+  padding: 0 var(--space-3);
+}
+
+.citation__detail {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
 }
 
 .evidence {
-  border: 1px solid GrayText;
+  background: var(--surface-raised);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-1);
   display: block;
-  margin: 0.5rem 0;
-  padding: 0.75rem;
+  margin: var(--space-2) 0;
+  padding: var(--space-3);
+}
+
+/* A citation that did not open. Loud, because the alternative reading of a quiet panel is
+   "nothing found", and §6.5 rests on those two never being the same sentence. */
+.evidence--error {
+  background: var(--danger-tint);
+  border-inline-start: var(--border-width-marker) solid var(--danger);
 }
 
 .evidence dl,
 .trace dl {
   display: grid;
+  gap: var(--space-1) var(--space-4);
   grid-template-columns: max-content 1fr;
-  gap: 0.1rem 1rem;
   margin: 0;
+}
+
+.evidence dd,
+.trace dd {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .evidence dt,
 .trace dt {
-  color: GrayText;
+  color: var(--text-muted);
 }
 
 .evidence img {
+  border-radius: var(--radius-sm);
+  margin-top: var(--space-3);
   max-width: 100%;
-  margin-top: 0.75rem;
 }
 
 .evidence__image-error {
-  color: GrayText;
-  margin: 0.75rem 0 0;
+  color: var(--text-muted);
+  margin: var(--space-3) 0 0;
+}
+
+/* The referent was not in what came back, which is neither a failure nor a result. The
+   marker bar is the one the state language uses for a fact that changes how the rest of
+   the panel should be read. */
+.evidence__missing {
+  border-inline-start: var(--border-width-marker) solid var(--border-strong);
+  margin: var(--space-3) 0;
+  padding-inline-start: var(--space-3);
+}
+
+/* Which interval the panel is a reading of. Given the weight of a standing notice rather
+   than of fine print: a reader who takes it for the answer's own window has been told
+   something false by a screen that looked right. */
+.evidence__window {
+  border-inline-start: var(--border-width-marker) solid var(--border-strong);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin: 0 0 var(--space-3);
+  padding-inline-start: var(--space-3);
+}
+
+.evidence__note {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin: var(--space-3) 0 0;
+}
+
+/* The ingest gaps under a coverage sentence. Not a timeline class, though it began as one:
+   the stop list, one stop and a containment scope all say what was and was not observed,
+   and they say it the same way. */
+.coverage__gaps {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin: var(--space-2) 0 0;
+  padding-inline-start: var(--space-5);
+}
+
+/* The SOP text itself (§7.2). `pre` because a procedure's own line breaks and its
+   numbering are part of what it says, and `wrap` because a phone is a supported client. */
+.evidence__document {
+  background: var(--surface-sunken);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  margin: var(--space-3) 0 0;
+  padding: var(--space-3);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.serials {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+/* --- §5.4's chain, and a trend ------------------------------------------------------- */
+
+.derivation {
+  margin-top: var(--space-4);
+}
+
+.derivation__title {
+  font-size: var(--text-md);
+  margin: 0 0 var(--space-2);
+}
+
+.derivation__links {
+  display: grid;
+  gap: var(--row-gap);
+  margin: 0;
+  padding-inline-start: var(--space-5);
+}
+
+.derivation__buffer,
+.derivation__termination {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+/* The one place a table is allowed to be wider than the viewport, and only inside this. */
+.scroller {
+  margin-top: var(--space-3);
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.trend,
+.episodes {
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.trend caption,
+.episodes caption {
+  color: var(--text-muted);
+  text-align: start;
+  padding-bottom: var(--space-2);
+}
+
+.trend th,
+.trend td,
+.episodes th,
+.episodes td {
+  border-bottom: var(--border-width) solid var(--border);
+  padding: var(--space-1) var(--space-3) var(--space-1) 0;
+  text-align: start;
+  white-space: nowrap;
+}
+
+.trend th,
+.episodes th {
+  color: var(--text-muted);
+  font-weight: var(--weight-medium);
 }
 
 .trace {
-  margin: 1rem 0;
+  margin: var(--space-4) 0;
+}
+
+.trace summary {
+  cursor: pointer;
+  min-height: var(--control-height);
+}
+
+/* --- §7.4's charts ------------------------------------------------------------------- */
+
+/* The chart is the citation, so it sits in the panel rather than beside it. No width of
+   its own: Vega is told the measured width of this box and redraws when it changes, which
+   is what keeps a chart inside a phone-width panel (`--viewport-min`). */
+.chart {
+  margin: 0;
+}
+
+/* An SVG wider than the panel is the one thing a chart can do to the layout that nothing
+   else here does, and on a phone it is horizontal scroll across the whole page. Clipped to
+   the box instead, and the caption underneath says what the picture is. */
+.chart__canvas {
+  overflow-x: auto;
+}
+
+.chart__canvas svg {
+  display: block;
+  max-width: 100%;
+}
+
+/* The chart's own sentence, for a reader who is checking the picture against the answer
+   above it. Not decoration: §7.4's claim is that the chart is evidence, and evidence that
+   does not say what it is a picture of is decoration. */
+.chart__caption {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin-top: var(--space-2);
+}
+
+/* --- §7.2's stop timeline ------------------------------------------------------------- */
+
+.timeline {
+  display: grid;
+  gap: var(--space-4);
+  max-width: var(--measure-wide);
+}
+
+.timeline__lede {
+  color: var(--text-muted);
+  margin: 0;
+  max-width: var(--measure-prose);
+}
+
+/* The instants, for a reader who already has an interval. The phrases beside them are the
+   shared `.shift` control, which carries its own layout. */
+.timeline__window {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+}
+
+.timeline__instants {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.timeline__instants label {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  width: 100%;
+}
+
+/* The global rule gives an input the width of its container, which inside a flex row is
+   the whole row. Here they sit beside their buttons instead. */
+.timeline__window input {
+  flex: 1 1 12rem;
+  max-width: var(--measure-field);
+  width: auto;
+}
+
+.timeline__empty,
+.timeline__uncitable {
+  border-inline-start: var(--border-width-marker) solid var(--border-strong);
+  color: var(--text-muted);
+  display: inline-block;
+  max-width: var(--measure-prose);
+  padding-inline-start: var(--space-3);
+}
+
+.timeline__stops {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  list-style: none;
+  margin: var(--space-3) 0 0;
+  padding: 0;
+}
+
+/* The stop whose chart is below, marked as chosen. `aria-pressed` is the state itself
+   rather than a class beside it, so the marking and the announcement cannot drift. */
+.timeline__stops button[aria-pressed="true"] {
+  background: var(--accent-tint);
+  border-color: var(--accent);
+}
+
+.timeline__episodes {
+  margin-top: var(--space-4);
+}
+
+.timeline__episodes summary {
+  cursor: pointer;
+  min-height: var(--control-height);
+}
+
+/* --- §7.2's part, search and containment views --------------------------------------- */
+
+/* A lede and a standing note. Both cap at the prose measure: a sentence that runs the full
+   width of a desk browser is read twice, and these say the things a reader most needs to
+   read once. */
+.search__lede,
+.containment__lede,
+.part__note,
+.search__note,
+.containment__note {
+  color: var(--text-muted);
+  max-width: var(--measure-prose);
+}
+
+/* The same marker bar the state language uses for a fact that changes how the rest of the
+   screen should be read — "this station's record carries no instant" is one of those. */
+.part__note,
+.search__note,
+.containment__note {
+  border-inline-start: var(--border-width-marker) solid var(--border-strong);
+  font-size: var(--text-sm);
+  padding-inline-start: var(--space-3);
+}
+
+.part__section {
+  margin-top: var(--space-5);
+}
+
+.part__section h3 {
+  font-size: var(--text-md);
+  margin: 0 0 var(--space-2);
+}
+
+/* The station-by-station record. One block per station rather than a row per station: at
+   --viewport-min a four-column table is a sideways scroll, and this is the screen someone
+   opens on a tablet while standing at the reject bin. */
+.stations {
+  display: grid;
+  gap: var(--row-gap);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.stations__step {
+  background: var(--surface-raised);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+}
+
+.stations__name {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  margin: 0;
+}
+
+.stations__at {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin: var(--space-1) 0 0;
+  overflow-wrap: anywhere;
+}
+
+.stations__what {
+  margin: var(--space-1) 0 0;
+  overflow-wrap: anywhere;
+}
+
+/* The as-built structure, indented under the assembly it belongs to. The rule down the side
+   is the tree: one level is all §3.4a records, and drawing more levels would be a picture
+   of something the data does not say. */
+.genealogy {
+  border-inline-start: var(--border-width) solid var(--border);
+  display: grid;
+  gap: var(--row-gap);
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 var(--space-3);
+}
+
+.genealogy__part {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+}
+
+.genealogy__position {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.genealogy__origin {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+/* Two short forms. They wrap into a column on a narrow screen and sit side by side on a
+   wide one, which is the whole of the responsive behaviour either of them needs. */
+.search__form,
+.containment__form {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--row-gap) var(--space-3);
+  margin: var(--space-4) 0;
+}
+
+.search__form label,
+.containment__field label {
+  color: var(--text-muted);
+  display: block;
+  font-size: var(--text-sm);
+}
+
+.search__form input,
+.containment__field input {
+  max-width: var(--measure-field);
+}
+
+.containment__field {
+  flex: 1 1 var(--measure-field);
+}
+
+.search__failed {
+  max-width: var(--measure-prose);
+}
+
+/* The export sits under the set it is a copy of, never in a toolbar above it: a file
+   offered beside a query that has not run is a file whose contents nobody has seen. */
+.containment__export {
+  border-top: var(--border-width) solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+}
+
+/* --- §7.2's plant status banner ------------------------------------------------------ */
+
+/* Standing above every view, because it qualifies all of them. The marker bar down the side
+   is the state language's, and the label beside it is the same fact in words: a reader on a
+   greyscale print, or one who does not see the difference between the hues, reads
+   "Connected" or "Plant offline" and is told exactly as much. */
+.plant-status {
+  align-items: baseline;
+  background: var(--surface-raised);
+  border: var(--border-width) solid var(--border);
+  border-inline-start: var(--border-width-marker) solid var(--border-strong);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-2) var(--space-3);
+}
+
+/* A gateway state this application has no reading for, in the colour `StateBadge` reserves
+   for exactly that: a grey fallback would render an unmapped state as a plausible one, and
+   nothing anywhere would fail. */
+.plant-status[data-state="unrecognised"] {
+  background: var(--category-unknown-tint);
+  border-inline-start-color: var(--category-unknown);
+}
+
+.plant-status[data-state="live"] {
+  background: var(--category-producing-tint);
+  border-inline-start-color: var(--category-producing);
+}
+
+/* Catching up, connecting and waiting for the plant's history are one thing to a reader:
+   the boundary is working and has not finished. Transitioning is that colour. */
+.plant-status[data-state="backfilling"],
+.plant-status[data-state="connecting"],
+.plant-status[data-state="waiting_for_history"],
+.plant-status[data-state="reading"] {
+  background: var(--category-transitioning-tint);
+  border-inline-start-color: var(--category-transitioning);
+}
+
+/* Amber and not red: a plant that is off is not a fault in this stack, and the whole claim
+   of the architecture is that the answers keep coming. Red here would teach a reader to
+   distrust an answer that is exactly as good as the one before the outage. */
+.plant-status[data-state="disconnected"] {
+  background: var(--category-waiting-on-others-tint);
+  border-inline-start-color: var(--category-waiting-on-others);
+}
+
+/* The gateway could not be read at all, which is a failure of this stack and says nothing
+   about the plant. Danger, and worded that way. */
+.plant-status[data-state="unreadable"] {
+  background: var(--danger-tint);
+  border-inline-start-color: var(--danger);
+}
+
+.plant-status__glyph {
+  font-size: var(--text-lg);
+  line-height: 1;
+}
+
+.plant-status__label {
+  font-weight: var(--weight-medium);
+}
+
+.plant-status__detail {
+  color: var(--text-muted);
+  /* The whole remaining row, so the sentence wraps under the label rather than dragging the
+     banner wider than a phone. */
+  flex: 1 1 100%;
+  font-size: var(--text-sm);
+}
+
+.plant-status__history,
+.plant-status__raw {
+  display: block;
+}
+
+.plant-status__history {
+  color: var(--text);
+  font-family: var(--font-mono);
+  overflow-wrap: anywhere;
+}
+
+.plant-status__raw {
+  color: var(--text-faint);
+  font-size: var(--text-xs);
+}
+
+.plant-status__notes {
+  margin: var(--space-2) 0 0;
+  padding-inline-start: var(--space-4);
+}
+
+/* --- §6.5's contradiction ------------------------------------------------------------ */
+
+/* Two claims a person has to choose between, not a warning decoration. Nothing below
+   distinguishes the two sides visually, because this application does not know which of
+   them is right and a heavier weight on either would be an answer it has not got. */
+.contradiction {
+  background: var(--category-held-by-own-fault-tint);
+  border-inline-start: var(--border-width-marker) solid
+    var(--category-held-by-own-fault);
+  border-radius: var(--radius-sm);
+  margin: var(--space-4) 0;
+  padding: var(--space-3);
+}
+
+.contradiction__title {
+  font-size: var(--text-md);
+  margin: 0;
+}
+
+.contradiction__lede {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin: var(--space-2) 0;
+}
+
+.contradiction__sides {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  margin: 0;
+}
+
+.contradiction__side dt {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.contradiction__side dd {
+  font-weight: var(--weight-medium);
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.contradiction__reasoning {
+  margin: var(--space-3) 0 0;
+}
+
+/* --- §7.2's reasoning trace ---------------------------------------------------------- */
+
+.trace__heading {
+  font-size: var(--text-sm);
+  margin: var(--space-3) 0 var(--space-2);
+}
+
+.trace__pending,
+.trace__none,
+.trace__unaddressed {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+/* A trace that could not be read is not an absent trace, and the sentence says which. The
+   marker bar is the one a failure carries everywhere else on this screen. */
+.trace__failed {
+  border-inline-start: var(--border-width-marker) solid var(--danger);
+  font-size: var(--text-sm);
+  margin: var(--space-2) 0;
+  padding-inline-start: var(--space-3);
+}
+
+/* One call per block rather than a row in a table: the arguments are the point of this
+   panel and they are the field that does not fit in a column at --viewport-min. */
+.trace__calls {
+  display: grid;
+  gap: var(--row-gap);
+  margin: 0;
+  padding-inline-start: var(--space-4);
+}
+
+.trace__call {
+  background: var(--surface-raised);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2);
+}
+
+/* The word "failed" beside it says the same thing; this is the second channel, not the
+   only one. */
+.trace__call[data-failed="true"] {
+  background: var(--danger-tint);
+  border-color: var(--danger);
+}
+
+.trace__call-name {
+  font-weight: var(--weight-medium);
+}
+
+.trace__call-failed {
+  color: var(--danger);
+  font-weight: var(--weight-medium);
+  margin-inline-start: var(--space-2);
+}
+
+.trace__call-timing {
+  color: var(--text-muted);
+  margin-inline-start: var(--space-2);
+}
+
+/* Verbatim, so it wraps rather than being cut: what was actually asked of the tool is the
+   one thing this panel exists to show, and a truncated argument object is a summary. */
+.trace__call-arguments {
+  display: block;
+  font-size: var(--text-sm);
+  margin-top: var(--space-1);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.trace__call-id {
+  color: var(--text-faint);
+  display: block;
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+/* --- §7.2's feedback ----------------------------------------------------------------- */
+
+.feedback {
+  border-top: var(--border-width) solid var(--border);
+  margin-top: var(--space-5);
+  padding-top: var(--space-3);
+}
+
+.feedback__title {
+  font-size: var(--text-md);
+  margin: 0 0 var(--space-2);
+}
+
+.feedback__question {
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  margin: 0 0 var(--space-3);
+  padding: var(--space-2) var(--space-3);
+}
+
+.feedback__question legend {
+  font-weight: var(--weight-medium);
+  padding-inline: var(--space-1);
+}
+
+.feedback__hint {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin: 0 0 var(--space-2);
+}
+
+.feedback__answers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+/* Unchosen is the quiet one: the recorded answer is stated in words underneath, so the fill
+   here is a reinforcement and never the only place the answer appears. */
+.feedback__answers button[data-chosen="false"] {
+  background: var(--surface-raised);
+  border-color: var(--border);
+  color: var(--text);
+}
+
+.feedback__recorded {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin: var(--space-2) 0 0;
+  overflow-wrap: anywhere;
+}
+
+.feedback__comment {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.feedback__comment label {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.feedback__unaddressed {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin-top: var(--space-5);
+}
+
+/* --- The window, resolved against the shift calendar ---------------------------------- */
+
+.shift {
+  display: grid;
+  gap: var(--row-gap);
+  margin: var(--space-4) 0;
+}
+
+.shift__lede {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin: 0;
+  max-width: var(--measure-prose);
+}
+
+/* The common phrases as one row of chips. They wrap rather than scroll: six short words
+   fit a phone in two rows, and a sideways-scrolling row hides the one nobody thought to
+   look for. */
+.shift__phrases {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.shift__phrase {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.shift__phrase label {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  width: 100%;
+}
+
+/* As with the timeline's instant boxes: the global rule would give this input the whole
+   flex row, and it sits beside its button instead. */
+.shift__phrase input {
+  flex: 1 1 12rem;
+  max-width: var(--measure-field);
+  width: auto;
+}
+
+/* The interval in force, and how far the line's clock has run. Marked with the same bar
+   the state language gives a fact that changes how the rest of the screen reads — which
+   window a containment set or a list of stops is for is exactly such a fact. */
+.shift__inforce,
+.shift__clock {
+  border-inline-start: var(--border-width-marker) solid var(--border-strong);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin: 0;
+  max-width: var(--measure-prose);
+  padding-inline-start: var(--space-3);
+}
+
+.shift__phrases button[aria-pressed="true"] {
+  background: var(--accent-tint);
+  border-color: var(--accent);
 }

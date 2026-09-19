@@ -8,6 +8,18 @@ is the whole map from kind to endpoint. A kind whose referent had no endpoint wo
 two in this vocabulary have no endpoint *of their own* and are resolved by membership in the
 window's own answer instead, which is stated where it happens.
 
+**Three kinds carry the window their claim was made over** (§7.3), and `stamped` writes it
+from the window the run resolved rather than letting the model name one. It runs before the
+resolution below, so the interval a `pattern`, `signal` or `chart` citation ships with is the
+interval it was checked against — the window is part of what makes those verifiable, not an
+exception to it.
+
+**A chart resolves against this run's own tool calls**, not against an endpoint. §7.4 makes
+the data come from a verified tool result, so the thing that has to exist is the call: a
+`source` naming a call this run never made, or one that failed, is a chart with nothing
+behind it — and §7.4's whole point is that such a chart reads more authoritatively than a
+wrong sentence rather than less.
+
 **A cited procedure is checked twice.** That it exists, against `GET /knowledge/{id}`, and
 that routing actually loaded it — §6.5: *"so the model cannot invent a procedure it never
 read."* Those are different failures. A document that exists but was not routed is a
@@ -23,7 +35,8 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
-from agent.answer import Citation, Finding
+from agent.answer import WINDOWED, Citation, CitationWindow, Finding
+from agent.records import ToolCallRecord
 from agent.tools import AnalysisClient, Window
 
 
@@ -53,12 +66,48 @@ class Verification:
         )
 
 
+def stamped(findings: Sequence[Finding], window: Window) -> list[Finding]:
+    """§7.3's `window`, written onto the citations that take one from the run's own window.
+
+    The window is the calendar's (§6.1 step 2) and never the model's: whatever a model put
+    there is overwritten, and the kinds that take no window have theirs cleared. That is the
+    whole point of doing it here — a window a model could type into a citation is data drawn
+    onto the panel that citation opens, which is §7.4's failure moved from a chart into a
+    table, where it reads just as authoritatively.
+
+    Run **before** `keep`, so the interval a citation carries is the interval it was verified
+    over: `resolves` checks a pattern cell and a signal series against this same window, and
+    a citation stamped afterwards could name one the verification never looked at.
+    """
+    carried = CitationWindow(from_ts=window.start, to_ts=window.end, label=window.label)
+    return [
+        finding.model_copy(
+            update={
+                "citations": [
+                    # `model_copy` rather than rebuilding through the validator: the payload
+                    # check has already run on this citation and `window` is not part of
+                    # what it looks at, so re-validating would only repeat a check that
+                    # passed.
+                    citation.model_copy(
+                        update={
+                            "window": carried if citation.kind in WINDOWED else None
+                        }
+                    )
+                    for citation in finding.citations
+                ]
+            }
+        )
+        for finding in findings
+    ]
+
+
 async def keep(
     findings: Sequence[Finding],
     analysis: AnalysisClient,
     *,
     window: Window,
     loaded: frozenset[str],
+    calls: Mapping[str, ToolCallRecord],
 ) -> Verification:
     """The findings whose citations all resolve, and what was taken out.
 
@@ -78,7 +127,8 @@ async def keep(
     have been shorter and is wrong: two containment scopes are two different referents and
     can share a label, so one failing would silently take the other's claim with it.
 
-    `loaded` is what routing selected, not what the knowledge base holds.
+    `loaded` is what routing selected, not what the knowledge base holds. `calls` is what the
+    tool loop actually called, by id, which is what a `chart` citation is checked against.
     """
     reports: dict[str, dict[str, object]] = {}
     decided: dict[str, bool] = {}
@@ -93,7 +143,12 @@ async def keep(
             key = citation.model_dump_json()
             if key not in decided:
                 decided[key] = await resolves(
-                    citation, analysis, window=window, loaded=loaded, cache=reports
+                    citation,
+                    analysis,
+                    window=window,
+                    loaded=loaded,
+                    calls=calls,
+                    cache=reports,
                 )
             if not decided[key]:
                 survives = False
@@ -113,17 +168,27 @@ async def resolves(
     *,
     window: Window,
     loaded: frozenset[str],
+    calls: Mapping[str, ToolCallRecord],
     cache: dict[str, dict[str, object]] | None = None,
 ) -> bool:
     """Whether this citation opens onto something that exists.
 
     Dispatch is exhaustive over §7.3's vocabulary; `Kind` and `CITATION_FIELDS` in
-    `answer.py` are the other two places the same nine live, and the validator there
+    `answer.py` are the other two places the same ten live, and the validator there
     guarantees the payload each branch reads is present.
     """
     memo = {} if cache is None else cache
     kind = citation.kind
 
+    if kind == "chart":
+        # §7.4: the data always comes from a verified tool result, so the referent is the
+        # call and not a row. Every id the chart names must be one this run made and one
+        # that answered — a failed call's result is §6.8's error object, and a chart drawn
+        # from it would be a chart of the words "connection refused".
+        return all(
+            identifier in calls and not calls[identifier].failed
+            for identifier in _sources(citation)
+        )
     if kind == "part":
         return await analysis.exists("get_part", {"serial": citation.id}, window)
     if kind == "serial":
@@ -172,6 +237,18 @@ async def resolves(
         if not await analysis.exists("get_part", {"serial": serial}, window):
             return False
     return True
+
+
+def _sources(citation: Citation) -> list[str]:
+    """Every tool call a chart citation reads: its series, and the bands behind it.
+
+    Both, because §7.4's first type shades stop and alarm periods behind a process value and
+    those come from a second call. A band drawn from a call that never happened is the same
+    invention as a series drawn from one, occupying a larger part of the picture.
+    """
+    options = citation.options
+    bands = None if options is None else options.bands
+    return [source for source in (citation.source, bands) if source]
 
 
 async def _once(

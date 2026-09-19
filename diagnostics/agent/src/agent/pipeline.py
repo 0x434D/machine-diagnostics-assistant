@@ -30,38 +30,80 @@ it could not finish.
 
 `stream` is the pipeline; `run` drains it. There is one copy of the steps, and the progress
 a reader sees is emitted from the line that does the work rather than narrated alongside it
-— a progress line that can disagree with what ran is worse than none.
+— a progress line that can disagree with what ran is worse than none. §7.2's trace is
+emitted the same way and for the same reason: the tool calls in it are appended by the loop
+that makes them, never assembled afterwards from what the answer happens to remember.
 """
 
 from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from time import perf_counter
+from typing import get_args
 
 import httpx
 from knowledge.documents import KnowledgeBase
 
-from agent.answer import Answer, Clarification, Contradiction, Finding, Method
-from agent.citations import keep
+from agent.answer import (
+    ANSWER_TOOL,
+    ANSWER_TOOL_NAME,
+    CHART_FALLBACK,
+    Answer,
+    ChartType,
+    Clarification,
+    Contradiction,
+    Finding,
+    Method,
+)
+from agent.citations import keep, stamped
 from agent.classify import Classification, classify, corrections
 from agent.compose import compose
 from agent.config import Settings
 from agent.provider import Provider, record
 from agent.providers_scripted import DISCLOSURE, ScriptedProvider
+from agent.records import Budget, Timings, ToolCallRecord, Trace
 from agent.routing import Selection, route
 from agent.tools import TOOL_DEFINITIONS, AnalysisClient, Window
 
 LOG = logging.getLogger(__name__)
+
+TOOLS: list[dict[str, object]] = [*TOOL_DEFINITIONS, ANSWER_TOOL]
+"""§6.1 step 5's tool set: the operations the model investigates with, and the one tool it
+answers through.
+
+One list rather than a second argument to the provider, because under §6.9 the structured
+answer *is* a tool call: every turn the model chooses between reading more and answering,
+and that choice is only offered if both are declared together. M4 declared only the
+fifteen, so `AnthropicProvider` — which reads the final answer out of a tool call by name —
+had no name to find, and a real model could not finish a run at all. Nothing went red,
+because without a key nothing reaches that branch.
+"""
+
+_BUILT_IN_CHARTS = ", ".join(
+    kind for kind in get_args(ChartType) if kind != CHART_FALLBACK
+)
 
 SYSTEM = (
     "Answer only from tool results and the documents below. Name cause and consequence "
     "separately. Anything that rests on a pattern is a hypothesis and carries its evidence "
     "strength. Cite everything. State what is missing rather than filling it. Recommend "
     "only documented actions. If you disagree with the computed propagation, say so and "
-    "show your reasoning. This system is read-only: it cannot act on the plant."
+    "show your reasoning. This system is read-only: it cannot act on the plant. "
+    f"Deliver the answer by calling the {ANSWER_TOOL_NAME} tool; what is written as a "
+    "message instead of through it is not read. "
+    # §7.4's vocabulary. The mechanism has existed since M6 Task 5 and nothing told the
+    # model it was there, which makes a chart a feature only the scripted provider can use.
+    "A chart is a citation on the finding it supports, not a picture beside it. It carries "
+    f"three things: a type — one of {_BUILT_IN_CHARTS}, or {CHART_FALLBACK} with a "
+    "Vega-Lite specification for a reading none of those expresses; the id of a tool call "
+    "this run made, as its source; and options saying which path in that call's result "
+    "holds the rows and which field each channel reads. It carries no figures of its "
+    "own: the renderer draws the "
+    "stored result of the call it names, so cite a call whose result holds what you want "
+    "drawn, and call the tool again with the arguments you need if it does not."
 )
 
 DECLINE = (
@@ -84,6 +126,44 @@ class Progress:
     """One step of §7.2's visible reasoning, emitted as it happens."""
 
     message: str
+
+
+def _since(started: float) -> float:
+    """Milliseconds since a `perf_counter()` reading."""
+    return (perf_counter() - started) * 1000
+
+
+@dataclass
+class _Recorder:
+    """What the run has done so far, accumulated by the stages that do it.
+
+    Mutable, and passed down rather than returned up, because §6.1's pipeline leaves by
+    seven different doors — declined, asked back, no data, aborted, budget exhausted,
+    answered, answered after a correction — and a trace built at each of them would be seven
+    constructions to keep in agreement with one run.
+    """
+
+    tool_turns_limit: int
+    started: float
+    sops: list[str] = field(default_factory=list)
+    calls: list[ToolCallRecord] = field(default_factory=list)
+    turns: int = 0
+    model_ms: float = 0.0
+    tools_ms: float = 0.0
+
+    def trace(self) -> Trace:
+        return Trace(
+            sops_loaded=list(self.sops),
+            tool_calls=list(self.calls),
+            budget=Budget(
+                tool_turns=self.turns, tool_turns_limit=self.tool_turns_limit
+            ),
+            timings=Timings(
+                total_ms=_since(self.started),
+                model_ms=self.model_ms,
+                tools_ms=self.tools_ms,
+            ),
+        )
 
 
 def select_provider(settings: Settings) -> Provider:
@@ -118,24 +198,50 @@ def longest(
 
 async def stream(
     question: str,
-    session_id: str,
     *,
     settings: Settings | None = None,
     analysis: AnalysisClient | None = None,
     provider: Provider | None = None,
     token: str | None = None,
-) -> AsyncIterator[Progress | Answer]:
-    """Yields a `Progress` per step and exactly one `Answer`, last.
+) -> AsyncIterator[Progress | Answer | Trace]:
+    """Yields a `Progress` per step, exactly one `Answer`, and then §7.2's `Trace`.
+
+    The trace last rather than first: it describes a run that has finished, and the reader
+    on the other end of the stream is waiting for the answer, not for this. `agent.app`
+    stores it before it emits the answer event, so a trace can always be fetched for an
+    answer the user has been shown.
 
     `token` is the caller's, forwarded to the analysis service: since M5 that service
     refuses an unauthenticated request like every other one (§10.5), and the agent asks it
     questions on the asker's behalf rather than on its own.
+
+    §5.2's `messages`, `traces` and `sessions` are written by `agent.app`, which is the
+    layer that holds the principal. Nothing here reaches the database.
     """
-    # §5.2's `messages` and `traces` are still written by nothing -- the transcript is
-    # M6's. `sessions` is written by `agent.app` before this is reached, which is the layer
-    # that has the principal; the session id arrives here already recorded.
-    del session_id
     settings = settings or Settings()
+    recorded = _Recorder(tool_turns_limit=settings.tool_budget, started=perf_counter())
+    async for item in _stages(
+        question,
+        recorded,
+        settings=settings,
+        analysis=analysis,
+        provider=provider,
+        token=token,
+    ):
+        yield item
+    yield recorded.trace()
+
+
+async def _stages(
+    question: str,
+    recorded: _Recorder,
+    *,
+    settings: Settings,
+    analysis: AnalysisClient | None,
+    provider: Provider | None,
+    token: str | None,
+) -> AsyncIterator[Progress | Answer]:
+    """§6.1's seven stages. Every exit from here is an `Answer`; `stream` adds the trace."""
     analysis = analysis or AnalysisClient(settings.analysis_url, token=token)
     provider = provider or select_provider(settings)
 
@@ -143,7 +249,9 @@ async def stream(
 
     # --- 1  classify -------------------------------------------------------------------
     yield Progress("classifying the question")
+    started = perf_counter()
     classification = await classify(provider, question)
+    recorded.model_ms += _since(started)
     if classification.fallback:
         caveats.append(
             "I could not classify this question, so I read it as a knowledge question. "
@@ -157,6 +265,7 @@ async def stream(
     # before anything reaches for a tool (§4.5), which stage 2 already would.
     index = knowledge_base(settings.knowledge_root).reload_if_changed()
     selection = route(index, classification.facets, settings.retrieval_budget)
+    recorded.sops = list(selection.ids)
     yield Progress(f"consulting {', '.join(selection.ids)}")
     if selection.dropped:
         caveats.append(
@@ -219,16 +328,34 @@ async def stream(
 
     for _ in range(settings.tool_budget):
         turns += 1
-        reply = await provider.call(system, messages, TOOL_DEFINITIONS)
+        recorded.turns = turns
+        started = perf_counter()
+        reply = await provider.call(system, messages, TOOLS)
+        recorded.model_ms += _since(started)
 
         if reply.final is not None:
             # --- 6  verify citations -----------------------------------------------------
             yield Progress("verifying every citation against the database")
-            stated = [
-                Finding.model_validate(finding)
-                for finding in _sequence(reply.final.get("findings"))
-            ]
-            checked = await keep(stated, analysis, window=window, loaded=loaded)
+            # §7.3's window goes onto the citations that take one *here*, from the window
+            # this run resolved at stage 2 — never from the model, which has no business
+            # naming the interval its own claim is checked and opened over.
+            stated = stamped(
+                [
+                    Finding.model_validate(finding)
+                    for finding in _sequence(reply.final.get("findings"))
+                ],
+                window,
+            )
+            # §7.4's chart citations resolve against this run's own calls, by id. The
+            # recorder is the single list of what was called, so a chart cannot reference
+            # something the trace does not also show the reader.
+            checked = await keep(
+                stated,
+                analysis,
+                window=window,
+                loaded=loaded,
+                calls={made.id: made for made in recorded.calls},
+            )
             if checked.failed and not retried:
                 # §6.5: the failed ids go back to the model for exactly one retry. Logged
                 # at the same moment, because "the failure is logged so its frequency is
@@ -279,8 +406,34 @@ async def stream(
                     "error": True,
                     "detail": f"{type(error).__name__}: {error}",
                 }
-            elapsed = (perf_counter() - started) * 1000
+            elapsed = _since(started)
             failed = bool(result.get("error"))
+
+            if call.name == "list_stops" and classification.singular:
+                result, note = _one_stop(result)
+                if note is not None:
+                    caveats.append(note)
+
+            # §7.2's trace, appended by the loop that made the call. The log line below
+            # says the same thing to an operator tailing the service; this is the copy an
+            # auditor reads back months later, and neither is derived from the other.
+            #
+            # **After §6.7's assumption is written into the result, not before.** The record
+            # now carries the result itself (§7.4 draws charts from it), and the transcript
+            # two statements down carries the same object — so recording the pre-assumption
+            # copy would put a chart and an answer side by side on the screen, drawn from
+            # two different readings of one call.
+            recorded.calls.append(
+                ToolCallRecord(
+                    id=call.id,
+                    name=call.name,
+                    arguments=dict(call.arguments),
+                    result=dict(result),
+                    duration_ms=elapsed,
+                    failed=failed,
+                )
+            )
+            recorded.tools_ms += elapsed
 
             LOG.info(
                 "tool call",
@@ -292,11 +445,6 @@ async def stream(
                 },
             )
             called.append(call.name)
-
-            if call.name == "list_stops" and classification.singular:
-                result, note = _one_stop(result)
-                if note is not None:
-                    caveats.append(note)
 
             record(messages, call, result)
 
@@ -342,18 +490,16 @@ async def stream(
 
 async def run(
     question: str,
-    session_id: str,
     *,
     settings: Settings | None = None,
     analysis: AnalysisClient | None = None,
     provider: Provider | None = None,
     token: str | None = None,
 ) -> Answer:
-    """`stream` without the progress, for callers that only want the answer."""
+    """`stream` without the progress or the trace, for callers that only want the answer."""
     answer: Answer | None = None
     async for item in stream(
         question,
-        session_id,
         settings=settings,
         analysis=analysis,
         provider=provider,

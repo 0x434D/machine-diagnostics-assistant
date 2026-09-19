@@ -6,6 +6,7 @@ one. Parsed as YAML, never matched as strings: a commented-out `field-net` satis
 grep, and a vacuous check is the defect this project keeps finding in its own work.
 """
 
+import os
 from pathlib import Path
 from typing import cast
 from urllib.parse import urlparse
@@ -18,6 +19,7 @@ from simulator.pki import PARTIES
 
 REPO = Path(__file__).resolve().parents[3]
 PLANT_COMPOSE = REPO / "plant" / "compose.yml"
+MAKEFILE = REPO / "Makefile"
 # The env file Compose and the simulator share. `.env` itself is gitignored, so the
 # example is the only committed copy and the only one a test can hold still.
 PLANT_ENV_EXAMPLE = REPO / "plant" / ".env.example"
@@ -51,6 +53,102 @@ def _mount_sources(service: dict[str, object]) -> list[str]:
             if isinstance(source, str):
                 sources.append(source)
     return sources
+
+
+def _build_spec(compose_dir: Path, build: dict[str, object]) -> tuple[str, str, str]:
+    """One Compose `build:` block as (context, Dockerfile, PACKAGE), both paths written
+    from the repository root.
+
+    Compose resolves `context` against the directory its own file sits in and
+    `dockerfile` against that context, so one image is spelled three different ways
+    across this repository -- `.` from plant/, `..` from diagnostics/, and a
+    repository-root pair in the Makefile. Resolving before comparing is what makes them
+    agree or disagree honestly rather than textually.
+    """
+    context = (compose_dir / str(build["context"])).resolve()
+    dockerfile = (context / str(build.get("dockerfile") or "Dockerfile")).resolve()
+    args = cast(dict[str, object], build.get("args") or {})
+    return (
+        os.path.relpath(context, REPO),
+        os.path.relpath(dockerfile, REPO),
+        str(args.get("PACKAGE", "")),
+    )
+
+
+def _makefile_images() -> dict[str, tuple[str, str, str]]:
+    """The Makefile's `IMAGES` list, keyed by image name, in `_build_spec`'s shape."""
+    lines = MAKEFILE.read_text().splitlines()
+    rows: list[str] = []
+    for index, line in enumerate(lines):
+        if not line.startswith("IMAGES :="):
+            continue
+        block = [line.split(":=", 1)[1]]
+        while block[-1].rstrip().endswith("\\"):
+            index += 1
+            block.append(lines[index])
+        rows = " ".join(part.strip().removesuffix("\\") for part in block).split()
+        break
+    assert rows, "the Makefile has no IMAGES list; this test now proves nothing"
+
+    images: dict[str, tuple[str, str, str]] = {}
+    for row in rows:
+        name, context, dockerfile, *package = row.split(":")
+        assert name not in images, f"{name} has two rows in the Makefile's IMAGES"
+        images[name] = (
+            os.path.normpath(context),
+            os.path.normpath(dockerfile),
+            package[0] if package else "",
+        )
+    return images
+
+
+def test_every_image_the_stacks_build_has_a_row_in_the_makefiles_image_list() -> None:
+    """`make images` builds what `make scan-images` scans, and that scan is the whole of
+    the vulnerability answer for the containers -- so an image with no row in the
+    Makefile is an image nothing scans, and nothing goes red to say so.
+
+    Not hypothetical. `diagnostics/Dockerfile` moved to a repository-root context when
+    `knowledge/` became a workspace member; Compose followed and the Makefile did not,
+    and the MCP server and the issuer then arrived with no row at all. What was counting
+    the images was a comment, and a comment counts nothing.
+
+    Keyed on (context, Dockerfile, PACKAGE) rather than on the service name, because
+    `pki-init` and `line-simulator` are one image under two commands, and skipping the
+    services with no `build:` at all is what leaves out the Postgres the diagnostics
+    stack pulls by digest.
+    """
+    assert COMPOSE_FILES, "no compose.yml found; every test in this file is vacuous"
+
+    built: dict[tuple[str, str, str], set[str]] = {}
+    for path in COMPOSE_FILES:
+        for name, service in _services(_load(path)).items():
+            build = service.get("build")
+            if build is None:
+                continue
+            assert isinstance(build, dict), (
+                f"{name} uses Compose's short `build:` form, which this test cannot "
+                "resolve; write the long form or teach it the short one"
+            )
+            built.setdefault(_build_spec(path.parent, build), set()).add(name)
+
+    assert built, (
+        "no service in either stack declares a build; this test proves nothing"
+    )
+    declared = _makefile_images()
+
+    unscanned = set(built) - set(declared.values())
+    assert not unscanned, (
+        "built by a Compose service and absent from the Makefile's IMAGES, so nothing "
+        "builds or scans it: "
+        + "; ".join(f"{spec} for {sorted(built[spec])}" for spec in sorted(unscanned))
+    )
+
+    phantom = set(declared.values()) - set(built)
+    assert not phantom, (
+        "in the Makefile's IMAGES and built by no Compose service, so `make images` "
+        "spends time on something neither stack runs: "
+        + "; ".join(str(spec) for spec in sorted(phantom))
+    )
 
 
 def test_only_the_simulator_and_the_gateway_ever_join_field_net() -> None:

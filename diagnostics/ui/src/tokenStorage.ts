@@ -1,10 +1,16 @@
-/** Where a pasted token lives between reloads (M5 Task 6).
+/** Where the token lives between reloads.
  *
- * There is no issuer in this milestone (see the M5 plan's "line this milestone must not
- * cross"): a developer pastes a token minted by `scripts/mint-fixtures.py` or the auth
- * workspace's dev issuer, and it has to survive a reload or the UI is unusable for more
- * than one question at a time. `localStorage` is per-origin and never leaves the browser,
- * so this file holds only the key it is stored under -- never a token.
+ * M5 kept a *pasted* token here; M6's login puts a minted one in the same place, and the
+ * choice is worth restating rather than inheriting. `localStorage` is per-origin and never
+ * leaves the browser, and it survives a reload — without which a question and its follow-up
+ * would each need a fresh sign-in. What it also is: readable by any script running on this
+ * origin, so a script injection takes the token with it. The alternatives trade that for
+ * something else (in-memory loses the token on every reload; a cookie needs a server-side
+ * session this system deliberately does not have, §10.5), and the token is short-lived by
+ * configuration — `ISSUER_TOKEN_LIFETIME_MINUTES` — which is the part of the exposure a
+ * deployment can actually turn down.
+ *
+ * This file holds only the key it is stored under, never a token.
  */
 export const TOKEN_STORAGE_KEY = "machine-agent.diagnostics.token";
 

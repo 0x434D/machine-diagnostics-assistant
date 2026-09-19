@@ -1,0 +1,117 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "Budget": {
+      "description": "\u00a76.1 step 5's budget: turns of the tool loop, against the ceiling they ran under.\n\nTurns rather than calls, for the reason `answer.Method` gives in more words: one turn\nmay carry several calls, and one field carrying two units is a number nobody can compare\nacross two answers.",
+      "properties": {
+        "tool_turns": {
+          "title": "Tool Turns",
+          "type": "integer"
+        },
+        "tool_turns_limit": {
+          "title": "Tool Turns Limit",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "tool_turns",
+        "tool_turns_limit"
+      ],
+      "title": "Budget",
+      "type": "object"
+    },
+    "Timings": {
+      "description": "Where the time went.\n\nThree numbers rather than a stage-by-stage breakdown. The question a reader asks of a\nslow answer is whether the model or the analysis service took it; the remainder is the\npipeline's own work \u2014 routing, composition, citation verification \u2014 which has never been\nthe part that takes the time. When it becomes so it gets its own field here, rather than\nbeing derived by subtraction from these.",
+      "properties": {
+        "total_ms": {
+          "title": "Total Ms",
+          "type": "number"
+        },
+        "model_ms": {
+          "title": "Model Ms",
+          "type": "number"
+        },
+        "tools_ms": {
+          "title": "Tools Ms",
+          "type": "number"
+        }
+      },
+      "required": [
+        "total_ms",
+        "model_ms",
+        "tools_ms"
+      ],
+      "title": "Timings",
+      "type": "object"
+    },
+    "ToolCallRecord": {
+      "description": "One call the tool loop made: what was asked of which tool, what came back, what it cost.\n\nThe arguments and not only the name, because \u00a77.2 is explicit about what the trace buys\n\u2014 it makes the \"did it follow the method\" axis checkable by eye \u2014 and `list_stops` on\nits own says nothing about which station or which window was asked for.\n\nA record rather than a `ToolCall`: `provider.ToolCall` is the request the model made,\nand this is what became of it.",
+      "properties": {
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "arguments": {
+          "additionalProperties": true,
+          "title": "Arguments",
+          "type": "object"
+        },
+        "result": {
+          "additionalProperties": true,
+          "title": "Result",
+          "type": "object"
+        },
+        "duration_ms": {
+          "title": "Duration Ms",
+          "type": "number"
+        },
+        "failed": {
+          "title": "Failed",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "result",
+        "duration_ms",
+        "failed"
+      ],
+      "title": "ToolCallRecord",
+      "type": "object"
+    }
+  },
+  "description": "\u00a77.2's reasoning trace, in the shape `agent.traces` holds it.",
+  "properties": {
+    "sops_loaded": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Sops Loaded",
+      "type": "array"
+    },
+    "tool_calls": {
+      "items": {
+        "$ref": "#/$defs/ToolCallRecord"
+      },
+      "title": "Tool Calls",
+      "type": "array"
+    },
+    "budget": {
+      "$ref": "#/$defs/Budget"
+    },
+    "timings": {
+      "$ref": "#/$defs/Timings"
+    }
+  },
+  "required": [
+    "budget",
+    "timings"
+  ],
+  "title": "machine-agent reasoning trace (\u00a77.2)",
+  "type": "object"
+}

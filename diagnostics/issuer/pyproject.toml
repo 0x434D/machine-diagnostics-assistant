@@ -1,0 +1,46 @@
+# The development issuer, as a service rather than a script.
+#
+# M5 was ruled slim and built no issuer: `scripts/mint-token.py` minted from a keypair on
+# disk, and its docstring said in as many words that it must not become a fourth container.
+# The human ruling of 2026-09-19 reverses that for M6, because M6's first line is a login and
+# a paste-a-token field is not one. This package is what stands where Zitadel will (§10.5)
+# until Zitadel arrives: credentials in, a signed JWT out, and a JWKS document beside it.
+#
+# It is the one diagnostics service that does *not* depend on `auth` for a door -- it is the
+# door -- but it depends on it for the claim shape, so the tokens it mints and the tokens the
+# four validators accept are described in one place rather than two.
+[project]
+name = "issuer"
+version = "0.1.0"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "fastapi==0.141.1",
+    "uvicorn==0.52.4",
+    # §10.3: every number is configuration. Same settings machinery as every other package.
+    "pydantic-settings==2.15.0",
+    # Signing, and the JWKS document's `alg`. The same pin `auth` already carries and
+    # therefore not a package new to this workspace or to the lock -- but this package
+    # imports `jwt` and `cryptography` itself, and a direct import that arrives only as
+    # somebody else's transitive dependency breaks the day that somebody else drops it.
+    "pyjwt[crypto]==2.14.0",
+    # §10.5's audience, issuer, algorithm and role claim, read from the same AUTH_* settings
+    # the validators read, plus `ROLES`. A second statement of the claim shape here is
+    # exactly the drift that would mint tokens every service refuses.
+    "auth",
+]
+
+[tool.uv.sources]
+auth = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+    # FastAPI's TestClient. In process and deliberately: what is being checked is the
+    # arithmetic of a refusal and the contents of a document, neither of which a socket
+    # makes truer. §1.8's proof against running services is `auth/tests/test_authenticity.py`.
+    "httpx==0.28.1",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

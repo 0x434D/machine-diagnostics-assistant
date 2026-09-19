@@ -12,18 +12,31 @@ import pytest
 from agent.answer import (
     ALLOW_HYPOTHESIS,
     CITATION_FIELDS,
+    WINDOWED,
     Answer,
+    ChartOptions,
     Citation,
+    CitationWindow,
     Contradiction,
     Finding,
     Method,
     validate_basis,
 )
 
+WINDOW = CitationWindow(
+    from_ts="2026-09-11T20:00:00Z",  # type: ignore[arg-type]  # pydantic parses the instant
+    to_ts="2026-09-12T04:00:00Z",  # type: ignore[arg-type]  # pydantic parses the instant
+    label="night shift 2026-09-11 22:00 – 2026-09-12 06:00 Europe/Berlin",
+)
 
-def test_the_vocabulary_is_seven_three_minus_what_nothing_renders() -> None:
-    """§7.3 lists `chart` and §7.4 describes it. Nothing renders one until M6, and a
-    citation with no renderer is a claim with no referent."""
+
+def test_the_vocabulary_is_the_whole_of_seven_three() -> None:
+    """Every kind §7.3 lists, `chart` included since M6 rendered one.
+
+    A citation with no renderer is a claim with no referent, which is why `chart` was held
+    out until §7.4's renderer existed; the set is now closed, and a tenth name appearing
+    here without one is the failure this guards against.
+    """
     assert set(CITATION_FIELDS) == {
         "part",
         "stop",
@@ -34,8 +47,8 @@ def test_the_vocabulary_is_seven_three_minus_what_nothing_renders() -> None:
         "serial",
         "lot",
         "containment",
+        "chart",
     }
-    assert "chart" not in CITATION_FIELDS
 
 
 @pytest.mark.parametrize("kind", sorted(CITATION_FIELDS))
@@ -157,3 +170,206 @@ def test_an_answer_either_asks_or_answers() -> None:
                 "readings": ["a", "b"],
             },
         )
+
+
+# --- §7.3's window ---------------------------------------------------------------------
+
+#: The payload each windowed kind needs beside its window, so the tests below are
+#: parametrised over `WINDOWED` rather than naming the two kinds a second time.
+CITED: dict[str, dict[str, object]] = {
+    "pattern": {"dimension": "carrier", "key": "7"},
+    "signal": {"station": "S2", "signal": "JoiningForce"},
+    "chart": {
+        "chart_type": "pareto",
+        "source": "toolu_01",
+        "options": {"series": "defect_classes", "x": "defect_class", "y": "count"},
+    },
+}
+
+
+def test_the_kinds_that_carry_a_window_are_the_ones_whose_referent_needs_one() -> None:
+    """§7.3 writes a window into exactly these three.
+
+    Both the pattern and the signal endpoints take `from` and `to`: the same `carrier=7` is
+    a different cell over a different interval. A chart is the same fact with a scale drawn
+    on it — every axis is labelled with the interval the tool result was computed over, and
+    the wrong one there is §7.4's failure moved from the values to the ruler.
+    """
+    assert WINDOWED == {"pattern", "signal", "chart"}
+    assert WINDOWED <= set(CITATION_FIELDS)
+
+
+@pytest.mark.parametrize("kind", sorted(WINDOWED))
+def test_an_answer_cannot_ship_a_windowed_citation_without_its_window(
+    kind: str,
+) -> None:
+    """Checked on the answer rather than on the citation, because the model's own output is
+    validated as findings before the pipeline stamps the window onto them. A citation that
+    reached the reader without one would open a panel over an interval the screen chose."""
+    citation = Citation(kind=kind, **CITED[kind])  # type: ignore[arg-type]  # the enum is enforced at runtime
+
+    with pytest.raises(ValueError, match="carries none"):
+        Answer(
+            findings=[
+                Finding(statement="…", basis="measured", citations=[citation]),
+            ],
+            answer_markdown="…",
+            method=Method(),
+        )
+
+
+@pytest.mark.parametrize("kind", sorted(WINDOWED))
+def test_the_same_citation_with_its_window_ships(kind: str) -> None:
+    """The other half: a refusal that is not contingent on the window would pass the test
+    above while refusing every answer."""
+    citation = Citation(kind=kind, window=WINDOW, **CITED[kind])  # type: ignore[arg-type]  # the enum is enforced at runtime
+
+    answer = Answer(
+        findings=[Finding(statement="…", basis="measured", citations=[citation])],
+        answer_markdown="…",
+        method=Method(),
+    )
+
+    assert answer.findings[0].citations[0].window == WINDOW
+
+
+def test_a_kind_that_takes_no_window_is_not_asked_for_one() -> None:
+    Answer(
+        findings=[
+            Finding(
+                statement="…",
+                basis="measured",
+                citations=[Citation(kind="part", id="A-00000007")],
+            )
+        ],
+        answer_markdown="…",
+        method=Method(),
+    )
+
+
+# --- §7.4's chart: a reference, never a value -------------------------------------------
+
+
+def _chart(**options: object) -> Citation:
+    return Citation(
+        kind="chart",
+        chart_type="vega_lite",
+        source="toolu_01",
+        options={"series": "defect_classes", **options},  # type: ignore[arg-type]  # pydantic coerces the mapping
+        window=WINDOW,
+    )
+
+
+def test_a_chart_specification_carrying_inline_data_cannot_exist() -> None:
+    """§7.4's whole reason: *"this kills the classic failure where a model draws a
+    confident chart from invented figures"*. A specification that carries its own values
+    has no tool result behind it, so it is refused where it is constructed rather than
+    noticed by whoever reviews the screenshot."""
+    with pytest.raises(ValueError, match="never carries values"):
+        _chart(spec={"mark": "bar", "data": {"values": [{"a": 1}]}})
+
+
+def test_data_hidden_below_the_top_level_of_a_specification_is_found() -> None:
+    """Vega-Lite nests: a `layer` holds whole specifications of its own, and a top-level
+    check would pass a chart whose second layer carried the invented numbers."""
+    with pytest.raises(ValueError, match="layer.\\[1\\].data"):
+        _chart(
+            spec={
+                "layer": [
+                    {"mark": "line"},
+                    {"mark": "point", "data": {"url": "https://example.invalid/x.csv"}},
+                ]
+            }
+        )
+
+
+def test_a_named_dataset_block_is_inline_data_too() -> None:
+    """`datasets` is Vega-Lite's other way of carrying values, and refusing only `data`
+    would leave the door the reader cannot see."""
+    with pytest.raises(ValueError, match="never carries values"):
+        _chart(spec={"mark": "bar", "datasets": {"invented": [{"a": 1}]}})
+
+
+def test_a_specification_that_only_names_fields_is_accepted() -> None:
+    """The other direction: a refusal that is not contingent on the data would refuse every
+    chart, which passes the three tests above while shipping nothing."""
+    citation = _chart(
+        spec={
+            "mark": "bar",
+            "encoding": {
+                "x": {"field": "defect_class", "type": "nominal"},
+                "y": {"field": "count", "type": "quantitative"},
+            },
+        }
+    )
+
+    assert citation.options is not None
+    assert citation.options.spec is not None
+    assert "data" not in citation.options.spec
+
+
+#: Every option except the free-form specification, which the three tests above close
+#: separately. Read off the model rather than listed, so an option added later is covered
+#: by the check below without anybody remembering to add it.
+NAME_OPTIONS = sorted(set(ChartOptions.model_fields) - {"spec"})
+
+
+@pytest.mark.parametrize("option", NAME_OPTIONS)
+@pytest.mark.parametrize("value", [1, 0.5, [1, 2, 3], [{"a": 1}]])
+def test_no_option_on_a_chart_accepts_a_figure(option: str, value: object) -> None:
+    """The structural half of §7.4's claim, over the whole option set rather than over the
+    one field a test happened to try.
+
+    Every option is a name — of a path, of a field, of a tool call — and a name is not a
+    number, so there is nowhere on a chart citation for a figure or a series of them to be
+    typed. This is what makes "it never carries values" a property of the object rather
+    than a rule somebody has to remember while reviewing a prompt.
+    """
+    assert NAME_OPTIONS
+    with pytest.raises(ValueError, match="string"):
+        ChartOptions(**{option: value})  # type: ignore[arg-type]  # the point is that it refuses
+
+
+def test_a_built_in_chart_type_does_not_also_carry_a_specification() -> None:
+    """§7.4 is *"menu first, free description as fallback"*. Carrying both leaves the
+    renderer to pick one, which is the renderer deciding what the answer meant."""
+    with pytest.raises(ValueError, match="remove options.spec"):
+        Citation(
+            kind="chart",
+            chart_type="pareto",
+            source="toolu_01",
+            options={"series": "defect_classes", "spec": {"mark": "bar"}},  # type: ignore[arg-type]  # pydantic coerces the mapping
+            window=WINDOW,
+        )
+
+
+def test_the_fallback_without_its_specification_is_refused() -> None:
+    with pytest.raises(ValueError, match="options.spec is missing"):
+        Citation(
+            kind="chart",
+            chart_type="vega_lite",
+            source="toolu_01",
+            options={"series": "defect_classes"},  # type: ignore[arg-type]  # pydantic coerces the mapping
+            window=WINDOW,
+        )
+
+
+@pytest.mark.parametrize("chart_type", ["pareto", "vega_lite"])
+def test_every_chart_names_the_rows_it_reads(chart_type: str) -> None:
+    """The fallback included. Without a path to the rows there is nothing to draw, and a
+    chart drawn from nothing is the empty axis that reads as zero."""
+    with pytest.raises(ValueError, match="options.series"):
+        Citation(
+            kind="chart",
+            chart_type=chart_type,  # type: ignore[arg-type]  # the enum is enforced at runtime
+            source="toolu_01",
+            options={"x": "defect_class", "y": "count", "spec": {"mark": "bar"}},  # type: ignore[arg-type]  # pydantic coerces the mapping
+            window=WINDOW,
+        )
+
+
+def test_an_option_the_renderer_does_not_know_is_refused() -> None:
+    """A misspelt option would otherwise be silently dropped, and the chart would draw
+    something other than what the answer said it drew."""
+    with pytest.raises(ValueError, match="extra_forbidden|Extra inputs"):
+        _chart(spec={"mark": "bar"}, colur="defect_class")

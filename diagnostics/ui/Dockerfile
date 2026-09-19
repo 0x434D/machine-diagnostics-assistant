@@ -21,6 +21,21 @@ RUN pnpm openapi-typescript /contracts/analysis.openapi.yaml -o src/generated/an
  && pnpm vite build
 
 FROM ${NGINX} AS runtime
+# The base image ships Debian packages whose fixes are already published, and re-pinning
+# cannot take them: the pinned digest and whatever `:1.31` resolves to today carry the same
+# fourteen HIGH/CRITICAL findings (perl-base, libpcre2-8-0, libsqlite3-0, libssh2-1t64,
+# gzip) because nginx has not rebuilt its image around the patched archive. This layer is
+# what a base-image bump would normally do, and it is the same answer both Python
+# Dockerfiles already give for the same reason (docs/ENGINEERING.md §9). It makes the layer
+# depend on build date, which the digest pin cannot cover and never did.
+#
+# Root for the upgrade and straight back to 101: running unprivileged with no configuration
+# is the whole reason this image is nginx-unprivileged rather than nginx.
+USER root
+RUN apt-get update \
+ && apt-get upgrade -y \
+ && rm -rf /var/lib/apt/lists/*
+USER 101:101
 COPY --chown=101:101 diagnostics/ui/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build --chown=101:101 /src/dist /usr/share/nginx/html
 USER 101:101

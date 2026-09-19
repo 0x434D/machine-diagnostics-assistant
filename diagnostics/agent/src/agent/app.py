@@ -1,33 +1,50 @@
-"""POST /ask, as server-sent events, and the one thing §10.5 lets only an admin see.
+"""POST /ask, as server-sent events; §7.2's trace and feedback; and what only an admin sees.
 
 §7.2 asks for the reasoning to be visible. The steps arrive as they happen and the answer
 object arrives last, so the reader watches the pipeline work rather than a spinner — and
 what they watch is emitted by the code that does the work, not narrated beside it.
 
-Since M5 both endpoints require a token (§10.5). The session row that `/ask` writes carries
-the `sub` off that token, which is what makes §5.2's trace tables an audit trail rather than
-a log of questions nobody can attribute.
+The stream's **first** event names the exchange, before any step has run. That is what gives
+the trace and the feedback an address: a client that has the `session_id` and the `seq` can
+open the trace for an answer that never arrived, and can come back to the two feedback
+questions an hour later from a page it reloaded.
+
+Since M5 every endpoint requires a token (§10.5), declared once for the whole application.
+The session row that `/ask` writes carries the `sub` off that token, and everything here
+that names a session checks it. §10.5 has no permission matrix and this is not one: it is a
+single rule, applied in one direction — a session, its questions and the reasoning behind
+their answers belong to whoever opened it.
 """
 
 from __future__ import annotations
 
 import json
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import UTC, datetime
 from typing import Annotated
 
 from auth.requests import admin, presented, principal
 from auth.tokens import Principal
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from agent import classify, pipeline
+from agent.answer import Answer
 from agent.config import Settings
 from agent.pipeline import Progress, knowledge_base, stream
 from agent.provider import MODEL
-from agent.sessions import remember
+from agent.records import Feedback, Trace
+from agent.sessions import (
+    addressed,
+    answered,
+    asked,
+    feedback_on,
+    remember,
+    subject_of,
+    trace_of,
+)
 
 app = FastAPI(
     title="machine-agent agent",
@@ -56,6 +73,19 @@ class Question(BaseModel):
     honest while nothing wrote the table and is a lie the moment something does."""
 
 
+class Exchange(BaseModel):
+    """The `session` event, first on the stream: what this question and its answer are
+    addressed by for the rest of their life.
+
+    `seq` is the question's row in `agent.messages`. `agent.sessions` says why the answer's
+    own row is not the address: this number is promised before the pipeline has taken a
+    step, and a number promised that early can only name a row that already exists.
+    """
+
+    session_id: uuid.UUID
+    seq: int
+
+
 class KnowledgeReloaded(BaseModel):
     """What `POST /knowledge/reload` answers: how many documents the new index holds.
 
@@ -74,10 +104,12 @@ class Prompts(BaseModel):
     agent tells the model reads it from the running service rather than from the source of
     whatever version they hope is deployed.
 
-    **What is not here is the transcript of a run.** `agent.traces` is written by nothing
-    until M6, so there is no recorded exchange to serve; the request-scoped half of §10.5's
-    row arrives with the table. What §7.2's trace already shows — the tools called, the
-    documents routed — travels in the answer object and is open to `user`.
+    **What is not here is the transcript of a run.** §7.2's trace of one answer — the SOPs
+    loaded, every tool call with its arguments and timings, the budget spent — is served
+    per message by `trace` below and is open to `user`, because it is the asker's own
+    reasoning to inspect. What has no endpoint at all is the raw model exchange: the
+    messages the provider was sent are held for the length of a run and stored nowhere, so
+    there is nothing for this to serve.
     """
 
     provider: str
@@ -92,8 +124,22 @@ def now() -> datetime:
     return datetime.now(UTC)
 
 
+def clock() -> Callable[[], datetime]:
+    """The clock itself rather than one reading of it.
+
+    `/ask` writes two rows seconds apart — the question when it arrives, the answer when
+    the pipeline finishes — and a single injected `datetime` shared between them would
+    record every answer as instantaneous.
+    """
+    return now
+
+
 PrincipalDep = Annotated[Principal, Depends(principal)]
-NowDep = Annotated[datetime, Depends(now)]
+ClockDep = Annotated[Callable[[], datetime], Depends(clock)]
+
+
+NOT_YOURS = "this session belongs to another user"
+"""One sentence for the one rule, so reading a session and writing to it refuse alike."""
 
 
 def _event(name: str, data: str) -> str:
@@ -101,29 +147,126 @@ def _event(name: str, data: str) -> str:
 
 
 async def _events(
-    question: str, session_id: str, token: str | None
+    question: str,
+    session_id: uuid.UUID,
+    seq: int,
+    token: str | None,
+    at: Callable[[], datetime],
 ) -> AsyncIterator[str]:
-    async for item in stream(question, session_id, token=token):
+    answer: Answer | None = None
+    trace: Trace | None = None
+
+    yield _event("session", Exchange(session_id=session_id, seq=seq).model_dump_json())
+    async for item in stream(question, token=token):
         if isinstance(item, Progress):
             yield _event("progress", json.dumps({"message": item.message}))
+        elif isinstance(item, Answer):
+            answer = item
         else:
-            yield _event("answer", item.model_dump_json())
+            trace = item
+
+    if answer is None or trace is None:
+        # The pipeline yields exactly one of each and `stream` is the only producer, so
+        # this is a broken contract rather than a condition to recover from.
+        raise RuntimeError("the pipeline ended without an answer and a trace")
+
+    # Stored before the answer event, not after: the client is told the trace's address
+    # before the run starts, and a UI that opens it the moment the answer lands must not
+    # race the write that puts it there.
+    await answered(session_id, seq, answer.answer_markdown, trace, at(), Settings())
+    yield _event("answer", answer.model_dump_json())
 
 
 @app.post("/ask", operation_id="ask")
 async def ask(
-    body: Question, request: Request, who: PrincipalDep, at: NowDep
+    body: Question, request: Request, who: PrincipalDep, at: ClockDep
 ) -> StreamingResponse:
-    session = await remember(who.subject, at, Settings(), body.session_id)
+    settings = Settings()
+    if body.session_id is not None:
+        # A session belongs to whoever opened it, and from M6 a question asked into one
+        # leaves a message and a trace in it. Before M6 continuing somebody else's session
+        # wrote nothing and cost nothing; now it would put a stranger's question into an
+        # audit trail attributed to its owner, so the same rule the two endpoints below
+        # apply to reading applies here to writing.
+        opened_by = await subject_of(body.session_id, settings)
+        if opened_by is not None and opened_by != who.subject:
+            raise HTTPException(status_code=403, detail=NOT_YOURS)
+    session = await remember(who.subject, at(), settings, body.session_id)
+    # Both writes happen here rather than inside the stream: a question that cannot be
+    # recorded must fail as a request, with a status code, instead of as a stream that
+    # opened successfully and then stopped.
+    seq = await asked(session, body.question, at(), settings)
     return StreamingResponse(
         # The caller's own token travels on to the analysis service, which refuses an
         # unauthenticated request like everything else since M5. `agent.tools` says why it
         # is forwarded rather than exchanged for a credential of the agent's own.
-        _events(body.question, str(session), presented(request)),
+        _events(body.question, session, seq, presented(request), at),
         media_type="text/event-stream",
         # A proxy that buffers this has turned the stream back into a wait.
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+async def _owned(session_id: uuid.UUID, seq: int, who: Principal) -> None:
+    """Refuse a message that does not exist, or one that is not this caller's.
+
+    §10.5 is explicit that there are no per-resource permission rules and this is not one:
+    there is a single fact being checked, that the session carries the `sub` presented. What
+    it stops is the only thing an unguessable id does not — a token that is valid for this
+    deployment reading the reasoning behind somebody else's question.
+
+    §14 keeps the two refusals apart. 404 is *no such thing*; 403 is *it is not yours*, and
+    it says so plainly rather than pretending the session is absent, because a session id is
+    unguessable by construction (§6.10) and there is nothing left to conceal from a caller
+    who already has one.
+    """
+    message = await addressed(session_id, seq, Settings())
+    if message is None:
+        raise HTTPException(status_code=404, detail=f"no session {session_id}")
+    if message.subject != who.subject:
+        raise HTTPException(status_code=403, detail=NOT_YOURS)
+    if not message.holds_message:
+        raise HTTPException(
+            status_code=404, detail=f"session {session_id} holds no message {seq}"
+        )
+
+
+@app.get(
+    "/sessions/{session_id}/messages/{seq}/trace",
+    operation_id="messageTrace",
+)
+async def trace(session_id: uuid.UUID, seq: int, who: PrincipalDep) -> Trace:
+    """§7.2's reasoning trace for one answered message.
+
+    Open to `user` rather than to `admin`: §10.5's admin column is the raw model exchange,
+    and this is the asker's own reasoning — the thing §7.2 puts under every answer so that
+    "did it follow the method" is checkable by the person reading it.
+    """
+    await _owned(session_id, seq, who)
+    recorded = await trace_of(session_id, seq, Settings())
+    if recorded is None:
+        # A message whose run never finished. Deliberate, and distinct from the 404 above:
+        # the exchange exists and is the caller's, and there is no trace to give for it.
+        raise HTTPException(
+            status_code=404, detail=f"message {seq} has no recorded trace"
+        )
+    return recorded
+
+
+@app.post(
+    "/sessions/{session_id}/messages/{seq}/feedback",
+    operation_id="giveFeedback",
+)
+async def feedback(
+    session_id: uuid.UUID, seq: int, given: Feedback, who: PrincipalDep, at: ClockDep
+) -> Feedback:
+    """§7.2's two questions, answerable one at a time and in either order.
+
+    Returns everything now stored for the message, not just what this request carried, so a
+    client that answered the second question can render both without asking again.
+    """
+    await _owned(session_id, seq, who)
+    return await feedback_on(session_id, seq, given, at(), Settings())
 
 
 @app.get("/prompts", operation_id="prompts", dependencies=[Depends(admin)])
