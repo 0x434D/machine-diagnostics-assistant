@@ -25,6 +25,7 @@ export type CarrierParts = components["schemas"]["CarrierParts"];
 export type ComponentAssembly = components["schemas"]["ComponentAssembly"];
 export type PartsByOutcome = components["schemas"]["PartsByOutcome"];
 export type KnowledgeDocument = components["schemas"]["KnowledgeDocument"];
+export type LineStatus = components["schemas"]["LineStatus"];
 export type LotParts = components["schemas"]["LotParts"];
 export type PatternReport = components["schemas"]["PatternReport"];
 export type PatternValue = components["schemas"]["PatternValue"];
@@ -291,6 +292,21 @@ export async function resolveTime(
   return await getAnalysis<TimeResolution>("/time/resolve", token, {
     expression,
   });
+}
+
+/** §5.3's `/line/status`: how far the line's own clock has run, and how stale that is.
+ *
+ * The companion to `resolveTime` above and not a substitute for it. That endpoint answers a
+ * *calendar* question — which instants "this shift" means — and says nothing about where the
+ * data ends; this one reports the newest `SourceTimestamp` in the database against the
+ * threshold it is judged by, so a window resolved from the calendar can be read beside the
+ * clock it will actually be applied to. §5.3 is explicit that simulated time may sit ahead
+ * of the wall clock and that the negative staleness is reported rather than clamped.
+ */
+export async function fetchLineStatus(
+  token: string | null,
+): Promise<LineStatus> {
+  return await getAnalysis<LineStatus>("/line/status", token);
 }
 
 /** §5.3's `/alarms/{id}`, added at M6 so an `alarm` citation has somewhere to open. */

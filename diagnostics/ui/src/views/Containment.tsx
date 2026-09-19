@@ -9,6 +9,12 @@
  * Nothing here computes anything. The counts, the split and the window are the service's;
  * the file is a transcription of the response object this screen rendered, and it is built
  * from that same object rather than from the DOM or from a second request.
+ *
+ * **The window is one of the things the service supplies.** The form opens on a shift the
+ * calendar resolved rather than on nothing, because an operator who has to know an instant
+ * before they can ask the question is an operator who does not ask it — and it opens on a
+ * shift rather than on a browser-clock "last 24 hours", because that would look sensible and
+ * scope a containment to the wrong interval. See `time/ShiftWindow`.
  */
 import { useEffect, useState } from "react";
 
@@ -20,6 +26,7 @@ import {
 import { CitationPanel } from "../citations/CitationPanel";
 import { useResolution } from "../citations/useResolution";
 import { Outcomes } from "../parts/Outcomes";
+import { labelFor, ShiftWindowForm, useShiftWindow } from "../time/ShiftWindow";
 
 /** The criteria a reader can fill in, and how each is asked for. `number` is not a nicety:
  * a carrier or a tolerance typed as text reaches the service as a 422 about the parameter
@@ -40,14 +47,28 @@ const CRITERIA: {
 
 interface Query {
   window: { from: string; to: string };
+  /** The calendar's name for this interval, when a phrase produced it — carried so that the
+   * result and the exported file can say which shift they are, not only which instants. */
+  label: string | null;
   criteria: Partial<Record<ContainmentCriterion, string>>;
 }
 
 export function Containment() {
+  const shift = useShiftWindow();
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
   const [typed, setTyped] = useState<Record<string, string>>({});
   const [asked, setAsked] = useState<Query | null>(null);
+
+  // The window the service resolved lands in the boxes, where it stays editable: a reader
+  // who already has an interval is not made to express it as a phrase. Nothing is fetched
+  // from `/parts/affected` by this — the default is for the form, and the question is still
+  // the operator's to ask.
+  useEffect(() => {
+    if (shift.resolution === null) return;
+    setFrom(shift.resolution.window.from_ts);
+    setTo(shift.resolution.window.to_ts);
+  }, [shift.resolution]);
 
   const complete = INSTANT.test(from.trim()) && INSTANT.test(to.trim());
 
@@ -61,6 +82,8 @@ export function Containment() {
         containment starts.
       </p>
 
+      <ShiftWindowForm shift={shift} from={from} to={to} />
+
       <form
         className="containment__form"
         onSubmit={(event) => {
@@ -68,6 +91,7 @@ export function Containment() {
           if (!complete) return;
           setAsked({
             window: { from: asInstant(from), to: asInstant(to) },
+            label: labelFor(from, to, shift.resolution),
             criteria: filled(typed),
           });
         }}
@@ -130,19 +154,11 @@ export function Containment() {
         </button>
       </form>
 
-      {/* No default window, and that is deliberate. All analysis reads `SourceTimestamp`,
-          which is simulated time and can sit hours either side of the wall clock this
-          browser has; a pre-filled "last 24 hours" would look like a sensible default and
-          return a set from the wrong interval, which is the one mistake a containment
-          screen must not make quietly. */}
       {asked === null ? (
         <p className="containment__note">
-          Give a window to search, as a UTC instant —{" "}
-          <span className="mono">2026-09-12T01:00:00Z</span>. It is not
-          pre-filled: the clock every analysis reads is the line&apos;s
-          simulated one, which can sit hours either side of this browser&apos;s,
-          so a default window here would look sensible and answer over the wrong
-          interval.
+          Nothing is read until the question is asked. The window above is
+          filled in for you; the criteria are not, and a window on its own is
+          every part made in it.
         </p>
       ) : (
         <Affected key={keyFor(asked)} query={asked} />
@@ -162,9 +178,10 @@ function Affected({ query }: { query: Query }) {
         <>
           <p className="evidence__window">
             Over <span className="mono">{affected.window.from_ts}</span> →{" "}
-            <span className="mono">{affected.window.to_ts}</span>, applied to
-            the <strong>{affected.criteria.anchor}</strong> instant of each
-            part. {affected.criteria.window_selects}
+            <span className="mono">{affected.window.to_ts}</span>
+            {query.label === null ? "" : ` — ${query.label}`}, applied to the{" "}
+            <strong>{affected.criteria.anchor}</strong> instant of each part.{" "}
+            {affected.criteria.window_selects}
           </p>
           <dl>
             <dt>Criteria</dt>
@@ -180,7 +197,7 @@ function Affected({ query }: { query: Query }) {
             </dd>
           </dl>
           <Outcomes parts={affected.parts} />
-          <ExportLink affected={affected} />
+          <ExportLink affected={affected} label={query.label} />
         </>
       )}
     </CitationPanel>
@@ -194,8 +211,14 @@ function Affected({ query }: { query: Query }) {
  * cannot come apart. The row count is in the link's own words and in the file, because
  * §7.2's requirement is that the export carries its own count.
  */
-function ExportLink({ affected }: { affected: AffectedParts }) {
-  const csv = containmentCsv(affected);
+function ExportLink({
+  affected,
+  label,
+}: {
+  affected: AffectedParts;
+  label: string | null;
+}) {
+  const csv = containmentCsv(affected, label);
   const [href, setHref] = useState<string | null>(null);
 
   useEffect(() => {
@@ -265,8 +288,15 @@ function listedSerials(affected: AffectedParts): [string, string][] {
  * exact and `serials` is capped, so the two are reported separately for each group: a list
  * of 200 under a count of 278 is a true answer, and a file that showed only the 200 would be
  * a false one.
+ *
+ * `windowLabel` is the calendar's name for the window, when a phrase produced it. It is in
+ * the file because the file is the copy somebody acts on away from the screen, and "the
+ * night shift" is the interval they will describe it by to the person they hand it to.
  */
-function containmentCsv(affected: AffectedParts): string {
+function containmentCsv(
+  affected: AffectedParts,
+  windowLabel: string | null,
+): string {
   const parts = affected.parts;
   const rows = listedSerials(affected);
   const groups = [
@@ -277,7 +307,7 @@ function containmentCsv(affected: AffectedParts): string {
 
   const lines = [
     `# containment export`,
-    `# window: ${affected.window.from_ts} to ${affected.window.to_ts}, applied to the ${affected.criteria.anchor} instant of each part`,
+    `# window: ${affected.window.from_ts} to ${affected.window.to_ts}${windowLabel === null ? "" : ` — ${windowLabel}`}, applied to the ${affected.criteria.anchor} instant of each part`,
     `# window selects: ${affected.criteria.window_selects}`,
     `# criteria: ${describeCriteria(affected)}`,
     `# scope: ${affected.parts.total} assemblies — ${groups
