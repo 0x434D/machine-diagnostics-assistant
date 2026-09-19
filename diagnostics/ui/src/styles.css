@@ -524,6 +524,16 @@ button:disabled {
   margin: var(--space-3) 0 0;
 }
 
+/* The ingest gaps under a coverage sentence. Not a timeline class, though it began as one:
+   the stop list, one stop and a containment scope all say what was and was not observed,
+   and they say it the same way. */
+.coverage__gaps {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin: var(--space-2) 0 0;
+  padding-inline-start: var(--space-5);
+}
+
 /* The SOP text itself (§7.2). `pre` because a procedure's own line breaks and its
    numbering are part of what it says, and `wrap` because a phone is a supported client. */
 .evidence__document {
@@ -711,13 +721,6 @@ button:disabled {
 .timeline__stops button[aria-pressed="true"] {
   background: var(--accent-tint);
   border-color: var(--accent);
-}
-
-.timeline__gaps {
-  color: var(--text-muted);
-  font-size: var(--text-sm);
-  margin: var(--space-2) 0 0;
-  padding-inline-start: var(--space-5);
 }
 
 .timeline__episodes {

@@ -313,6 +313,24 @@ export async function fetchStops(
   return await getAnalysis<StopList>("/stops", token, { from, to });
 }
 
+/** §5.3's `/coverage`: where the data is over a window, and where it is not.
+ *
+ * `/stops` and `/inspection/patterns` carry this inside their own responses, because a claim
+ * about absence is unreadable without it. `/parts/affected` does not, so a containment scope
+ * has to ask for it — same window, second request. §4.4: without gap markers, missing data
+ * is indistinguishable from a quiet machine, and a containment list short by the parts made
+ * during an ingest gap is that confusion at its most expensive.
+ */
+export async function fetchCoverage(
+  window: { from: string; to: string },
+  token: string | null,
+): Promise<Coverage> {
+  return await getAnalysis<Coverage>("/coverage", token, {
+    from: window.from,
+    to: window.to,
+  });
+}
+
 /** §5.3's `/time/resolve`: a phrase against the shift calendar, resolved by code.
  *
  * **The browser does not compute what "last night" means either.** §5.3 puts this endpoint

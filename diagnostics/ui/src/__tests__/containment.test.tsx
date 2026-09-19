@@ -11,7 +11,7 @@
  * interval, so the tests below run under a system clock deliberately set nowhere near the
  * service's and insist the form still opens on the service's window.
  */
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MemoryRouter } from "react-router";
 
@@ -20,6 +20,7 @@ import { AuthProvider } from "../AuthContext";
 import { TOKEN_STORAGE_KEY } from "../tokenStorage";
 import type {
   AffectedParts,
+  Coverage,
   LineStatus,
   PlantStatus,
   TimeResolution,
@@ -46,6 +47,40 @@ const LINE_STATUS: LineStatus = {
   buffers: [],
   active_alarms: [],
   last_part_out: null,
+};
+
+/** A window ingest missed nothing in. */
+const COMPLETE: Coverage = {
+  window: RESOLUTION.window,
+  gaps: [],
+  covered_fraction: 1,
+  fully_covered: true,
+  observed: {
+    events: 4200,
+    from_ts: RESOLUTION.window.from_ts,
+    to_ts: RESOLUTION.window.to_ts,
+  },
+};
+
+/** The same window with twenty minutes of it unobserved — the case this screen was reopened
+ * for. Every part made in that hole is missing from the scope below and nothing in the
+ * counts differs. */
+const HOLED: Coverage = {
+  window: RESOLUTION.window,
+  gaps: [
+    {
+      from_ts: "2026-09-12T06:00:00Z",
+      to_ts: "2026-09-12T06:20:00Z",
+      reason: "gateway offline",
+    },
+  ],
+  covered_fraction: 0.958,
+  fully_covered: false,
+  observed: {
+    events: 3900,
+    from_ts: RESOLUTION.window.from_ts,
+    to_ts: RESOLUTION.window.to_ts,
+  },
 };
 
 /** What the shell's plant status banner reads. It stands over every view, so a stub that
@@ -120,6 +155,10 @@ function stub(
   options: {
     affected?: unknown;
     affectedStatus?: number;
+    coverage?: Coverage;
+    /** The `/coverage` request failing is its own case: the scope is still answerable and
+     * whether it is complete is not. */
+    coverageStatus?: number;
     /** Expressions `/time/resolve` refuses, as the real endpoint does — with the list of
      * the ones it understands, which is the half a reader can act on. */
     refuses?: string[];
@@ -150,6 +189,11 @@ function stub(
     }
     if (url.includes("/line/status")) {
       return Promise.resolve(json(LINE_STATUS, 200));
+    }
+    if (url.includes("/coverage")) {
+      return Promise.resolve(
+        json(options.coverage ?? COMPLETE, options.coverageStatus ?? 200),
+      );
     }
     return Promise.resolve(
       json(options.affected ?? AFFECTED, options.affectedStatus ?? 200),
@@ -185,9 +229,20 @@ async function ask(criteria: Record<string, string> = {}): Promise<void> {
   );
 }
 
-/** The export, read back out of the blob the link points at. */
+/** The export, read back out of the blob the link points at.
+ *
+ * Waits for the window's coverage as well as for the scope. The two come back from separate
+ * requests and the file is written from both, so reading the blob before the coverage
+ * settles is reading a file nobody ever downloads.
+ */
 async function exportedCsv(): Promise<string> {
   await screen.findByRole("link", { name: /Export this set/ });
+  await waitFor(() => {
+    expect(screen.getByTestId("scope-coverage")).not.toHaveAttribute(
+      "data-outcome",
+      "opening",
+    );
+  });
   const blob = exported.at(-1);
   if (blob === undefined) throw new Error("the view exported nothing");
   return await blob.text();
@@ -382,6 +437,9 @@ test("the export contains exactly the rows the view showed, and its count matche
   // And it carries its own count, in the file and in the name of the file.
   expect(csv).toContain("# scope: 5 assemblies");
   expect(csv).toContain("# in this file: 5 row(s)");
+  // Above the count, because it is what the count can possibly be: the file states what
+  // ingest recorded of the window, even when it recorded all of it.
+  expect(csv).toContain("# ingest coverage: complete");
   expect(
     screen.getByRole("link", { name: /Export this set — 5 row\(s\)/ }),
   ).toHaveAttribute("download", "containment-5-of-5-parts.csv");
@@ -443,6 +501,66 @@ test("an empty scope exports a file that says it is empty", async () => {
   expect(serialsIn(csv)).toEqual([]);
   expect(csv).toContain("# scope: 0 assemblies");
   expect(csv).toContain("# in this file: 0 row(s)");
+});
+
+test("a containment set over a holed window says so beside the count and in the file", async () => {
+  // The finding this closes. `/parts/affected` answers over the rows ingest happened to
+  // record and says nothing about the ones it did not, so a window the gateway was down for
+  // produces a shorter list and an identical-looking screen — and the thing the operator
+  // then pulls parts from is the file.
+  const fetchMock = stub({ coverage: HOLED });
+  containment();
+  await ask();
+
+  // Beside the count, not under it: which twenty minutes are unobserved, in the service's
+  // own words for why.
+  expect(await screen.findByText(/1 ingest gap\(s\)/)).toBeInTheDocument();
+  expect(screen.getByText(/gateway offline/)).toBeInTheDocument();
+
+  // Over the window the service applied, and asked of `/coverage` rather than worked out
+  // here from the line's clock.
+  const asked = requested(fetchMock).map((url) => decodeURIComponent(url));
+  expect(
+    asked.some(
+      (url) =>
+        url.startsWith("/api/analysis/coverage?") &&
+        url.includes(RESOLUTION.window.from_ts) &&
+        url.includes(RESOLUTION.window.to_ts),
+    ),
+  ).toBe(true);
+
+  const csv = await exportedCsv();
+  expect(csv).toContain("# ingest coverage: 95.8 % covered, 1 ingest gap(s)");
+  expect(csv).toContain(
+    "# ingest gap: 2026-09-12T06:00:00Z to 2026-09-12T06:20:00Z — gateway offline",
+  );
+});
+
+test("coverage that could not be read says the set may be short, not that it is whole", async () => {
+  // The state that must not read as "complete". A screen silent about coverage because the
+  // question failed is indistinguishable from one over a window with nothing missing, which
+  // is the pair §4.4 exists to keep apart — and the file has to carry the same doubt,
+  // because it is read further from here than anything else this view produces.
+  stub({ coverageStatus: 503 });
+  containment();
+  await ask();
+
+  await waitFor(() => {
+    expect(screen.getByTestId("scope-coverage")).toHaveAttribute(
+      "data-outcome",
+      "failed",
+    );
+  });
+  const said = screen.getByTestId("scope-coverage");
+  expect(said).toHaveTextContent(/is not known/);
+  expect(said).toHaveTextContent(/nothing on this screen can say/);
+  // The scope itself came back and is still on screen: a coverage that failed is not a
+  // containment that failed.
+  expect(
+    screen.getByRole("button", { name: "A-00000007" }),
+  ).toBeInTheDocument();
+
+  expect(await exportedCsv()).toContain("# ingest coverage: not known");
 });
 
 test("criteria the service refuses are reported in its own words", async () => {

@@ -30,7 +30,7 @@ import { VegaChart } from "../charts/VegaChart";
 import { CitationPanel } from "../citations/CitationPanel";
 import { Chain } from "../citations/panels";
 import { useResolution } from "../citations/useResolution";
-import { coverageVerdict, type CoverageKind } from "../coverage";
+import { CoverageNote, coverageVerdict, type CoverageKind } from "../coverage";
 import { StateBadge } from "../design/StateBadge";
 import { buildTimeline } from "../timeline/spec";
 
@@ -238,10 +238,7 @@ function StopChoices({
 
   return (
     <>
-      <p className="evidence__note">
-        Coverage over this window: {verdict.sentence}
-      </p>
-      <Gaps coverage={list.coverage} />
+      <CoverageNote what="this window" coverage={list.coverage} />
       {list.stops.length === 0 ? (
         <p className="evidence__missing" data-testid="no-stops">
           No stop in this window. {whyNoStops(verdict.kind)}
@@ -310,20 +307,6 @@ function whyNoStops(kind: CoverageKind): string {
 }
 
 /** Where the data is not, written out beside the chart that shades it. */
-function Gaps({ coverage }: { coverage: StopList["coverage"] }) {
-  if (coverage.gaps.length === 0) return null;
-  return (
-    <ul className="timeline__gaps">
-      {coverage.gaps.map((gap) => (
-        <li key={`${gap.from_ts}:${gap.to_ts}`}>
-          <span className="mono">{gap.from_ts}</span> →{" "}
-          <span className="mono">{gap.to_ts}</span> — {gap.reason}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
 /** One stop: the Gantt, the chain on it, and the same chain written out beneath. */
 function StopFigure({ identifier }: { identifier: string }) {
   const resolution = useResolution(`timeline:${identifier}`, (token) =>
@@ -339,7 +322,6 @@ function StopFigure({ identifier }: { identifier: string }) {
 
 function Figure({ detail }: { detail: StopDetail }) {
   const drawn = buildTimeline(detail);
-  const verdict = coverageVerdict(detail.coverage);
 
   return (
     <>
@@ -348,10 +330,7 @@ function Figure({ detail }: { detail: StopDetail }) {
         read from <span className="mono">{detail.history_from_ts}</span> — the
         run-up is on the chart, not only the interruption.
       </p>
-      <p className="evidence__note">
-        Coverage over the stop itself: {verdict.sentence}
-      </p>
-      <Gaps coverage={detail.coverage} />
+      <CoverageNote what="the stop itself" coverage={detail.coverage} />
 
       {"refused" in drawn ? (
         <p className="evidence__missing">{drawn.refused}</p>

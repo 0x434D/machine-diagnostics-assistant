@@ -15,16 +15,26 @@
  * before they can ask the question is an operator who does not ask it — and it opens on a
  * shift rather than on a browser-clock "last 24 hours", because that would look sensible and
  * scope a containment to the wrong interval. See `time/ShiftWindow`.
+ *
+ * **And what the window is missing is beside the count.** `/parts/affected` answers over the
+ * rows ingest happened to record, and says nothing about the ones it did not. §4.4: without
+ * gap markers, missing data is indistinguishable from a quiet machine — and a containment
+ * set short by the parts made during an ingest gap, handed over with no sign of it, is that
+ * confusion at the one moment it costs a customer a part. `/coverage` answers it over the
+ * same window; nothing here computes it.
  */
 import { useEffect, useState } from "react";
 
 import {
   fetchAffectedParts,
+  fetchCoverage,
   type AffectedParts,
   type ContainmentCriterion,
+  type Coverage,
 } from "../api";
 import { CitationPanel } from "../citations/CitationPanel";
-import { useResolution } from "../citations/useResolution";
+import { useResolution, type Resolution } from "../citations/useResolution";
+import { CoverageNote, coverageVerdict } from "../coverage";
 import { Outcomes } from "../parts/Outcomes";
 import { labelFor, ShiftWindowForm, useShiftWindow } from "../time/ShiftWindow";
 
@@ -174,33 +184,100 @@ function Affected({ query }: { query: Query }) {
 
   return (
     <CitationPanel what="this containment scope" resolution={resolution}>
-      {(affected) => (
-        <>
-          <p className="evidence__window">
-            Over <span className="mono">{affected.window.from_ts}</span> →{" "}
-            <span className="mono">{affected.window.to_ts}</span>
-            {query.label === null ? "" : ` — ${query.label}`}, applied to the{" "}
-            <strong>{affected.criteria.anchor}</strong> instant of each part.{" "}
-            {affected.criteria.window_selects}
-          </p>
-          <dl>
-            <dt>Criteria</dt>
-            <dd>{describeCriteria(affected)}</dd>
-            <dt>Could not be placed in the window</dt>
-            {/* Reported rather than dropped: these match every criterion, and the instant
-                the window would be applied to is null for them. A containment list that is
-                silently short is worse than one that says it is. */}
-            <dd>
-              {affected.unplaceable === 0
-                ? "none — every matching part had an instant to place it by"
-                : `${affected.unplaceable} part(s) match the criteria and have no ${affected.criteria.anchor} instant, so they are outside the counts below rather than absent from the line`}
-            </dd>
-          </dl>
-          <Outcomes parts={affected.parts} />
-          <ExportLink affected={affected} label={query.label} />
-        </>
-      )}
+      {(affected) => <Scope affected={affected} label={query.label} />}
     </CitationPanel>
+  );
+}
+
+function Scope({
+  affected,
+  label,
+}: {
+  affected: AffectedParts;
+  label: string | null;
+}) {
+  // Over the window the *service applied*, which is the one the counts below were computed
+  // from — not over the one this form believes it sent. Read the same way `describeCriteria`
+  // reads the echoed criteria, and for the same reason.
+  const window = affected.window;
+  const coverage = useResolution(
+    `coverage:${window.from_ts}:${window.to_ts}`,
+    (token) => fetchCoverage({ from: window.from_ts, to: window.to_ts }, token),
+  );
+
+  return (
+    <>
+      <p className="evidence__window">
+        Over <span className="mono">{window.from_ts}</span> →{" "}
+        <span className="mono">{window.to_ts}</span>
+        {label === null ? "" : ` — ${label}`}, applied to the{" "}
+        <strong>{affected.criteria.anchor}</strong> instant of each part.{" "}
+        {affected.criteria.window_selects}
+      </p>
+      <dl>
+        <dt>Criteria</dt>
+        <dd>{describeCriteria(affected)}</dd>
+        <dt>Could not be placed in the window</dt>
+        {/* Reported rather than dropped: these match every criterion, and the instant
+            the window would be applied to is null for them. A containment list that is
+            silently short is worse than one that says it is. */}
+        <dd>
+          {affected.unplaceable === 0
+            ? "none — every matching part had an instant to place it by"
+            : `${affected.unplaceable} part(s) match the criteria and have no ${affected.criteria.anchor} instant, so they are outside the counts below rather than absent from the line`}
+        </dd>
+      </dl>
+      {/* Above the counts, because it is a statement about what the counts can possibly be.
+          Met afterwards it is a footnote; met here it is the reason to ask again once the
+          gap is filled. */}
+      <IngestCoverage resolution={coverage} />
+      <Outcomes parts={affected.parts} />
+      <ExportLink affected={affected} label={label} coverage={coverage} />
+    </>
+  );
+}
+
+/** What ingest recorded of this window, in each of the three states the request can be in.
+ *
+ * Not `CitationPanel`, which frames the same three states everywhere else: its failure line
+ * says a thing could not be opened, and what has to be said here is the consequence — the
+ * set below may be short and this screen cannot tell you whether it is. A reader who takes
+ * "could not open the coverage" for a missing detail acts on the list anyway.
+ */
+function IngestCoverage({ resolution }: { resolution: Resolution<Coverage> }) {
+  if (resolution.state === "opening") {
+    return (
+      <p
+        className="evidence__note"
+        data-testid="scope-coverage"
+        data-outcome="opening"
+      >
+        Coverage over this window: asking whether ingest has a gap in it…
+      </p>
+    );
+  }
+
+  if (resolution.state === "failed") {
+    return (
+      <p
+        className="evidence__missing"
+        data-testid="scope-coverage"
+        data-outcome="failed"
+      >
+        Whether ingest covered this window is not known: {resolution.reason}.
+        The set below is what was recorded, and nothing on this screen can say
+        whether that is all of it.
+      </p>
+    );
+  }
+
+  // The three outcomes carry the same `data-outcome` vocabulary `CitationPanel` gives every
+  // other resolution on this screen, so "the coverage has not come back yet" and "the
+  // coverage says the window is whole" are distinguishable from outside as well as in.
+  return (
+    <div data-testid="scope-coverage" data-outcome="open">
+      <CoverageNote what="this window" coverage={resolution.value} />
+    </div>
   );
 }
 
@@ -214,11 +291,13 @@ function Affected({ query }: { query: Query }) {
 function ExportLink({
   affected,
   label,
+  coverage,
 }: {
   affected: AffectedParts;
   label: string | null;
+  coverage: Resolution<Coverage>;
 }) {
-  const csv = containmentCsv(affected, label);
+  const csv = containmentCsv(affected, label, coverage);
   const [href, setHref] = useState<string | null>(null);
 
   useEffect(() => {
@@ -292,10 +371,16 @@ function listedSerials(affected: AffectedParts): [string, string][] {
  * `windowLabel` is the calendar's name for the window, when a phrase produced it. It is in
  * the file because the file is the copy somebody acts on away from the screen, and "the
  * night shift" is the interval they will describe it by to the person they hand it to.
+ *
+ * So is the ingest coverage, and for a harder reason: this file is the artefact a part gets
+ * pulled from a pallet on. A window with a gap in it produces a shorter list and an
+ * identical-looking file, and the person acting on it is further from the screen that could
+ * have said so than anybody else in this application.
  */
 function containmentCsv(
   affected: AffectedParts,
   windowLabel: string | null,
+  coverage: Resolution<Coverage>,
 ): string {
   const parts = affected.parts;
   const rows = listedSerials(affected);
@@ -310,6 +395,7 @@ function containmentCsv(
     `# window: ${affected.window.from_ts} to ${affected.window.to_ts}${windowLabel === null ? "" : ` — ${windowLabel}`}, applied to the ${affected.criteria.anchor} instant of each part`,
     `# window selects: ${affected.criteria.window_selects}`,
     `# criteria: ${describeCriteria(affected)}`,
+    ...coverageLines(coverage),
     `# scope: ${affected.parts.total} assemblies — ${groups
       .map(([label, group]) => `${label} ${group.count}`)
       .join(", ")}`,
@@ -324,6 +410,29 @@ function containmentCsv(
     ...rows.map(([serial, outcome]) => `${field(serial)},${outcome}`),
   ];
   return `${lines.join("\n")}\n`;
+}
+
+/** What the file says about ingest coverage, in every state the request can be in.
+ *
+ * Never absent and never optimistic. A file that left the line out while the coverage was
+ * still being read would be indistinguishable from one over a window with nothing missing,
+ * which is precisely the pair §4.4 exists to keep apart.
+ */
+function coverageLines(resolution: Resolution<Coverage>): string[] {
+  if (resolution.state === "opening") {
+    return [
+      "# ingest coverage: not known — it had not come back when this file was made",
+    ];
+  }
+  if (resolution.state === "failed") {
+    return [`# ingest coverage: not known — ${resolution.reason}`];
+  }
+  return [
+    `# ingest coverage: ${coverageVerdict(resolution.value).sentence}`,
+    ...resolution.value.gaps.map(
+      (gap) => `# ingest gap: ${gap.from_ts} to ${gap.to_ts} — ${gap.reason}`,
+    ),
+  ];
 }
 
 /** One CSV field, quoted if it holds anything that would end it early.

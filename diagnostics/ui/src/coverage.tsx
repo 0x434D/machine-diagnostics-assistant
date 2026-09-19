@@ -11,6 +11,11 @@
  * window with no gaps and no rows is a quiet line, a window with no rows because a gap
  * covers all of it is a blackout, and the two are the same empty answer until something
  * counts what is there.
+ *
+ * `CoverageNote` is the rendering of all that, in one place for the same reason the sentence
+ * is: the stop list, one stop, and a containment scope are three readings of an interval,
+ * and three copies of "here is what was and was not observed" is three chances for one of
+ * them to say less than the others.
  */
 import type { Coverage } from "./api";
 
@@ -61,4 +66,38 @@ export function coverageVerdict(coverage: Coverage): CoverageVerdict {
       `${String(coverage.gaps.length)} ingest gap(s): part of this interval is trustworthy ` +
       "and part is not, and an absence inside a gap may be the gateway's rather than the line's.",
   };
+}
+
+/** What was and was not observed over an interval, said where the reader is acting on it.
+ *
+ * `what` names the interval in the reader's terms — *this window*, *the stop itself* — so
+ * the sentence reads as a statement about the thing on screen rather than as a status line.
+ * The gaps are listed under it with their instants and the service's reason, because
+ * "66.7 % covered" tells a reader that part of the interval is untrustworthy and not
+ * **which** part, and which part is the half they can act on.
+ */
+export function CoverageNote({
+  what,
+  coverage,
+}: {
+  what: string;
+  coverage: Coverage;
+}) {
+  return (
+    <>
+      <p className="evidence__note">
+        Coverage over {what}: {coverageVerdict(coverage).sentence}
+      </p>
+      {coverage.gaps.length === 0 ? null : (
+        <ul className="coverage__gaps">
+          {coverage.gaps.map((gap) => (
+            <li key={`${gap.from_ts}:${gap.to_ts}`}>
+              <span className="mono">{gap.from_ts}</span> →{" "}
+              <span className="mono">{gap.to_ts}</span> — {gap.reason}
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
+  );
 }
