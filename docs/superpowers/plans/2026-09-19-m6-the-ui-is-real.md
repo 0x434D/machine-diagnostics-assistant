@@ -62,7 +62,9 @@ whim — which is the distinction CLAUDE.md's "ask before touching contracts/" e
 - **Every request carries a token** (§10.5, M5). Including the ones a chart makes.
 - **Every number is configuration** (§10.3) — the dev issuer's URL, token lifetime, poll
   intervals, page sizes, the containment export's row cap.
-- `make check` green before every commit. `biome` for TypeScript, per the standing ruling.
+- `make check` green before every commit. TypeScript lints with **`oxlint`**, per
+  §10.8 and `docs/ENGINEERING.md` -- which rejects Biome by name and gives three
+  reasons. An earlier draft of this plan said `biome`; it was wrong.
 - **Do not catch an exception you cannot specifically recover from.** A failed fetch in a
   citation renderer is a rendered error state — a deliberate branch on a known condition — not
   a swallowed one that leaves an empty panel looking like "no data".
