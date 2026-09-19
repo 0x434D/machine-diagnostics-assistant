@@ -31,11 +31,15 @@ export const DEFAULT_PHRASE = "this shift";
 
 /** The phrases offered as one click each.
  *
- * A second copy of a list whose original is
- * `analysis.time_expressions.UNDERSTOOD_EXPRESSIONS`, and the copy is deliberately short
- * and deliberately not load-bearing: a phrase this list has wrong is refused by the service
- * with the list of ones it understands, which is on screen a moment later. The free-text
- * box beside these is what reaches the rest of them.
+ * A second copy of part of a list whose original is
+ * `analysis.time_expressions.UNDERSTOOD_EXPRESSIONS`, and deliberately short: the free-text
+ * box beside these is what reaches the rest of them. It stays a copy rather than becoming an
+ * enum in `contracts/` because `/time/resolve` must keep taking an arbitrary string in order
+ * to refuse one and say what would have worked, and a closed enum would delete that.
+ *
+ * `diagnostics/analysis/tests/test_phrase_parity.py` holds every phrase here against the
+ * service's own list, so a phrase renamed there fails a test rather than becoming a chip an
+ * operator clicks and is refused for.
  */
 export const SHIFT_PHRASES = [
   "this shift",
