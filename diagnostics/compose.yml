@@ -107,7 +107,15 @@ services:
       # Every number is configuration (§10.3). The default is what the README and the
       # demo use; override when the host already has something on it.
       - "127.0.0.1:${GATEWAY_PORT:-8080}:8080"
-    networks: [diag-net, field-net] # the only diagnostics container that may join field-net
+    # field-net: the only diagnostics container that may join it, and the invariant is
+    # about *that* list, not about how many networks this container is on.
+    #
+    # edge-net since M6, so the UI's nginx can proxy /status for §7.2's plant banner. Same
+    # forced choice the issuer presented at Task 1, settled the same way (0643ad2): one
+    # container has to gain one network, and widening the browser-facing nginx onto diag-net
+    # -- where Postgres is -- is the wrong one of the two. This adds no reach the host did
+    # not already have, since the port below is published.
+    networks: [diag-net, field-net, edge-net]
 
   analysis:
     <<: *runtime
