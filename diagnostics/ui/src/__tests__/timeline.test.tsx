@@ -23,7 +23,13 @@ import { AuthProvider } from "../AuthContext";
 import { CitationChip } from "../CitationChip";
 import { ENCODINGS } from "../design/stateCategory";
 import { TOKEN_STORAGE_KEY } from "../tokenStorage";
-import type { Coverage, StopDetail, StopList, TimeResolution } from "../api";
+import type {
+  Coverage,
+  PlantStatus,
+  StopDetail,
+  StopList,
+  TimeResolution,
+} from "../api";
 
 const TOKEN = "dev-token-123";
 
@@ -197,6 +203,22 @@ const RESOLUTION: TimeResolution = {
   now: "2026-09-12T06:00:00Z",
 };
 
+/** What the shell's plant status banner reads.
+ *
+ * Answered separately from this view's endpoints, and that is not tidiness: the banner
+ * stands over every view now, so a stub that handed it a stop list — or a refusal meant for
+ * `/time/resolve` — would put this view's own sentences on the screen a second time, under a
+ * heading about the plant.
+ */
+const PLANT_STATUS: PlantStatus = {
+  state: "live",
+  lastEventSourceTs: WINDOW.to_ts,
+  backfillProgress: 1,
+  queueDepth: 0,
+  overflowCount: 0,
+  clockAvailable: true,
+};
+
 /** Every endpoint this view reaches, answering with the fixtures above. */
 function stub(bodies: {
   list?: StopList;
@@ -204,11 +226,13 @@ function stub(bodies: {
   resolution?: TimeResolution;
 }): ReturnType<typeof vi.fn> {
   const fetchMock = vi.fn((url: string) => {
-    const body = url.includes("/time/resolve")
-      ? (bodies.resolution ?? RESOLUTION)
-      : /\/stops\/[^?]/.test(url)
-        ? (bodies.detail ?? DETAIL)
-        : (bodies.list ?? listOf(COMPLETE));
+    const body = url.startsWith("/api/gateway")
+      ? PLANT_STATUS
+      : url.includes("/time/resolve")
+        ? (bodies.resolution ?? RESOLUTION)
+        : /\/stops\/[^?]/.test(url)
+          ? (bodies.detail ?? DETAIL)
+          : (bodies.list ?? listOf(COMPLETE));
     return Promise.resolve(
       new Response(JSON.stringify(body), {
         headers: { "Content-Type": "application/json" },
@@ -217,6 +241,19 @@ function stub(bodies: {
   });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
+}
+
+/** Which URLs this view asked the **analysis service** for.
+ *
+ * The shell stands a plant status banner over every view, and it reads the edge gateway —
+ * so `fetch` is called on arrival at any address and "nothing was read" can no longer be a
+ * statement about `fetch`. What these tests pin is that no window means no history is read,
+ * which is a claim about the service the history lives in.
+ */
+function readFromAnalysis(fetchMock: ReturnType<typeof vi.fn>): string[] {
+  return fetchMock.mock.calls
+    .map((call) => String(call[0]))
+    .filter((url) => url.startsWith("/api/analysis"));
 }
 
 function at(address: string) {
@@ -451,7 +488,7 @@ test("no window means nothing is read", async () => {
   at("/timeline");
 
   expect(await screen.findByText(/No window yet/)).toBeInTheDocument();
-  expect(fetchMock).not.toHaveBeenCalled();
+  expect(readFromAnalysis(fetchMock)).toEqual([]);
 });
 
 test("a phrase is resolved by the shift calendar and not by the browser", async () => {
@@ -468,7 +505,7 @@ test("a phrase is resolved by the shift calendar and not by the browser", async 
   fireEvent.click(screen.getByRole("button", { name: "Resolve" }));
 
   await waitFor(() => {
-    expect(fetchMock.mock.calls[0]?.[0]).toContain(
+    expect(readFromAnalysis(fetchMock)[0]).toContain(
       "/time/resolve?expression=last+night",
     );
   });
@@ -489,19 +526,26 @@ test("a phrase the calendar does not understand is answered with the ones it doe
   // The service refuses rather than guessing, and puts every expression that would have
   // worked in the refusal. Collapsing that into "422" would throw away the half a reader
   // can act on.
+  // By URL: the refusal belongs to `/time/resolve`, and handing it to the shell's plant
+  // status banner as well would put the list of understood phrases on the screen twice.
   vi.stubGlobal(
     "fetch",
-    vi.fn(() =>
+    vi.fn((url: string) =>
       Promise.resolve(
-        new Response(
-          JSON.stringify({
-            detail: {
-              message: "no understood time expression matches 'yesterdayish'",
-              understood: ["last night", "last shift", "yesterday"],
-            },
-          }),
-          { status: 422, headers: { "Content-Type": "application/json" } },
-        ),
+        url.startsWith("/api/gateway")
+          ? new Response(JSON.stringify(PLANT_STATUS), {
+              headers: { "Content-Type": "application/json" },
+            })
+          : new Response(
+              JSON.stringify({
+                detail: {
+                  message:
+                    "no understood time expression matches 'yesterdayish'",
+                  understood: ["last night", "last shift", "yesterday"],
+                },
+              }),
+              { status: 422, headers: { "Content-Type": "application/json" } },
+            ),
       ),
     ),
   );
@@ -531,7 +575,7 @@ test("something that is not an instant is refused rather than parsed loosely", a
   fireEvent.click(screen.getByRole("button", { name: "Show stops" }));
 
   expect(await screen.findByText(/is not an instant/)).toBeInTheDocument();
-  expect(fetchMock).not.toHaveBeenCalled();
+  expect(readFromAnalysis(fetchMock)).toEqual([]);
 });
 
 test("choosing a stop reads that stop, and the window stays in the address", async () => {

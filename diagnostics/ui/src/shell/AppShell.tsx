@@ -8,12 +8,13 @@
  * stylesheet insists on more width than `--viewport-min`.
  *
  * What is fixed here and shared by every view: where the identity is, where the navigation
- * is, and the key to the colour language. A view that moved any of them would be teaching
- * the reader a second application.
+ * is, whether what is being read is current, and the key to the colour language. A view that
+ * moved any of them would be teaching the reader a second application.
  */
 import { NavLink, Outlet } from "react-router";
 
 import { StateLegend } from "../design/StateLegend";
+import { PlantStatusBanner } from "../plant/PlantStatusBanner";
 import { IdentityBadge } from "./IdentityBadge";
 import { ROUTES } from "./routes";
 
@@ -50,6 +51,13 @@ export function AppShell() {
           ))}
         </ul>
       </nav>
+
+      {/* Over every view rather than over the answer alone. §7.2's reading qualifies a stop
+          timeline and a part record exactly as much as it qualifies an answer: all four are
+          read as current until something says the boundary is not. */}
+      <div className="shell__plant">
+        <PlantStatusBanner />
+      </div>
 
       <main className="shell__view" id="view">
         <Outlet />

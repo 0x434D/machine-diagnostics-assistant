@@ -52,6 +52,18 @@ function search() {
   );
 }
 
+/** Which URLs the view asked the **analysis service** for.
+ *
+ * The shell's plant status banner reads the edge gateway on arrival at every address, so
+ * "nothing was looked up" is a claim about the service the serial would be looked up in
+ * rather than about `fetch`.
+ */
+function lookedUp(fetchMock: ReturnType<typeof vi.fn>): string[] {
+  return fetchMock.mock.calls
+    .map((call) => String(call[0]))
+    .filter((url) => url.startsWith("/api/analysis"));
+}
+
 function lookUp(serial: string): void {
   fireEvent.change(screen.getByLabelText("Serial"), {
     target: { value: serial },
@@ -153,5 +165,5 @@ test("nothing is looked up before a serial is given", () => {
   search();
 
   expect(screen.getByRole("button", { name: "Search" })).toBeDisabled();
-  expect(fetchMock).not.toHaveBeenCalled();
+  expect(lookedUp(fetchMock)).toEqual([]);
 });

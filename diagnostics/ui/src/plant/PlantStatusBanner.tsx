@@ -11,14 +11,12 @@
  * collapsed them would report the one outage as the other. Colour is never the only channel
  * (ISA-101): every reading below is a word, a glyph and a hue.
  *
- * **It stands over the answer and not over the whole shell, and that is not where it
- * belongs.** The reading qualifies the stop timeline and the part record exactly as much as
- * it qualifies an answer, so `AppShell` is its home. It is here because three view tests
- * written before it assert `expect(fetchMock).not.toHaveBeenCalled()` and index
- * `mock.calls[0]`, which a shell-level request makes false — and two of those files were
- * being edited in other worktrees while this was written. Moving it is one line in
- * `AppShell`, one row on `.shell`'s grid, and scoping those assertions to the analysis
- * service. See this task's report.
+ * **It stands over the whole shell rather than over the answer.** The reading qualifies the
+ * stop timeline and the part record exactly as much as it qualifies an answer, so `AppShell`
+ * is its home — which means every view now issues one request this application did not make
+ * before. The three view tests that assert *nothing was read* say so about the analysis
+ * service rather than about `fetch`, because "no window means no history is read" was always
+ * the claim and "this screen makes no request at all" never was.
  */
 import { useEffect, useState, type ReactNode } from "react";
 

@@ -102,6 +102,20 @@ test("an address with no view says there is no view, not that there is no data",
   expect(screen.getByText("No such view")).toBeInTheDocument();
 });
 
+test("the plant's status stands over every view, not only over the answer", () => {
+  // §7.2's reading — *is what I am reading current?* — qualifies a stop timeline and a
+  // containment set exactly as much as it qualifies an answer, and it lived on the Ask view
+  // alone until this. Signed out on purpose: the banner then says it has not asked rather
+  // than reaching the gateway, which is the reading, and where it is rendered is the claim.
+  for (const at of ["/", "/timeline", "/containment"]) {
+    const { unmount } = app(at);
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Plant status not read",
+    );
+    unmount();
+  }
+});
+
 test("the key to the colour language is reachable from every view", () => {
   for (const at of ["/", "/timeline", "/containment"]) {
     const { unmount } = app(at);

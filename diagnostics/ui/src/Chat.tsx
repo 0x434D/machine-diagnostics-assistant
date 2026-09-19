@@ -14,7 +14,6 @@ import { ReasoningTrace } from "./answer/ReasoningTrace";
 import { useAuth } from "./AuthContext";
 import { CitationChip } from "./CitationChip";
 import { ExchangeProvider, type Exchange } from "./citations/exchange";
-import { PlantStatusBanner } from "./plant/PlantStatusBanner";
 
 const EXAMPLE =
   "How many parts were rejected in the last hour, and what were the defects?";
@@ -67,11 +66,6 @@ export function Chat() {
 
   return (
     <section className="chat">
-      {/* Above the question, not under the answer: which of the three situations the
-          boundary is in changes how the answer that follows should be read, and a reader
-          who meets it afterwards has already read the answer without it. */}
-      <PlantStatusBanner />
-
       <form onSubmit={submit}>
         <label htmlFor="question">Ask the line</label>
         <textarea

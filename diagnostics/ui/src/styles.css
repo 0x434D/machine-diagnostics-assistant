@@ -47,7 +47,10 @@ a {
 
 .shell {
   display: grid;
-  grid-template-rows: auto auto 1fr auto;
+  /* Bar, navigation, plant status, view, footer. The status is a row of the frame rather
+     than the first thing in a view, because it says whether what the view shows is current
+     and that is true of every view. */
+  grid-template-rows: auto auto auto 1fr auto;
   min-height: 100dvh;
 }
 
@@ -133,6 +136,16 @@ a {
   color: var(--text);
   font-weight: var(--weight-medium);
   box-shadow: inset 0 calc(-1 * var(--border-width-strong)) 0 0 var(--accent);
+}
+
+/* The same column as the view beneath it, so the banner and the thing it qualifies read as
+   one page rather than as a strip bolted above one. The gap below it is the view's own top
+   padding. */
+.shell__plant {
+  margin-inline: auto;
+  max-width: var(--measure-wide);
+  padding: var(--space-5) var(--space-4) 0;
+  width: 100%;
 }
 
 .shell__view {
@@ -871,7 +884,6 @@ button:disabled {
   display: flex;
   flex-wrap: wrap;
   gap: var(--space-1) var(--space-2);
-  margin-bottom: var(--space-4);
   padding: var(--space-2) var(--space-3);
 }
 

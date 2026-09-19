@@ -18,7 +18,12 @@ import { MemoryRouter } from "react-router";
 import { AppRoutes } from "../App";
 import { AuthProvider } from "../AuthContext";
 import { TOKEN_STORAGE_KEY } from "../tokenStorage";
-import type { AffectedParts, LineStatus, TimeResolution } from "../api";
+import type {
+  AffectedParts,
+  LineStatus,
+  PlantStatus,
+  TimeResolution,
+} from "../api";
 
 /** What `/time/resolve` makes of "this shift" — the phrase the form opens on. */
 const RESOLUTION: TimeResolution = {
@@ -41,6 +46,18 @@ const LINE_STATUS: LineStatus = {
   buffers: [],
   active_alarms: [],
   last_part_out: null,
+};
+
+/** What the shell's plant status banner reads. It stands over every view, so a stub that
+ * handed it a containment scope would render this view's own sentences under a heading about
+ * the plant. */
+const PLANT_STATUS: PlantStatus = {
+  state: "live",
+  lastEventSourceTs: "2026-09-12T10:00:00Z",
+  backfillProgress: 1,
+  queueDepth: 0,
+  overflowCount: 0,
+  clockAvailable: true,
 };
 
 const AFFECTED: AffectedParts = {
@@ -94,7 +111,7 @@ function json(body: unknown, status: number): Response {
   });
 }
 
-/** The three endpoints this view reads, answered by URL.
+/** The endpoints this screen reads, answered by URL.
  *
  * One mock returning one body for every request would let a test pass with the window read
  * from the wrong response, which is the failure this file exists to catch.
@@ -111,6 +128,9 @@ function stub(
   const refuses = options.refuses ?? [];
   const fetchMock = vi.fn((input: unknown) => {
     const url = String(input);
+    if (url.startsWith("/api/gateway")) {
+      return Promise.resolve(json(PLANT_STATUS, 200));
+    }
     if (url.includes("/time/resolve")) {
       const expression =
         new URL(url, "http://localhost").searchParams.get("expression") ?? "";
