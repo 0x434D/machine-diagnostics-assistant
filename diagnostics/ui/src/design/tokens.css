@@ -1,0 +1,207 @@
+/* The visual language, as values. Nothing else in this application writes a colour, a size
+   or a shadow — components read these and only these, so the language can be changed in one
+   place and a component cannot quietly invent a sixth grey.
+
+   **This is the one file §7 lets the two frontends share, and it is shared by COPY.** A
+   shared npm package spanning `plant/` and `diagnostics/` would be a build-time coupling
+   between two stacks whose entire point is that they have none, so `plant/hmi/` gets a
+   duplicate of this file when it is restyled — never an import across the boundary.
+
+   Light and dark are both first-class. `prefers-color-scheme` rather than a toggle: a tablet
+   at the line and a desk browser are the same application (§7.2) and the operating system
+   already knows which one is standing in a dark hall. */
+
+:root {
+  color-scheme: light dark;
+
+  /* --- Type ------------------------------------------------------------------------- */
+  --font-sans: ui-sans-serif, system-ui, sans-serif;
+  /* Numbers that must line up: timestamps, serials, counts, tool arguments. A diagnostic
+     screen compares figures down a column more often than it reads them in a sentence. */
+  --font-mono:
+    ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-md: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: 1.5rem;
+  --text-2xl: 2rem;
+
+  --leading-tight: 1.25;
+  --leading-normal: 1.5;
+
+  --weight-regular: 400;
+  --weight-medium: 600;
+  --weight-bold: 700;
+
+  /* --- Space ------------------------------------------------------------------------ */
+  /* One 4px-based scale. Every gap and pad on the screen is a step on it, which is what
+     makes two views written by two later tasks look like one application. */
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-5: 1.5rem;
+  --space-6: 2rem;
+  --space-7: 3rem;
+
+  /* --- Density ---------------------------------------------------------------------- */
+  /* Not a user preference — a pointer fact. §7.2 puts the same application on a tablet at
+     the line and on a desk, and a 36px control that is comfortable under a mouse is a
+     mis-tap under a gloved thumb. The coarse-pointer override below is the whole of the
+     "tablet build" this project does not need to have. */
+  --control-height: 2.25rem;
+  --control-padding-inline: var(--space-3);
+  --row-gap: var(--space-2);
+
+  /* --- Shape ------------------------------------------------------------------------ */
+  --radius-sm: 0.25rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.875rem;
+  --radius-pill: 999px;
+  --border-width: 1px;
+  /* The bar down the side of anything carrying a state category. Thick enough to read as
+     a colour at arm's length on a tablet, which a 1px border is not. */
+  --border-width-marker: 5px;
+  /* An emphasis rule — the underline under the current navigation item, say. Heavier than
+     a hairline so it reads as a statement, lighter than the category marker so the two
+     cannot be confused for each other. */
+  --border-width-strong: 3px;
+
+  /* --- Motion ----------------------------------------------------------------------- */
+  --motion-fast: 90ms;
+  --motion-normal: 180ms;
+  --motion-ease: cubic-bezier(0.2, 0, 0.2, 1);
+
+  /* --- Layout ----------------------------------------------------------------------- */
+  --measure-prose: 44rem;
+  --measure-wide: 80rem;
+  /* A single short control: a token field, a serial box. Narrow enough that it does not
+     read as a paragraph-width input for a twelve-character value. */
+  --measure-field: 16rem;
+  /* The narrowest viewport this layout supports, and it is a contract rather than a note:
+     `src/__tests__/layout.test.tsx` reads this value out of the stylesheet and fails on any
+     rule that insists on more width than it. A phone at the line is a browser client like
+     any other (§7.2). */
+  --viewport-min: 20rem;
+
+  /* --- Elevation -------------------------------------------------------------------- */
+  --elevation-0: none;
+  --elevation-1: 0 1px 2px rgb(31 35 40 / 12%);
+  --elevation-2: 0 2px 8px rgb(31 35 40 / 14%);
+  --elevation-3: 0 8px 24px rgb(31 35 40 / 18%);
+
+  /* --- Colour: surfaces and text ---------------------------------------------------- */
+  --surface: #ffffff;
+  --surface-raised: #f6f8fa;
+  --surface-sunken: #eef1f4;
+  --border: #d0d7de;
+  --border-strong: #8c959f;
+
+  --text: #1f2328;
+  --text-muted: #59636e;
+  --text-faint: #818b98;
+
+  --accent: #0b62d1;
+  --accent-text: #ffffff;
+  --accent-tint: #ddeaff;
+
+  --danger: #b42318;
+  --danger-tint: #ffe9e6;
+
+  --focus-ring: #0b62d1;
+  --focus-ring-width: 2px;
+  --focus-ring-offset: 2px;
+
+  /* --- Colour: §15's five categories ------------------------------------------------ */
+  /* Colour by *category*, not by state. `Suspended` is a consequence — someone else
+     stopped — while `Held` and `Aborted` are cause candidates (§3.3), and §5.4's whole
+     derivation is that distinction. Amber on the stations merely waiting and red on the
+     one that is actually broken means the screen teaches the diagnostic model instead of
+     decorating it.
+
+     The hues match plant/hmi/src/styles.css deliberately: a viewer who reads both screens
+     should have one colour language to learn, not two. */
+  --category-producing: #1a7f37;
+  --category-producing-tint: #e6f4ea;
+  --category-waiting-on-others: #9a6700;
+  --category-waiting-on-others-tint: #fff4d6;
+  --category-held-by-own-fault: #b42318;
+  --category-held-by-own-fault-tint: #ffe9e6;
+  --category-stopped: #57606a;
+  --category-stopped-tint: #eef1f4;
+  --category-transitioning: #0b62d1;
+  --category-transitioning-tint: #ddeaff;
+
+  /* A PackML state this application does not recognise. Deliberately a colour no plant
+     screen would ever legitimately show, for the same reason plant/hmi/ does it: a grey
+     fallback renders an unmapped state as a perfectly plausible "stopped" tile and nothing
+     anywhere fails. The screen says "I do not know this state" in a colour that cannot be
+     mistaken for knowing it. */
+  --category-unknown: #ff00ff;
+  --category-unknown-tint: #ffe6ff;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --surface: #0d1117;
+    --surface-raised: #161b22;
+    --surface-sunken: #010409;
+    --border: #30363d;
+    --border-strong: #6e7681;
+
+    --text: #e6edf3;
+    --text-muted: #9198a1;
+    --text-faint: #6e7681;
+
+    --accent: #5aa0ff;
+    --accent-text: #06111f;
+    --accent-tint: #10243e;
+
+    --danger: #ff7b72;
+    --danger-tint: #2a1513;
+
+    --focus-ring: #5aa0ff;
+
+    /* Shadows carry almost nothing on a dark ground; the borders do the separating there,
+       so these fall back to a hairline glow rather than pretending to lift. */
+    --elevation-1: 0 1px 2px rgb(1 4 9 / 60%);
+    --elevation-2: 0 2px 8px rgb(1 4 9 / 70%);
+    --elevation-3: 0 8px 24px rgb(1 4 9 / 80%);
+
+    /* Lightened for contrast against a dark surface, same five hues. */
+    --category-producing: #3fb950;
+    --category-producing-tint: #10301a;
+    --category-waiting-on-others: #d29922;
+    --category-waiting-on-others-tint: #33260a;
+    --category-held-by-own-fault: #ff7b72;
+    --category-held-by-own-fault-tint: #3a1512;
+    --category-stopped: #8b949e;
+    --category-stopped-tint: #1c2128;
+    --category-transitioning: #5aa0ff;
+    --category-transitioning-tint: #10243e;
+
+    --category-unknown-tint: #3a0c3a;
+  }
+}
+
+/* The tablet at the line. `pointer: coarse` is the browser saying the input is a finger. */
+@media (pointer: coarse) {
+  :root {
+    --control-height: 2.75rem;
+    --control-padding-inline: var(--space-4);
+    --row-gap: var(--space-3);
+  }
+}
+
+/* Live data moves; §15 asks whether motion belongs on it at all. This answers the half that
+   is not a taste question: a reader who has asked the system not to animate is not overruled
+   by a progress list that slides. The override comes after the defaults because these are
+   equal-specificity `:root` rules, and the last one written is the one that wins. */
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms;
+    --motion-normal: 0ms;
+  }
+}

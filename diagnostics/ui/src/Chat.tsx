@@ -1,9 +1,9 @@
 /** One question, the steps it took, and the answer.
  *
- * Visual design is deliberately minimal. §15 defers the frontend design language until
- * after M4, on the grounds that a layout cannot be designed for content whose shape has
- * not been seen — M1 is where that shape first becomes visible, and the job here is to
- * record it rather than decorate it.
+ * Behaviour is M1's and unchanged. What moved at M6 is where it sits: §15 deferred the
+ * frontend design language until the shape of an answer could be seen, that shape is now
+ * an artifact, and this view is one of several in an application rather than the whole of
+ * it. So it renders a `<section>` and the shell renders the `<main>` around it.
  */
 import { useState, type ReactNode } from "react";
 
@@ -52,7 +52,7 @@ export function Chat() {
   }
 
   return (
-    <main>
+    <section className="chat">
       <form onSubmit={submit}>
         <label htmlFor="question">Ask the line</label>
         <textarea
@@ -81,7 +81,7 @@ export function Chat() {
       )}
 
       {answer === null ? null : <AnswerView answer={answer} />}
-    </main>
+    </section>
   );
 }
 

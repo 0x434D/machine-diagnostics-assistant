@@ -1,102 +1,431 @@
-/* Minimal on purpose (§15): the frontend design language is deferred until after M4,
-   because a layout cannot be designed for content whose shape has not been seen. This is
-   enough to read an answer and no more. */
-:root {
-  color-scheme: light dark;
-  font-family: ui-sans-serif, system-ui, sans-serif;
-  line-height: 1.5;
+/* The application, in the language `design/tokens.css` defines.
+ *
+ * Every colour, size, radius and shadow below is a `var(--…)`. That is the contract, not a
+ * convention: a literal here is a decision made in a stylesheet instead of in the token
+ * file, and the next view written by the next task would not know about it.
+ *
+ * Nothing here insists on more horizontal space than `--viewport-min`, and
+ * `__tests__/layout.test.tsx` fails on any rule that starts to — §7.2's tablet at the line
+ * is the same application as the browser on the desk, so a phone-width viewport is a
+ * supported one and not a degraded one. */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  font-family: var(--font-sans);
+  font-size: var(--text-md);
+  line-height: var(--leading-normal);
+  /* The one global guard behind the layout test: a child that manages to demand more width
+     than the viewport is clipped rather than allowed to push the whole page sideways. */
+  overflow-x: hidden;
 }
 
 body {
-  margin: 0 auto;
-  max-width: 44rem;
-  padding: 2rem 1rem;
+  background: var(--surface);
+  color: var(--text);
+  margin: 0;
 }
 
-header p {
-  color: GrayText;
+a {
+  color: var(--accent);
+}
+
+:focus-visible {
+  outline: var(--focus-ring-width) solid var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.mono {
+  font-family: var(--font-mono);
+}
+
+/* --- The shell ---------------------------------------------------------------------- */
+
+.shell {
+  display: grid;
+  grid-template-rows: auto auto 1fr auto;
+  min-height: 100dvh;
+}
+
+.shell__skip {
+  background: var(--surface-raised);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-sm);
+  left: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  position: absolute;
+  top: calc(-1 * var(--space-7));
+  z-index: 2;
+}
+
+.shell__skip:focus-visible {
+  top: var(--space-2);
+}
+
+.shell__bar {
+  align-items: baseline;
+  background: var(--surface-raised);
+  border-bottom: var(--border-width) solid var(--border);
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-3) var(--space-5);
+  justify-content: space-between;
+  padding: var(--space-4);
+}
+
+.shell__brand {
+  display: grid;
+  gap: var(--space-1);
+}
+
+.shell__title {
+  font-size: var(--text-lg);
+  font-weight: var(--weight-bold);
+  line-height: var(--leading-tight);
+}
+
+.shell__claim {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  max-width: var(--measure-prose);
+}
+
+.shell__nav {
+  background: var(--surface-raised);
+  border-bottom: var(--border-width) solid var(--border);
+  padding: 0 var(--space-4) var(--space-2);
+}
+
+.shell__nav ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.shell__nav a {
+  border-radius: var(--radius-md);
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  min-height: var(--control-height);
+  padding: 0 var(--control-padding-inline);
+  text-decoration: none;
+}
+
+.shell__nav a:hover {
+  background: var(--surface-sunken);
+  color: var(--text);
+}
+
+/* `aria-current` rather than a class of our own: the router already marks the current
+   link that way, and styling the attribute means the colour and the thing a screen reader
+   announces cannot drift apart. The underline is the second channel — the colour is not
+   the only thing saying which view you are on. */
+.shell__nav a[aria-current="page"] {
+  background: var(--accent-tint);
+  color: var(--text);
+  font-weight: var(--weight-medium);
+  box-shadow: inset 0 calc(-1 * var(--border-width-strong)) 0 0 var(--accent);
+}
+
+.shell__view {
+  margin-inline: auto;
+  max-width: var(--measure-wide);
+  padding: var(--space-5) var(--space-4);
+  width: 100%;
+}
+
+.shell__footer {
+  border-top: var(--border-width) solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  padding: var(--space-3) var(--space-4);
+}
+
+/* --- Identity ----------------------------------------------------------------------- */
+
+.identity {
+  display: grid;
+  gap: var(--space-1);
+  justify-items: start;
+}
+
+.identity__who {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.identity__subject {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+
+.identity__role {
+  background: var(--accent-tint);
+  border-radius: var(--radius-pill);
+  color: var(--text);
+  font-size: var(--text-xs);
+  padding: 0 var(--space-2);
 }
 
 .token-field {
   display: grid;
-  gap: 0.25rem;
-  margin-top: 0.75rem;
-  font-size: 0.85em;
-  max-width: 16rem;
+  font-size: var(--text-sm);
+  gap: var(--space-1);
+  max-width: var(--measure-field);
 }
 
 .token-field__status {
-  color: GrayText;
+  color: var(--text-muted);
 }
 
-form {
+/* --- The state language ------------------------------------------------------------- */
+
+/* Three channels for one fact. The border colour is the category, the glyph is a distinct
+   shape, and the state name and the category label are words. Remove the colour and the
+   badge still says which of the five it is — which is the requirement, not a nicety. */
+.state-badge {
+  align-items: baseline;
+  background: var(--category-unknown-tint);
+  border-inline-start: var(--border-width-marker) solid var(--category-unknown);
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  padding: var(--space-1) var(--space-2);
+}
+
+.state-badge[data-category="producing"] {
+  background: var(--category-producing-tint);
+  border-inline-start-color: var(--category-producing);
+}
+
+.state-badge[data-category="waiting-on-others"] {
+  background: var(--category-waiting-on-others-tint);
+  border-inline-start-color: var(--category-waiting-on-others);
+}
+
+.state-badge[data-category="held-by-own-fault"] {
+  background: var(--category-held-by-own-fault-tint);
+  border-inline-start-color: var(--category-held-by-own-fault);
+}
+
+.state-badge[data-category="stopped"] {
+  background: var(--category-stopped-tint);
+  border-inline-start-color: var(--category-stopped);
+}
+
+.state-badge[data-category="transitioning"] {
+  background: var(--category-transitioning-tint);
+  border-inline-start-color: var(--category-transitioning);
+}
+
+.state-badge__glyph {
+  font-size: var(--text-sm);
+  line-height: var(--leading-tight);
+}
+
+.state-badge__state {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.state-badge__category,
+.state-badge__reason {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.state-badge__reason {
+  font-family: var(--font-mono);
+}
+
+.legend {
+  max-width: var(--measure-wide);
+}
+
+.legend summary {
+  cursor: pointer;
+  min-height: var(--control-height);
+}
+
+.legend__lede {
+  color: var(--text-muted);
+  max-width: var(--measure-prose);
+}
+
+.legend__list {
   display: grid;
-  gap: 0.5rem;
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.legend__row {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.legend__row dt,
+.legend__row dd {
+  margin: 0;
+}
+
+.legend__states {
+  color: var(--text-faint);
+  display: block;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+/* --- Views -------------------------------------------------------------------------- */
+
+.placeholder__note {
+  border-inline-start: var(--border-width-marker) solid var(--border-strong);
+  color: var(--text-muted);
+  max-width: var(--measure-prose);
+  padding-inline-start: var(--space-3);
+}
+
+.chat {
+  max-width: var(--measure-prose);
+}
+
+.chat form {
+  display: grid;
+  gap: var(--space-2);
 }
 
 textarea {
+  background: var(--surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
   font: inherit;
-  padding: 0.5rem;
+  padding: var(--space-2);
+  width: 100%;
+}
+
+input {
+  background: var(--surface);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  font: inherit;
+  min-height: var(--control-height);
+  padding: 0 var(--space-2);
+  width: 100%;
 }
 
 button {
+  background: var(--accent);
+  border: var(--border-width) solid transparent;
+  border-radius: var(--radius-md);
+  color: var(--accent-text);
   font: inherit;
   justify-self: start;
-  padding: 0.4rem 1rem;
+  min-height: var(--control-height);
+  padding: 0 var(--control-padding-inline);
+}
+
+button:disabled {
+  background: var(--surface-sunken);
+  border-color: var(--border);
+  color: var(--text-faint);
 }
 
 .progress {
-  color: GrayText;
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
   font-variant-numeric: tabular-nums;
 }
 
 .error {
-  border-left: 3px solid crimson;
-  padding-left: 0.75rem;
+  background: var(--danger-tint);
+  border-inline-start: var(--border-width-marker) solid var(--danger);
+  border-radius: var(--radius-sm);
+  padding: var(--space-2) var(--space-3);
 }
 
 .answer {
-  border-top: 1px solid GrayText;
-  margin-top: 1.5rem;
+  border-top: var(--border-width) solid var(--border);
+  margin-top: var(--space-5);
 }
 
 .citation__chip {
-  border: 1px solid GrayText;
-  border-radius: 1rem;
-  font-size: 0.85em;
-  padding: 0.1rem 0.6rem;
+  background: var(--surface-raised);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-pill);
+  color: var(--text);
+  font-size: var(--text-sm);
+  min-height: var(--control-height);
+  padding: 0 var(--space-3);
+}
+
+.citation__detail {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
 }
 
 .evidence {
-  border: 1px solid GrayText;
+  background: var(--surface-raised);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-1);
   display: block;
-  margin: 0.5rem 0;
-  padding: 0.75rem;
+  margin: var(--space-2) 0;
+  padding: var(--space-3);
 }
 
 .evidence dl,
 .trace dl {
   display: grid;
+  gap: var(--space-1) var(--space-4);
   grid-template-columns: max-content 1fr;
-  gap: 0.1rem 1rem;
   margin: 0;
+}
+
+.evidence dd,
+.trace dd {
+  margin: 0;
+  overflow-wrap: anywhere;
 }
 
 .evidence dt,
 .trace dt {
-  color: GrayText;
+  color: var(--text-muted);
 }
 
 .evidence img {
+  border-radius: var(--radius-sm);
+  margin-top: var(--space-3);
   max-width: 100%;
-  margin-top: 0.75rem;
 }
 
 .evidence__image-error {
-  color: GrayText;
-  margin: 0.75rem 0 0;
+  color: var(--text-muted);
+  margin: var(--space-3) 0 0;
 }
 
 .trace {
-  margin: 1rem 0;
+  margin: var(--space-4) 0;
+}
+
+.trace summary {
+  cursor: pointer;
+  min-height: var(--control-height);
 }

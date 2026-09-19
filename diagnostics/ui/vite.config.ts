@@ -27,5 +27,10 @@ export default defineConfig({
     // Handbook §2: vitest 5 defaults this to true. Stated so that reading the config tells
     // you what happens between tests, rather than requiring you to know the default.
     clearMocks: true,
+    // Vitest replaces every CSS import with an empty module by default, which also empties
+    // a `?raw` one. `src/__tests__/layout.test.tsx` reads the stylesheet as text -- jsdom
+    // performs no layout, so the only way to check that nothing demands more width than a
+    // phone has is to read the declarations themselves -- and it reads nothing without this.
+    css: true,
   },
 });
