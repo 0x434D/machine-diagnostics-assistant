@@ -41,10 +41,8 @@ import pytest
 import pytest_asyncio
 import uvicorn
 from agent.answer import Answer
-from agent.classify import CLASSIFY_TOOL
 from agent.config import Settings
 from agent.pipeline import run
-from agent.provider import ProviderReply
 from agent.providers_scripted import ScriptedProvider
 from analysis.app import app as analysis_app
 from analysis.config import Settings as AnalysisSettings
@@ -55,6 +53,11 @@ from psycopg import Connection, sql
 from psycopg.conninfo import make_conninfo
 from pydantic import ValidationError
 from testcontainers.postgres import PostgresContainer
+
+# The *provider* double, and nothing else from that module: the analysis service below is
+# the real one, over a socket, against real Postgres. What is shared is the thing that
+# invents, which both suites need and neither should own a private copy of.
+from .fakes import InventingProvider
 
 pytestmark = pytest.mark.authenticity
 
@@ -245,34 +248,6 @@ async def analysis_service(seeded: str) -> AsyncIterator[str]:
         running.should_exit = True
         await serving
         analysis_app.dependency_overrides.clear()
-
-
-class InventingProvider:
-    """A model that invents, so that the guards have something real to refuse.
-
-    §1 asks for a proof that would fail if the link were a facade, and a guard can only be
-    shown to hold by handing it the thing it exists to stop. Classification is delegated to
-    the scripted provider rather than stubbed, so the answer these proofs inspect came
-    through the same eight stages every other answer does and differs in exactly one place:
-    what the model said at the end.
-    """
-
-    name = "inventing"
-
-    def __init__(self, final: dict[str, object]) -> None:
-        self._final = final
-        self.finals = 0
-
-    async def call(
-        self,
-        system: str,
-        messages: list[dict[str, object]],
-        tools: list[dict[str, object]],
-    ) -> ProviderReply:
-        if [str(tool.get("name")) for tool in tools] == [CLASSIFY_TOOL["name"]]:
-            return await ScriptedProvider().call(system, messages, tools)
-        self.finals += 1
-        return ProviderReply(final=dict(self._final))
 
 
 def finding(

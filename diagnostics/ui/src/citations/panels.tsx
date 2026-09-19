@@ -8,10 +8,9 @@
  * service says a thing is unknown, absent or incomplete, the panel says which of the three
  * — §4.4 and §6.5 both rest on those not collapsing into a blank.
  */
-import { Fragment, useState } from "react";
+import { Fragment } from "react";
 
 import {
-  CITATION_WINDOW_HOURS,
   fetchAlarm,
   fetchComponentAssembly,
   fetchKnowledgeDocument,
@@ -19,11 +18,10 @@ import {
   fetchPatterns,
   fetchSignalTrend,
   fetchStop,
-  recentWindow,
   type LotParts,
   type StopDetail,
-  type TimeWindow,
 } from "../api";
+import type { CitationWindow } from "../generated/answer";
 import { StateBadge } from "../design/StateBadge";
 import { CitationPanel, NotInTheAnswer } from "./CitationPanel";
 import { PartLinks } from "./PartLinks";
@@ -330,14 +328,16 @@ function Outcomes({ parts }: { parts: LotParts["parts"] }) {
 export function PatternPanel({
   dimension,
   value,
+  window,
 }: {
   dimension: string;
   /** §7.3 spells this `key`, which JSX reserves. The value of the dimension: carrier `7`. */
   value: string;
+  /** The interval the claim was made over, as the citation carries it (§7.3). */
+  window: CitationWindow;
 }) {
-  const [window] = useState(citationWindow);
   const resolution = useResolution(
-    `patterns:${window.from}:${window.to}`,
+    `patterns:${window.from_ts}:${window.to_ts}`,
     (token) => fetchPatterns(window, token),
   );
 
@@ -420,13 +420,15 @@ export function PatternPanel({
 export function SignalPanel({
   station,
   signal,
+  window,
 }: {
   station: string;
   signal: string;
+  /** The interval the claim was made over, as the citation carries it (§7.3). */
+  window: CitationWindow;
 }) {
-  const [window] = useState(citationWindow);
   const resolution = useResolution(
-    `trend:${station}:${signal}:${window.from}:${window.to}`,
+    `trend:${station}:${signal}:${window.from_ts}:${window.to_ts}`,
     (token) => fetchSignalTrend(station, signal, window, token),
   );
 
@@ -525,24 +527,19 @@ export function ContainmentPanel({ serials }: { serials: readonly string[] }) {
 
 // --- shared bits -------------------------------------------------------------------------
 
-/** The interval a citation that carries none of its own is opened over.
+/** Which interval the panel below is a reading of.
  *
- * Read once when the panel opens rather than on every render: the panel is a reading of a
- * fixed window, and a window whose end crept forward between renders would make two rows of
- * the same table answers to two different questions.
+ * On screen rather than assumed. Both of these panels show a report computed over a window,
+ * and a reader checking one against the answer has to be able to see that the two are the
+ * same window — the calendar's own phrasing of it first, since that is what §6.1 has the
+ * answer quote back, and the instants after it for anyone who needs to reproduce the query.
  */
-function citationWindow(): TimeWindow {
-  return recentWindow(CITATION_WINDOW_HOURS, new Date());
-}
-
-function WindowNote({ window }: { window: TimeWindow }) {
+function WindowNote({ window }: { window: CitationWindow }) {
   return (
     <p className="evidence__window">
-      Opened over <span className="mono">{window.from}</span> →{" "}
-      <span className="mono">{window.to}</span>, the last{" "}
-      {CITATION_WINDOW_HOURS} hours.{" "}
-      <strong>This citation carries no window of its own</strong>, so this is
-      not necessarily the interval the claim was made over.
+      Opened over the window this claim was made over: {window.label} —{" "}
+      <span className="mono">{window.from_ts}</span> →{" "}
+      <span className="mono">{window.to_ts}</span>.
     </p>
   );
 }

@@ -14,6 +14,9 @@ export type Signal = string | null;
 export type Dimension = string | null;
 export type Key = string | null;
 export type Serials = string[] | null;
+export type FromTs = string;
+export type ToTs = string;
+export type Label = string;
 export type Citations = Citation[];
 export type EvidenceStrength = string | null;
 export type Findings = Finding[];
@@ -69,6 +72,27 @@ export interface Citation {
   dimension?: Dimension;
   key?: Key;
   serials?: Serials;
+  window?: CitationWindow | null;
+  [k: string]: unknown;
+}
+/**
+ * The interval a claim was made over, carried by the citation that backs it (§7.3).
+ *
+ * **Written by the pipeline, never by the model.** §6.1 step 2 resolves the question's time
+ * phrase through `/time/resolve`; `agent.citations.stamped` copies that window onto the
+ * citations that take one and clears it from the rest, so anything a model put here is
+ * overwritten before the answer is built. A model that could type a window into a citation
+ * would be typing data onto the panel the citation opens — §7.4's failure, in a table
+ * rather than a chart, and it reads more authoritatively than a wrong sentence.
+ *
+ * `label` is the calendar's own phrasing of the same interval, which is what §6.1 has the
+ * answer quote back: a reader checking a panel against the answer reads "night shift
+ * 2026-09-11 22:00 – 06:00 Europe/Berlin", not two ISO instants.
+ */
+export interface CitationWindow {
+  from_ts: FromTs;
+  to_ts: ToTs;
+  label: Label;
   [k: string]: unknown;
 }
 /**

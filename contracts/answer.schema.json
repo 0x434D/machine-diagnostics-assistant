@@ -93,12 +93,49 @@
           ],
           "default": null,
           "title": "Serials"
+        },
+        "window": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CitationWindow"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         }
       },
       "required": [
         "kind"
       ],
       "title": "Citation",
+      "type": "object"
+    },
+    "CitationWindow": {
+      "description": "The interval a claim was made over, carried by the citation that backs it (\u00a77.3).\n\n**Written by the pipeline, never by the model.** \u00a76.1 step 2 resolves the question's time\nphrase through `/time/resolve`; `agent.citations.stamped` copies that window onto the\ncitations that take one and clears it from the rest, so anything a model put here is\noverwritten before the answer is built. A model that could type a window into a citation\nwould be typing data onto the panel the citation opens \u2014 \u00a77.4's failure, in a table\nrather than a chart, and it reads more authoritatively than a wrong sentence.\n\n`label` is the calendar's own phrasing of the same interval, which is what \u00a76.1 has the\nanswer quote back: a reader checking a panel against the answer reads \"night shift\n2026-09-11 22:00 \u2013 06:00 Europe/Berlin\", not two ISO instants.",
+      "properties": {
+        "from_ts": {
+          "format": "date-time",
+          "title": "From Ts",
+          "type": "string"
+        },
+        "to_ts": {
+          "format": "date-time",
+          "title": "To Ts",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        }
+      },
+      "required": [
+        "from_ts",
+        "to_ts",
+        "label"
+      ],
+      "title": "CitationWindow",
       "type": "object"
     },
     "Clarification": {

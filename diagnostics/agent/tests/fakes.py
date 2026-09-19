@@ -1,8 +1,10 @@
-"""The fake analysis service the agent tests run against.
+"""The fake analysis service the agent tests run against, and the provider double beside it.
 
 A fake is right here and a container would be wrong: these tests are about the pipeline's
 behaviour when the data says a particular thing, and the queries themselves are already
-tested against real Postgres in the analysis package.
+tested against real Postgres in the analysis package. `InventingProvider` lives here too
+because both suites that hand the pipeline a made-up final answer need the same double, and
+two copies of it would drift into two different models.
 """
 
 from __future__ import annotations
@@ -11,6 +13,9 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 
 import httpx
+from agent.classify import CLASSIFY_TOOL
+from agent.provider import ProviderReply
+from agent.providers_scripted import ScriptedProvider
 from agent.tools import AnalysisClient, Window
 from knowledge.documents import DEFAULT_ROOT, load
 
@@ -147,6 +152,34 @@ class FakeAnalysis:
     async def knowledge_exists(self, document_id: str) -> bool:
         self.calls.append(("knowledge_exists", {"id": document_id}))
         return document_id in self._documents
+
+
+class InventingProvider:
+    """A model that invents, so that the guards have something real to refuse.
+
+    §1 asks for a proof that would fail if the link were a facade, and a guard can only be
+    shown to hold by handing it the thing it exists to stop. Classification is delegated to
+    the scripted provider rather than stubbed, so the answer these proofs inspect came
+    through the same eight stages every other answer does and differs in exactly one place:
+    what the model said at the end.
+    """
+
+    name = "inventing"
+
+    def __init__(self, final: dict[str, object]) -> None:
+        self._final = final
+        self.finals = 0
+
+    async def call(
+        self,
+        system: str,
+        messages: list[dict[str, object]],
+        tools: list[dict[str, object]],
+    ) -> ProviderReply:
+        if [str(tool.get("name")) for tool in tools] == [CLASSIFY_TOOL["name"]]:
+            return await ScriptedProvider().call(system, messages, tools)
+        self.finals += 1
+        return ProviderReply(final=dict(self._final))
 
 
 def as_client(fake: FakeAnalysis) -> AnalysisClient:

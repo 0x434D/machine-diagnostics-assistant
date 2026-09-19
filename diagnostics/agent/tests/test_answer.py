@@ -12,12 +12,20 @@ import pytest
 from agent.answer import (
     ALLOW_HYPOTHESIS,
     CITATION_FIELDS,
+    WINDOWED,
     Answer,
     Citation,
+    CitationWindow,
     Contradiction,
     Finding,
     Method,
     validate_basis,
+)
+
+WINDOW = CitationWindow(
+    from_ts="2026-09-11T20:00:00Z",  # type: ignore[arg-type]  # pydantic parses the instant
+    to_ts="2026-09-12T04:00:00Z",  # type: ignore[arg-type]  # pydantic parses the instant
+    label="night shift 2026-09-11 22:00 – 2026-09-12 06:00 Europe/Berlin",
 )
 
 
@@ -157,3 +165,68 @@ def test_an_answer_either_asks_or_answers() -> None:
                 "readings": ["a", "b"],
             },
         )
+
+
+# --- §7.3's window ---------------------------------------------------------------------
+
+#: The payload each windowed kind needs beside its window, so the tests below are
+#: parametrised over `WINDOWED` rather than naming the two kinds a second time.
+CITED: dict[str, dict[str, str]] = {
+    "pattern": {"dimension": "carrier", "key": "7"},
+    "signal": {"station": "S2", "signal": "JoiningForce"},
+}
+
+
+def test_the_kinds_that_carry_a_window_are_the_ones_whose_endpoints_need_one() -> None:
+    """§7.3 writes a window into exactly these two, and both of their endpoints take
+    `from` and `to`: the same `carrier=7` is a different cell over a different interval."""
+    assert WINDOWED == {"pattern", "signal"}
+    assert WINDOWED <= set(CITATION_FIELDS)
+
+
+@pytest.mark.parametrize("kind", sorted(WINDOWED))
+def test_an_answer_cannot_ship_a_windowed_citation_without_its_window(
+    kind: str,
+) -> None:
+    """Checked on the answer rather than on the citation, because the model's own output is
+    validated as findings before the pipeline stamps the window onto them. A citation that
+    reached the reader without one would open a panel over an interval the screen chose."""
+    citation = Citation(kind=kind, **CITED[kind])  # type: ignore[arg-type]  # the enum is enforced at runtime
+
+    with pytest.raises(ValueError, match="carries none"):
+        Answer(
+            findings=[
+                Finding(statement="…", basis="measured", citations=[citation]),
+            ],
+            answer_markdown="…",
+            method=Method(),
+        )
+
+
+@pytest.mark.parametrize("kind", sorted(WINDOWED))
+def test_the_same_citation_with_its_window_ships(kind: str) -> None:
+    """The other half: a refusal that is not contingent on the window would pass the test
+    above while refusing every answer."""
+    citation = Citation(kind=kind, window=WINDOW, **CITED[kind])  # type: ignore[arg-type]  # the enum is enforced at runtime
+
+    answer = Answer(
+        findings=[Finding(statement="…", basis="measured", citations=[citation])],
+        answer_markdown="…",
+        method=Method(),
+    )
+
+    assert answer.findings[0].citations[0].window == WINDOW
+
+
+def test_a_kind_that_takes_no_window_is_not_asked_for_one() -> None:
+    Answer(
+        findings=[
+            Finding(
+                statement="…",
+                basis="measured",
+                citations=[Citation(kind="part", id="A-00000007")],
+            )
+        ],
+        answer_markdown="…",
+        method=Method(),
+    )

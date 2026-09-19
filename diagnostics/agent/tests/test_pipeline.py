@@ -26,17 +26,20 @@ from __future__ import annotations
 import logging
 
 import pytest
-from agent.answer import Answer
+from agent.answer import Answer, CitationWindow
 from agent.config import Settings
 from agent.pipeline import Progress, longest, run, stream
 from agent.providers_scripted import DISCLOSURE, ScriptedProvider
 from agent.records import Trace
 
 from .fakes import (
+    WINDOWS,
     FakeAnalysis,
+    InventingProvider,
     as_client,
     coverage,
     line_status,
+    pattern_report,
     stats,
     stop,
     stop_detail,
@@ -831,3 +834,114 @@ async def test_an_unverifiable_citation_gets_one_retry_before_the_claim_goes(
     assert [name for name, _ in fake.calls].count("resolve:get_part") == 2, (
         "the model was not asked a second time"
     )
+
+
+# --- §7.3: the window a citation carries -----------------------------------------------
+#
+# Proven without a model. The interval is the calendar's (stage 2), and the citations the
+# model hands back are rewritten from it before anything is verified or delivered — so what
+# is asserted here is not that a model behaves, but that it cannot reach the field at all.
+
+
+def _windowed_final(window: dict[str, str] | None) -> dict[str, object]:
+    """One finding citing a pattern, a signal and a part, with `window` as the model left it.
+
+    Three kinds on one finding rather than three findings, so the two that take a window and
+    the one that does not are decided by the same pass over the same claim.
+    """
+    pattern: dict[str, object] = {"kind": "pattern", "dimension": "carrier", "key": "7"}
+    part: dict[str, object] = {"kind": "part", "id": "A-00000007"}
+    if window is not None:
+        pattern["window"] = window
+        part["window"] = window
+    return {
+        "findings": [
+            {
+                "statement": "Carrier 7 is over-represented among the rejects.",
+                "basis": "measured",
+                "citations": [
+                    pattern,
+                    {"kind": "signal", "station": "S2", "signal": "JoiningForce"},
+                    part,
+                ],
+            }
+        ],
+        "caveats": [],
+    }
+
+
+async def _windowed_answer(question: str, window: dict[str, str] | None) -> Answer:
+    fake = FakeAnalysis({"inspection_patterns": pattern_report("carrier", "7")})
+    return await run(
+        question,
+        settings=Settings(),
+        analysis=as_client(fake),
+        provider=InventingProvider(_windowed_final(window)),
+    )
+
+
+def _cited_windows(answer: Answer) -> dict[str, CitationWindow | None]:
+    return {
+        citation.kind: citation.window
+        for finding in answer.findings
+        for citation in finding.citations
+    }
+
+
+@pytest.mark.parametrize(
+    ("question", "phrase"),
+    [(STOP_QUESTION, "last night"), (STATS_QUESTION, "last hour")],
+)
+async def test_a_windowed_citation_carries_the_window_the_question_resolved_to(
+    question: str, phrase: str
+) -> None:
+    """§7.3 writes a `window` into the `pattern` and `signal` citations, and this is the
+    window the answer was computed over — not a recent default the reader's screen picked.
+
+    Two questions rather than one, because a citation that always carried the same interval
+    would satisfy a single case and be a constant rather than a window.
+    """
+    expected = WINDOWS[phrase]
+
+    answer = await _windowed_answer(question, None)
+
+    for kind in ("pattern", "signal"):
+        carried = _cited_windows(answer)[kind]
+        assert carried is not None, f"the {kind} citation shipped without a window"
+        assert carried.from_ts == expected.start
+        assert carried.to_ts == expected.end
+        assert carried.label == expected.label
+
+
+async def test_a_window_the_model_typed_does_not_reach_the_reader() -> None:
+    """The reason the field is written here and not by the model: a window it could type
+    into a citation is data drawn onto the panel that citation opens (§7.4), and a panel
+    showing real rows under a sentence that was never about them reads authoritatively."""
+    invented = {
+        "from_ts": "2026-03-01T00:00:00Z",
+        "to_ts": "2026-03-01T01:00:00Z",
+        "label": "an interval the model typed",
+    }
+
+    answer = await _windowed_answer(STOP_QUESTION, invented)
+
+    carried = _cited_windows(answer)["pattern"]
+    assert carried is not None
+    assert carried.label == WINDOWS["last night"].label
+    assert "an interval the model typed" not in answer.model_dump_json()
+
+
+async def test_a_kind_that_takes_no_window_ships_without_one() -> None:
+    """§7.3 gives a window to the two kinds whose endpoints need one. `GET /parts/{serial}`
+    takes none, and a window beside a citation that does not use it is an interval a reader
+    would take for a qualification on the claim."""
+    answer = await _windowed_answer(
+        STOP_QUESTION,
+        {
+            "from_ts": "2026-03-01T00:00:00Z",
+            "to_ts": "2026-03-01T01:00:00Z",
+            "label": "an interval the model typed",
+        },
+    )
+
+    assert _cited_windows(answer)["part"] is None

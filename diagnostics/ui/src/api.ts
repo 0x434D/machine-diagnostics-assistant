@@ -9,7 +9,10 @@
  * that it is part of the system's surface.
  */
 import type { components } from "./generated/analysis";
-import type { MachineAgentAnswerObject63 } from "./generated/answer";
+import type {
+  CitationWindow,
+  MachineAgentAnswerObject63,
+} from "./generated/answer";
 
 export type Answer = MachineAgentAnswerObject63;
 export type Part = components["schemas"]["Part"];
@@ -256,62 +259,49 @@ export async function fetchLotParts(
   );
 }
 
-/** §5.5's pattern report over a window. */
+/** The half-open `[from, to)` a §5.3 endpoint takes, out of the window a citation carries.
+ *
+ * §7.3 gives the `pattern` and `signal` citations a window and the agent writes it from the
+ * interval the answer was computed over (§6.1 step 2), so this is the only interval either
+ * panel may open over. A recent default would show real rows from the database under a
+ * sentence they do not support — which reads more authoritatively than a wrong sentence, and
+ * is §7.4's stated reason for the whole design.
+ */
+function windowQuery(window: CitationWindow): Record<string, string> {
+  return { from: window.from_ts, to: window.to_ts };
+}
+
+/** §5.5's pattern report over the window the claim was made in. */
 export async function fetchPatterns(
-  window: TimeWindow,
+  window: CitationWindow,
   token: string | null,
 ): Promise<PatternReport> {
-  return await getAnalysis<PatternReport>("/inspection/patterns", token, {
-    from: window.from,
-    to: window.to,
-  });
+  return await getAnalysis<PatternReport>(
+    "/inspection/patterns",
+    token,
+    windowQuery(window),
+  );
 }
 
 /** §5.3's `/signals/trend`, bucketed by the hour.
  *
  * Bucketed rather than raw because a citation opens into a panel and not a chart until
- * Task 5: at §3.1's takt an hour of `raw` is 600 samples and `CITATION_WINDOW_HOURS` of it
- * is a scroll rather than a reading, where hour buckets are one row each. The panel names
- * the aggregation, because a bucket mean is not a measurement and must not read as one.
+ * Task 5: at §3.1's takt an hour of `raw` is 600 samples and a shift of it is a scroll
+ * rather than a reading, where hour buckets are one row each. The panel names the
+ * aggregation, because a bucket mean is not a measurement and must not read as one.
  */
 export async function fetchSignalTrend(
   station: string,
   signal: string,
-  window: TimeWindow,
+  window: CitationWindow,
   token: string | null,
 ): Promise<SignalTrend> {
   return await getAnalysis<SignalTrend>("/signals/trend", token, {
     station,
     signal,
     agg: "hour",
-    from: window.from,
-    to: window.to,
+    ...windowQuery(window),
   });
-}
-
-/** A half-open `[from, to)` in UTC, as every §5.3 endpoint spells it on the wire. */
-export interface TimeWindow {
-  from: string;
-  to: string;
-}
-
-/** How far back a citation that carries no window of its own is opened over.
- *
- * **This is a gap in the answer contract, not a design choice.** §7.3 writes a `window`
- * into the `pattern` and `signal` citations; `contracts/answer.schema.json` carries no
- * window on a citation and none on the answer either, so the interval the claim was
- * actually made over never reaches the browser. The panels below therefore open over a
- * recent window and *say on screen which one*, rather than letting a reader take it for
- * the answer's. Raised in the task report: the fix belongs in the contract.
- */
-export const CITATION_WINDOW_HOURS = 24;
-
-/** The last `hours` hours, ending at `now`. Half-open and in UTC, like the endpoints. */
-export function recentWindow(hours: number, now: Date): TimeWindow {
-  return {
-    from: new Date(now.getTime() - hours * 3600_000).toISOString(),
-    to: now.toISOString(),
-  };
 }
 
 /** §3.4: a good part has no image, and that is not a missing value.

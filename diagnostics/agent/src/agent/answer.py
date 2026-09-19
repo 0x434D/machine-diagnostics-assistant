@@ -4,6 +4,7 @@ through a tool call, and every sentence a user reads traces back to a verified f
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -57,6 +58,34 @@ CITATION_FIELDS: dict[Kind, tuple[str, ...]] = {
 
 _PAYLOAD: tuple[str, ...] = ("id", "station", "signal", "dimension", "key", "serials")
 
+WINDOWED: frozenset[Kind] = frozenset({"pattern", "signal"})
+"""The kinds §7.3 writes a `window` into, which are the two whose endpoints require one.
+
+A pattern cell and a signal series do not exist on their own — `/inspection/patterns` and
+`/signals/trend` both take `from` and `to`, and the same `carrier=7` is a different cell over
+a different interval. Every other kind names a referent the database holds once.
+"""
+
+
+class CitationWindow(BaseModel):
+    """The interval a claim was made over, carried by the citation that backs it (§7.3).
+
+    **Written by the pipeline, never by the model.** §6.1 step 2 resolves the question's time
+    phrase through `/time/resolve`; `agent.citations.stamped` copies that window onto the
+    citations that take one and clears it from the rest, so anything a model put here is
+    overwritten before the answer is built. A model that could type a window into a citation
+    would be typing data onto the panel the citation opens — §7.4's failure, in a table
+    rather than a chart, and it reads more authoritatively than a wrong sentence.
+
+    `label` is the calendar's own phrasing of the same interval, which is what §6.1 has the
+    answer quote back: a reader checking a panel against the answer reads "night shift
+    2026-09-11 22:00 – 06:00 Europe/Berlin", not two ISO instants.
+    """
+
+    from_ts: datetime
+    to_ts: datetime
+    label: str
+
 
 class Citation(BaseModel):
     """§7.3's typed citation: a kind, and exactly the payload that kind's endpoint needs.
@@ -82,6 +111,12 @@ class Citation(BaseModel):
     dimension: str | None = None
     key: str | None = None
     serials: list[str] | None = None
+    #: §7.3's window, and the one part of a citation the model does not write. Absent from
+    #: `CITATION_FIELDS` and from `_PAYLOAD` deliberately: that table is what the model must
+    #: supply and must not exceed, and this is filled in afterwards from the run's own
+    #: resolved window. `Answer` below is where a `pattern` or `signal` citation that never
+    #: got one is refused, which is the check the model's output cannot be subject to.
+    window: CitationWindow | None = None
 
     @model_validator(mode="after")
     def _check_payload(self) -> Citation:
@@ -230,6 +265,27 @@ class Answer(BaseModel):
             raise ValueError(
                 "an answer that asks back has no findings (\u00a76.7): it either "
                 "investigated or it did not"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _check_windows(self) -> Answer:
+        """\u00a77.3's window, checked where the model's own output cannot be checked.
+
+        A `pattern` or `signal` citation without one opens onto an interval the reader's
+        screen chose \u2014 real rows from the database, under a sentence they do not support.
+        `agent.citations.stamped` is what fills it in; this is what fails if it stops.
+        """
+        missing = [
+            citation.label
+            for finding in self.findings
+            for citation in finding.citations
+            if citation.kind in WINDOWED and citation.window is None
+        ]
+        if missing:
+            raise ValueError(
+                f"a {', '.join(sorted(WINDOWED))} citation carries the window its claim "
+                f"was made over (\u00a77.3); {', '.join(missing)} carries none"
             )
         return self
 

@@ -8,6 +8,12 @@ is the whole map from kind to endpoint. A kind whose referent had no endpoint wo
 two in this vocabulary have no endpoint *of their own* and are resolved by membership in the
 window's own answer instead, which is stated where it happens.
 
+**Two kinds carry the window their claim was made over** (§7.3), and `stamped` writes it from
+the window the run resolved rather than letting the model name one. It runs before the
+resolution below, so the interval a `pattern` or `signal` citation ships with is the interval
+it was checked against — the window is part of what makes those two verifiable, not an
+exception to it.
+
 **A cited procedure is checked twice.** That it exists, against `GET /knowledge/{id}`, and
 that routing actually loaded it — §6.5: *"so the model cannot invent a procedure it never
 read."* Those are different failures. A document that exists but was not routed is a
@@ -23,7 +29,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 
-from agent.answer import Citation, Finding
+from agent.answer import WINDOWED, Citation, CitationWindow, Finding
 from agent.tools import AnalysisClient, Window
 
 
@@ -51,6 +57,41 @@ class Verification:
             f"{self.removed} claim(s) were removed because their citations could not be "
             f"verified against the database: {', '.join(self.failed)}."
         )
+
+
+def stamped(findings: Sequence[Finding], window: Window) -> list[Finding]:
+    """§7.3's `window`, written onto the citations that take one from the run's own window.
+
+    The window is the calendar's (§6.1 step 2) and never the model's: whatever a model put
+    there is overwritten, and the kinds that take no window have theirs cleared. That is the
+    whole point of doing it here — a window a model could type into a citation is data drawn
+    onto the panel that citation opens, which is §7.4's failure moved from a chart into a
+    table, where it reads just as authoritatively.
+
+    Run **before** `keep`, so the interval a citation carries is the interval it was verified
+    over: `resolves` checks a pattern cell and a signal series against this same window, and
+    a citation stamped afterwards could name one the verification never looked at.
+    """
+    carried = CitationWindow(from_ts=window.start, to_ts=window.end, label=window.label)
+    return [
+        finding.model_copy(
+            update={
+                "citations": [
+                    # `model_copy` rather than rebuilding through the validator: the payload
+                    # check has already run on this citation and `window` is not part of
+                    # what it looks at, so re-validating would only repeat a check that
+                    # passed.
+                    citation.model_copy(
+                        update={
+                            "window": carried if citation.kind in WINDOWED else None
+                        }
+                    )
+                    for citation in finding.citations
+                ]
+            }
+        )
+        for finding in findings
+    ]
 
 
 async def keep(

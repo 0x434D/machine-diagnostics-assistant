@@ -47,7 +47,7 @@ import httpx
 from knowledge.documents import KnowledgeBase
 
 from agent.answer import Answer, Clarification, Contradiction, Finding, Method
-from agent.citations import keep
+from agent.citations import keep, stamped
 from agent.classify import Classification, classify, corrections
 from agent.compose import compose
 from agent.config import Settings
@@ -297,10 +297,16 @@ async def _stages(
         if reply.final is not None:
             # --- 6  verify citations -----------------------------------------------------
             yield Progress("verifying every citation against the database")
-            stated = [
-                Finding.model_validate(finding)
-                for finding in _sequence(reply.final.get("findings"))
-            ]
+            # §7.3's window goes onto the citations that take one *here*, from the window
+            # this run resolved at stage 2 — never from the model, which has no business
+            # naming the interval its own claim is checked and opened over.
+            stated = stamped(
+                [
+                    Finding.model_validate(finding)
+                    for finding in _sequence(reply.final.get("findings"))
+                ],
+                window,
+            )
             checked = await keep(stated, analysis, window=window, loaded=loaded)
             if checked.failed and not retried:
                 # §6.5: the failed ids go back to the model for exactly one retry. Logged

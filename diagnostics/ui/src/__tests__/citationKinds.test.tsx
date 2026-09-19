@@ -15,7 +15,7 @@ import generatedAnswerSource from "../generated/answer.ts?raw";
 import { AuthProvider } from "../AuthContext";
 import { CitationChip } from "../CitationChip";
 import { TOKEN_STORAGE_KEY } from "../tokenStorage";
-import type { Citation } from "../generated/answer";
+import type { Citation, CitationWindow } from "../generated/answer";
 import type {
   Alarm,
   ComponentAssembly,
@@ -223,15 +223,37 @@ const TREND: SignalTrend = {
   ],
 };
 
+/** The interval a windowed citation was made over, as the agent stamps it (§7.3).
+ *
+ * Deliberately not the last twenty-four hours of anything: what these tests have to be able
+ * to see is a panel opening over the *answer's* window and not over one the screen chose.
+ */
+const CITED_WINDOW: CitationWindow = {
+  from_ts: "2026-09-12T01:00:00Z",
+  to_ts: "2026-09-12T02:00:00Z",
+  label: "the hour 2026-09-12 01:00 – 02:00 UTC",
+};
+
 /** One minimally valid citation per kind, keyed by the generated union so a kind added to
  * `contracts/answer.schema.json` fails to compile here until it has one. The payload each
- * carries is the payload `agent.answer.CITATION_FIELDS` requires of it. */
+ * carries is the payload `agent.answer.CITATION_FIELDS` requires of it, plus the window
+ * `agent.answer.WINDOWED` gives the two kinds whose endpoints need one. */
 const SAMPLES: Record<Citation["kind"], Citation> = {
   part: { kind: "part", id: "A-00000007" },
   stop: { kind: "stop", id: "stop-20260912T013000.000000Z" },
   alarm: { kind: "alarm", id: "207" },
-  signal: { kind: "signal", station: "S2", signal: "JoiningForcePeak" },
-  pattern: { kind: "pattern", dimension: "carrier", key: "7" },
+  signal: {
+    kind: "signal",
+    station: "S2",
+    signal: "JoiningForcePeak",
+    window: CITED_WINDOW,
+  },
+  pattern: {
+    kind: "pattern",
+    dimension: "carrier",
+    key: "7",
+    window: CITED_WINDOW,
+  },
   sop: { kind: "sop", id: "SOP-01" },
   serial: { kind: "serial", id: "C-000123" },
   lot: { kind: "lot", id: "L-4471" },
@@ -445,25 +467,55 @@ test("a pattern cell the report does not hold is neither an error nor an empty p
     ),
   );
 
-  open({ kind: "pattern", dimension: "carrier", key: "3" });
+  open({
+    kind: "pattern",
+    dimension: "carrier",
+    key: "3",
+    window: CITED_WINDOW,
+  });
 
   const missing = await screen.findByTestId("citation-missing");
   expect(missing).toHaveTextContent("carrier=3");
   expect(missing).toHaveTextContent("none of them this one");
 });
 
-test("a windowed citation says which window it was opened over", async () => {
-  // The contract carries no window on a citation (§7.3 specifies one), so the panel chooses
-  // a recent one. A reader who took that for the answer's own window would have been told
-  // something false by a screen that looked right.
-  stubEveryEndpoint();
+test.each(["signal", "pattern"] as const)(
+  "a %s citation opens over the window it carries and names it",
+  async (kind) => {
+    // §7.3's window, and the reason it is on the citation: the panel is a reading of one
+    // interval, and a panel that chose its own would put real rows from the database under
+    // a sentence that was never about them — which reads more authoritatively than a wrong
+    // sentence (§7.4).
+    const fetchMock = stubEveryEndpoint();
 
-  open(SAMPLES.signal);
+    open(SAMPLES[kind]);
 
-  expect(
-    await screen.findByText(/carries no window of its own/),
-  ).toBeInTheDocument();
-});
+    expect(await screen.findByText(/the hour 2026-09-12/)).toBeInTheDocument();
+    const requested = new URL(
+      String(fetchMock.mock.calls[0]?.[0]),
+      "http://ui.invalid",
+    );
+    expect(requested.searchParams.get("from")).toBe(CITED_WINDOW.from_ts);
+    expect(requested.searchParams.get("to")).toBe(CITED_WINDOW.to_ts);
+  },
+);
+
+test.each(["signal", "pattern"] as const)(
+  "a %s citation carrying no window opens nothing at all",
+  async (kind) => {
+    // `agent.answer.Answer` refuses to ship one, so this is the service having sent a
+    // citation it should have rejected. Falling back to a recent window instead would be
+    // the panel inventing the one fact that decides what the reader is looking at.
+    const fetchMock = stubEveryEndpoint();
+
+    open({ ...SAMPLES[kind], window: null });
+
+    const panel = await screen.findByTestId("evidence-panel");
+    expect(panel).toHaveAttribute("data-outcome", "unaddressed");
+    expect(panel).toHaveTextContent("carries no window");
+    expect(fetchMock).not.toHaveBeenCalled();
+  },
+);
 
 test("a citation carrying nothing to resolve names that as the failure", async () => {
   // `agent.answer.Citation` refuses one, so this is the service having sent a citation it
@@ -474,9 +526,7 @@ test("a citation carrying nothing to resolve names that as the failure", async (
 
   const panel = await screen.findByTestId("evidence-panel");
   expect(panel).toHaveAttribute("data-outcome", "unaddressed");
-  expect(panel).toHaveTextContent(
-    "none of the fields that would say what it refers to",
-  );
+  expect(panel).toHaveTextContent("it carries no id");
   // And nothing was asked of the service, because there was nothing to ask about.
   expect(fetchMock).not.toHaveBeenCalled();
 });

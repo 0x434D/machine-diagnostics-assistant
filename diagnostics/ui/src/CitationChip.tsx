@@ -42,26 +42,47 @@ function describe(citation: Citation): string {
   return citation.id ?? citation.kind;
 }
 
-/** A citation with nothing in it to resolve.
+/** A citation missing something it needs before anything can be opened.
  *
- * `agent.answer.Citation`'s validator makes this unconstructable, so reaching it means the
- * server sent a citation it should itself have rejected. That is worth saying out loud and
- * in one place: six renderers each writing their own version of this check is six chances
- * for one of them to render an empty panel instead, which reads as "nothing found".
+ * `agent.answer.Citation`'s validator makes a citation without its payload unconstructable,
+ * and `agent.answer.Answer` refuses a `pattern` or `signal` citation that carries no window
+ * (§7.3) — so reaching this means the server sent a citation it should itself have rejected.
+ * That is worth saying out loud and in one place: six renderers each writing their own
+ * version of this check is six chances for one of them to render an empty panel instead,
+ * which reads as "nothing found".
  */
-function Unaddressed({ citation }: { citation: Citation }) {
+function Unaddressed({
+  citation,
+  missing,
+}: {
+  citation: Citation;
+  missing: readonly string[];
+}) {
   return (
     <div
       data-testid="evidence-panel"
       data-outcome="unaddressed"
       className="evidence evidence--error"
     >
-      Could not open this {citation.kind} citation: it carries none of the
-      fields that would say what it refers to. The answer validator refuses such
-      a citation, so this is the service having sent one it should have
-      rejected.
+      Could not open this {citation.kind} citation: it carries no{" "}
+      {missing.join(", no ")}, so there is nothing to say what it refers to. The
+      answer object refuses such a citation, so this is the service having sent
+      one it should have rejected.
     </div>
   );
+}
+
+/** Which of the fields a kind needs are not on the citation, for the sentence above.
+ *
+ * Named rather than counted: "it carries no window" and "it carries no dimension, no key"
+ * send a reader to different places, and a renderer that said only *something* was missing
+ * would make them open the network tab to find out which.
+ */
+function absent(citation: Citation, fields: readonly string[]): string[] {
+  return fields.filter((field) => {
+    const value = citation[field];
+    return value === null || value === undefined || value === "";
+  });
 }
 
 /** The renderers whose kind is identified by one string, with the empty case handled once. */
@@ -70,7 +91,7 @@ function byId(
 ): (citation: Citation) => ReactElement {
   return (citation) =>
     citation.id == null || citation.id === "" ? (
-      <Unaddressed citation={citation} />
+      <Unaddressed citation={citation} missing={["id"]} />
     ) : (
       render(citation.id)
     );
@@ -90,17 +111,38 @@ export const RENDERERS: Record<
   // A *component* serial and not an assembly one — see `ComponentPanel`, and RULING M4-R5.
   serial: byId((serial) => <ComponentPanel serial={serial} />),
   lot: byId((lotCode) => <LotPanel lotCode={lotCode} />),
+  // The two kinds §7.3 gives a window to. Their endpoints take `from` and `to`, so a
+  // citation without one names no interval to open over — and opening a recent one instead
+  // would put real rows from the database under a sentence that was never about them.
   signal: (citation) =>
-    citation.station == null || citation.signal == null ? (
-      <Unaddressed citation={citation} />
+    citation.station != null &&
+    citation.signal != null &&
+    citation.window != null ? (
+      <SignalPanel
+        station={citation.station}
+        signal={citation.signal}
+        window={citation.window}
+      />
     ) : (
-      <SignalPanel station={citation.station} signal={citation.signal} />
+      <Unaddressed
+        citation={citation}
+        missing={absent(citation, ["station", "signal", "window"])}
+      />
     ),
   pattern: (citation) =>
-    citation.dimension == null || citation.key == null ? (
-      <Unaddressed citation={citation} />
+    citation.dimension != null &&
+    citation.key != null &&
+    citation.window != null ? (
+      <PatternPanel
+        dimension={citation.dimension}
+        value={citation.key}
+        window={citation.window}
+      />
     ) : (
-      <PatternPanel dimension={citation.dimension} value={citation.key} />
+      <Unaddressed
+        citation={citation}
+        missing={absent(citation, ["dimension", "key", "window"])}
+      />
     ),
   containment: (citation) => (
     <ContainmentPanel serials={citation.serials ?? []} />
