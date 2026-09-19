@@ -743,6 +743,13 @@ lint-commits:
 # keep true; the count in the banner is counted rather than written, because the number that
 # stood here in prose went stale twice in three days and nothing went red either time.
 images:
+# Emptied, not added to. `--output type=oci,tar=false,dest=` APPENDS a manifest to an OCI
+# layout that is already there, so a second build leaves index.json naming two images —
+# `plant-hmi:<yesterday>` and `plant-hmi:<today>` — and Trivy reads the first, which is the
+# older one. On a runner's fresh checkout this can never happen; on a laptop it means
+# `make scan-images` scans the image you built last time and reports it as today's. It cost
+# this task one confidently wrong answer before the index.json was looked at.
+	@rm -rf $(BUILD_DIR)/images
 	@mkdir -p $(BUILD_DIR)/images
 	@docker buildx inspect $(BUILDER) >/dev/null 2>&1 \
 	  || docker buildx create --name $(BUILDER) --driver docker-container \
@@ -756,8 +763,8 @@ images:
 #
 # Over $(IMAGE_NAMES) rather than over `$(BUILD_DIR)/images/*/`, which is the same list only
 # when nothing went wrong: a build that half-failed leaves an empty layout directory behind,
-# and a renamed image leaves a stale one that would be scanned instead of the live one. Named
-# inputs make a missing image a Trivy failure rather than one fewer iteration.
+# and globbing it would scan that. Named inputs make a missing image a Trivy failure rather
+# than one fewer iteration.
 #
 # Every image is scanned before the target fails, rather than stopping at the first. This is
 # the weekly job whose red means "go patch something", and with nine images an early exit
