@@ -11,7 +11,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 
 import httpx
-from agent.tools import Window
+from agent.tools import AnalysisClient, Window
 from knowledge.documents import DEFAULT_ROOT, load
 
 DOCUMENTS: frozenset[str] = frozenset(load(DEFAULT_ROOT).by_id)
@@ -147,6 +147,17 @@ class FakeAnalysis:
     async def knowledge_exists(self, document_id: str) -> bool:
         self.calls.append(("knowledge_exists", {"id": document_id}))
         return document_id in self._documents
+
+
+def as_client(fake: FakeAnalysis) -> AnalysisClient:
+    """The fake satisfies the methods the pipeline uses.
+
+    Cast rather than made to inherit: a Protocol extracted from `AnalysisClient` would exist
+    only to satisfy these tests, and CLAUDE.md refuses an abstraction with one
+    implementation. Here rather than in either suite that needs it, so the suppression is
+    written once.
+    """
+    return fake  # type: ignore[return-value]  # see the docstring
 
 
 def _stop_ids(responses: Mapping[str, object]) -> set[str]:

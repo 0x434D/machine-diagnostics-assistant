@@ -296,7 +296,6 @@ async def ask(
 ) -> Answer:
     return await run(
         question,
-        "authenticity",
         settings=Settings(analysis_url=url),
         provider=provider or ScriptedProvider(),
         # The analysis service standing behind this refuses an unauthenticated request since

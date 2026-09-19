@@ -30,10 +30,11 @@ from agent.answer import Answer
 from agent.config import Settings
 from agent.pipeline import Progress, longest, run, stream
 from agent.providers_scripted import DISCLOSURE, ScriptedProvider
-from agent.tools import AnalysisClient
+from agent.records import Trace
 
 from .fakes import (
     FakeAnalysis,
+    as_client,
     coverage,
     line_status,
     stats,
@@ -47,21 +48,13 @@ STATS_QUESTION = "how many rejects in the last hour?"
 STOP_QUESTION = "why did the line stand last night?"
 
 
-def _client(fake: FakeAnalysis) -> AnalysisClient:
-    """The fake satisfies the methods the pipeline uses. Cast rather than made to inherit:
-    a Protocol extracted from `AnalysisClient` would exist only to satisfy these tests, and
-    CLAUDE.md refuses an abstraction with one implementation."""
-    return fake  # type: ignore[return-value]  # see the docstring
-
-
 async def _run(question: str, fake: FakeAnalysis, **kwargs: object) -> Answer:
     return await run(
         question,
-        "s1",
         # `object` so a test can override any one setting by name; BaseSettings validates
         # each field, so a wrong type or an unknown name fails here rather than passing.
         settings=Settings(**kwargs),  # type: ignore[arg-type]  # BaseSettings validates
-        analysis=_client(fake),
+        analysis=as_client(fake),
         provider=ScriptedProvider(),
     )
 
@@ -625,20 +618,70 @@ async def test_the_pipeline_reports_each_step_before_the_answer(
         item
         async for item in stream(
             STATS_QUESTION,
-            "s1",
             settings=Settings(),
-            analysis=_client(fake_analysis),
+            analysis=as_client(fake_analysis),
             provider=ScriptedProvider(),
         )
     ]
 
-    assert isinstance(items[-1], Answer), "the answer is not the last item"
+    assert isinstance(items[-1], Trace), "the trace does not close the stream"
+    assert isinstance(items[-2], Answer), "the answer does not precede the trace"
     progress = [item.message for item in items if isinstance(item, Progress)]
-    assert len(items) == len(progress) + 1, "more than one answer was streamed"
+    assert len(items) == len(progress) + 2, "more than one answer was streamed"
     assert any("classif" in line for line in progress)
     assert any("coverage" in line for line in progress)
     assert any("inspection_stats" in line for line in progress)
     assert any("citation" in line for line in progress)
+
+
+async def test_the_trace_records_what_the_run_actually_did(
+    fake_analysis: FakeAnalysis,
+) -> None:
+    """§7.2 names what the trace holds: the SOPs loaded, every tool call with its arguments
+    and timings, and the budget spent. Read off the same run the answer came from, because
+    a trace that can disagree with the run it describes is worse than none."""
+    items = [
+        item
+        async for item in stream(
+            STATS_QUESTION,
+            settings=Settings(),
+            analysis=as_client(fake_analysis),
+            provider=ScriptedProvider(),
+        )
+    ]
+    answer = next(item for item in items if isinstance(item, Answer))
+    trace = next(item for item in items if isinstance(item, Trace))
+
+    assert trace.sops_loaded == answer.method.sops_used
+    assert [call.name for call in trace.tool_calls] == answer.method.tools_called
+    assert trace.budget.tool_turns == answer.method.budget_used
+    assert trace.budget.tool_turns_limit == Settings().tool_budget
+    assert all(call.duration_ms >= 0 for call in trace.tool_calls)
+    assert trace.timings.total_ms >= trace.timings.tools_ms + trace.timings.model_ms
+
+
+async def test_a_tool_failure_the_model_worked_around_is_in_the_trace() -> None:
+    """§6.8 hands a failed call back to the model as a tool result, so the run recovers and
+    the answer says nothing about it. The trace is where it stays visible — an audit trail
+    that recorded only the calls that worked would describe a run that did not happen."""
+    fake = FakeAnalysis(
+        {"inspection_stats": stats(total=600, rejects=30, gaps=[])},
+        flaky={"inspection_stats": "upstream timeout"},
+    )
+
+    items = [
+        item
+        async for item in stream(
+            STATS_QUESTION,
+            settings=Settings(),
+            analysis=as_client(fake),
+            provider=ScriptedProvider(),
+        )
+    ]
+    trace = next(item for item in items if isinstance(item, Trace))
+
+    assert trace.tool_calls[0].failed is True
+    assert any(call.failed is False for call in trace.tool_calls)
 
 
 # --- §6.5: contradiction, and the retry before a claim is removed ----------------------
