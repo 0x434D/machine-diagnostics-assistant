@@ -19,8 +19,11 @@ import type { Exchange } from "./citations/exchange";
 export type Answer = MachineAgentAnswerObject63;
 export type Trace = MachineAgentReasoningTrace72;
 export type Part = components["schemas"]["Part"];
+export type AffectedParts = components["schemas"]["AffectedParts"];
 export type Alarm = components["schemas"]["Alarm"];
+export type CarrierParts = components["schemas"]["CarrierParts"];
 export type ComponentAssembly = components["schemas"]["ComponentAssembly"];
+export type PartsByOutcome = components["schemas"]["PartsByOutcome"];
 export type KnowledgeDocument = components["schemas"]["KnowledgeDocument"];
 export type LotParts = components["schemas"]["LotParts"];
 export type PatternReport = components["schemas"]["PatternReport"];
@@ -55,6 +58,17 @@ export class ForbiddenError extends Error {}
  */
 export class NotFoundError extends Error {}
 
+/** The service read the request, understood it, and refused to answer it.
+ *
+ * Its own class for the same reason `NotFoundError` has one, one step further in: a 422 from
+ * `/parts/affected` is a statement about the *criteria* — "the press records no instant
+ * against the part, so a window cannot be applied there" — and the service says which in its
+ * `detail`. Collapsing it into a generic failure would spend the third of the three answers
+ * that endpoint deliberately gives (§6.5), and leave a reader retrying a question that will
+ * never be answerable in that shape.
+ */
+export class RefusedError extends Error {}
+
 /** The request never reached a service at all.
  *
  * Kept apart from every status-carrying failure for the reason above, read the other way:
@@ -72,7 +86,11 @@ export class UnreachableError extends Error {}
  * own message.
  */
 export function describeFailure(reason: unknown): string {
-  if (reason instanceof NotFoundError || reason instanceof UnreachableError) {
+  if (
+    reason instanceof NotFoundError ||
+    reason instanceof RefusedError ||
+    reason instanceof UnreachableError
+  ) {
     return reason.message;
   }
   if (reason instanceof UnauthorizedError) {
@@ -176,6 +194,9 @@ async function request(url: string, token: string | null): Promise<Response> {
   if (response.status === 404) {
     throw new NotFoundError(await detailOf(response));
   }
+  if (response.status === 422) {
+    throw new RefusedError(await detailOf(response));
+  }
   if (!response.ok) {
     throw new Error(`${response.status} ${response.statusText}`);
   }
@@ -249,6 +270,51 @@ export async function fetchComponentAssembly(
     `/components/${encodeURIComponent(serial)}/assembly`,
     token,
   );
+}
+
+/** Which assemblies rode a carrier, over the whole of recorded history.
+ *
+ * No window, and that is the reason to call this rather than `/parts/affected?carrier=`:
+ * §3.1 keeps the carriers in a closed loop, so the interesting question about a carrier is
+ * everything it has ever carried, and the affected-parts endpoint cannot be asked without a
+ * window. The two answer different questions over the same column.
+ */
+export async function fetchCarrierParts(
+  carrierId: number,
+  token: string | null,
+): Promise<CarrierParts> {
+  return await getAnalysis<CarrierParts>(
+    `/carriers/${encodeURIComponent(String(carrierId))}/parts`,
+    token,
+  );
+}
+
+/** The criteria `/parts/affected` conjoins, under the names the endpoint gives them.
+ *
+ * Named rather than `Record<string, string>` so a criterion misspelled in a form becomes a
+ * type error instead of a query parameter the service silently ignores — which would answer
+ * a wider question than the one asked and hand the difference to a reader as a containment
+ * list.
+ */
+export type ContainmentCriterion =
+  "station" | "carrier" | "lot" | "defect_class" | "signal" | "below" | "above";
+
+/** §5.3's containment scope: which parts a condition touched, and where each went.
+ *
+ * The window is a separate argument because the endpoint requires it and the criteria are
+ * all optional — a window on its own is "every part made in this window", which is where a
+ * shift-wide containment starts.
+ */
+export async function fetchAffectedParts(
+  window: { from: string; to: string },
+  criteria: Partial<Record<ContainmentCriterion, string>>,
+  token: string | null,
+): Promise<AffectedParts> {
+  return await getAnalysis<AffectedParts>("/parts/affected", token, {
+    ...criteria,
+    from: window.from,
+    to: window.to,
+  });
 }
 
 /** Which assemblies carry a component from this lot, split by where each of them went. */
