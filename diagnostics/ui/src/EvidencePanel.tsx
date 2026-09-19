@@ -1,7 +1,13 @@
-/** The row behind a citation.
+/** The row behind a `part` citation.
  *
  * §7.2: a citation you cannot open is barely a citation. This is what opening one shows —
  * the record itself, not a summary of it.
+ *
+ * It resolves through `useResolution` and renders through `CitationPanel` like the other
+ * eight kinds: the three outcomes a citation can have are written once, so this panel
+ * cannot develop its own vocabulary for a failure the reader has already learned to read
+ * somewhere else. What is only this kind's is the image, which is a second fetch and lives
+ * below, in a component that exists only once the part is known.
  */
 import { useEffect, useState } from "react";
 
@@ -13,29 +19,28 @@ import {
   type Part,
 } from "./api";
 import { useAuth } from "./AuthContext";
+import { CitationPanel } from "./citations/CitationPanel";
+import { useResolution } from "./citations/useResolution";
 
 export function EvidencePanel({ serial }: { serial: string }) {
+  const resolution = useResolution(`part:${serial}`, (token) =>
+    fetchPart(serial, token),
+  );
+
+  return (
+    <CitationPanel what={serial} resolution={resolution}>
+      {(part) => <PartRecord serial={serial} part={part} />}
+    </CitationPanel>
+  );
+}
+
+function PartRecord({ serial, part }: { serial: string; part: Part }) {
   const { token } = useAuth();
-  const [part, setPart] = useState<Part | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [image, setImage] = useState<string | null>(null);
   const [imageError, setImageError] = useState<string | null>(null);
 
   useEffect(() => {
-    let current = true;
-    fetchPart(serial, token)
-      .then((loaded) => current && setPart(loaded))
-      .catch((reason: unknown) => current && setError(describeFailure(reason)));
-    return () => {
-      current = false;
-    };
-    // Re-fetches on a token change too: a panel opened before signing in shows its 401
-    // rather than nothing (below), and pasting a token afterwards should not require
-    // closing and reopening the chip to see the row it was always pointing at.
-  }, [serial, token]);
-
-  useEffect(() => {
-    const path = part === null ? null : imagePath(part);
+    const path = imagePath(part);
     if (path === null) return;
 
     // `revoked` closes the window in which the teardown runs before the fetch resolves: an
@@ -63,27 +68,9 @@ export function EvidencePanel({ serial }: { serial: string }) {
     };
   }, [part, token]);
 
-  if (error !== null) {
-    return (
-      <div data-testid="evidence-panel" className="evidence evidence--error">
-        {/* A citation that does not resolve is reported, never blanked: §6.5 depends on
-            the difference between "no such id" and "nothing to show". */}
-        Could not open {serial}: {error}
-      </div>
-    );
-  }
-
-  if (part === null) {
-    return (
-      <div data-testid="evidence-panel" className="evidence">
-        Opening {serial}…
-      </div>
-    );
-  }
-
   const inspection = part.inspection;
   return (
-    <div data-testid="evidence-panel" className="evidence">
+    <>
       <dl>
         <dt>Serial</dt>
         <dd>{part.assembly_serial}</dd>
@@ -122,7 +109,7 @@ export function EvidencePanel({ serial }: { serial: string }) {
       ) : image === null ? null : (
         <img src={image} alt={`Inspection image for ${serial}`} />
       )}
-    </div>
+    </>
   );
 }
 

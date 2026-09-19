@@ -53,13 +53,26 @@ def _ok(request: httpx.Request) -> httpx.Response:
     return httpx.Response(200, json={"ok": True})
 
 
+NOT_TOOLS: frozenset[str] = frozenset({"getKnowledgeDocument", "getAlarm"})
+"""Contract operations the agent deliberately cannot call, each for its own reason.
+
+`getKnowledgeDocument` — §6.11 makes the knowledge base a *resource* rather than a query,
+and the agent already holds its documents by routing.
+
+`getAlarm` — M6 added it so the frontend can open an `alarm` citation, which carries an id
+and no interval (§7.3). The agent never has that problem: it reads every alarm overlapping
+the window it is answering about, and a by-id tool would hand the model a way to pull an
+alarm from *outside* that window — the same leak `test_no_tool_asks_the_model_for_a_time_window`
+below exists to close, arriving through a path parameter instead of a query one.
+"""
+
+
 def test_the_tool_set_and_the_contract_name_the_same_operations() -> None:
-    """§6.11: neither binding can do anything the other cannot. `getKnowledgeDocument` is
-    the one contract operation that is not a tool — §6.11 makes the knowledge base a
-    *resource* rather than a query, and the agent already holds its documents by routing."""
-    assert {operation.operation_id for operation in OPERATIONS} | {
-        "getKnowledgeDocument"
-    } == _contract_operation_ids()
+    """§6.11: neither binding can do anything the other cannot — and the two exceptions are
+    named above rather than tolerated, so a third one fails here."""
+    assert {
+        operation.operation_id for operation in OPERATIONS
+    } | NOT_TOOLS == _contract_operation_ids()
 
 
 def test_fifteen_operations_each_with_a_name_and_a_schema() -> None:

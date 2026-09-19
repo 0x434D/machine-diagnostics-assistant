@@ -73,6 +73,29 @@ def test_the_station_filter_narrows_and_an_unknown_station_is_refused(
 
 
 @pytest.mark.usefixtures("seeded_db_with_a_stop")
+def test_an_alarm_opens_by_its_own_id_from_outside_any_window(
+    client: TestClient,
+) -> None:
+    """§7.3 resolves an `alarm` citation to `GET /alarms/{id}`, and a citation carries no
+    interval. The id is taken from the collection so the test cannot pin a serial value —
+    what it asserts is that the same lifecycle comes back without a window being named."""
+    listed = client.get("/alarms", params=WINDOW).json()["alarms"]
+    cleared = next(alarm for alarm in listed if alarm["code"] == "A-207")
+
+    assert client.get(f"/alarms/{cleared['id']}").json() == cleared
+
+
+@pytest.mark.usefixtures("seeded_db_with_a_stop")
+def test_an_unknown_alarm_id_is_a_404_and_a_malformed_one_is_a_422(
+    client: TestClient,
+) -> None:
+    """§6.5 rests on the two being different answers: "no alarm carries this id" is a fact
+    about the database, and "this is not an alarm id" is a fact about the request."""
+    assert client.get("/alarms/999999").status_code == 404
+    assert client.get("/alarms/A-207").status_code == 422
+
+
+@pytest.mark.usefixtures("seeded_db_with_a_stop")
 def test_a_window_with_no_alarms_is_an_empty_list_and_not_a_404(
     client: TestClient,
 ) -> None:

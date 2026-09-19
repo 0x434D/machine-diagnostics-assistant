@@ -28,6 +28,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/alarms/{alarm_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Alarm
+         * @description One alarm and its whole lifecycle, by the id a citation carries.
+         *
+         *     **No window, and that is the entire reason this exists beside `/alarms`.** §7.3 resolves
+         *     `{ kind: "alarm", id: 207 }` here, and a citation carries an id and no interval — so
+         *     opening one out of the collection endpoint would mean guessing the window the alarm was
+         *     raised in, and guessing wrong renders a real alarm as an unresolvable citation. §7.2: a
+         *     citation you cannot open is barely a citation.
+         *
+         *     404 when no alarm carries the id, and 422 when the id is not one — an alarm id is the
+         *     `alarms.id` column, so a path segment that is not an integer names no row that could
+         *     exist. §6.5 needs those to be different answers, and neither is an empty result.
+         */
+        get: operations["getAlarm"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/carriers/{carrier_id}/parts": {
         parameters: {
             query?: never;
@@ -1585,6 +1615,37 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AlarmList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    getAlarm: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                alarm_id: number;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Alarm"];
                 };
             };
             /** @description Validation Error */

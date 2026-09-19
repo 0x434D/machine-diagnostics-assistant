@@ -388,6 +388,18 @@ def alarms_overlapping(
         return [_alarm(row) for row in cur.fetchall()]
 
 
+def alarm(conn: Connection, alarm_id: int) -> Alarm | None:
+    """The alarm carrying this id, or None when no row does.
+
+    No window anywhere near it: an id identifies a row, and an alarm that was raised
+    outside the interval a reader happens to be looking at is still that alarm.
+    """
+    with conn.cursor() as cur:
+        cur.execute(_ALARM_COLUMNS + "WHERE a.id = %(id)s", {"id": alarm_id})
+        row = cur.fetchone()
+        return None if row is None else _alarm(row)
+
+
 def active_alarms(conn: Connection) -> list[Alarm]:
     """Every alarm nobody has cleared, newest first — regardless of how old it is.
 

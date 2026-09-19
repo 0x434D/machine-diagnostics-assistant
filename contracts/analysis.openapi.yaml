@@ -1787,6 +1787,38 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
           description: Validation Error
       summary: List Alarms
+  /alarms/{alarm_id}:
+    get:
+      description: "One alarm and its whole lifecycle, by the id a citation carries.\n\n**No window, and\
+        \ that is the entire reason this exists beside `/alarms`.** \xA77.3 resolves\n`{ kind: \"alarm\"\
+        , id: 207 }` here, and a citation carries an id and no interval \u2014 so\nopening one out of\
+        \ the collection endpoint would mean guessing the window the alarm was\nraised in, and guessing\
+        \ wrong renders a real alarm as an unresolvable citation. \xA77.2: a\ncitation you cannot open\
+        \ is barely a citation.\n\n404 when no alarm carries the id, and 422 when the id is not one \u2014\
+        \ an alarm id is the\n`alarms.id` column, so a path segment that is not an integer names no row\
+        \ that could\nexist. \xA76.5 needs those to be different answers, and neither is an empty result."
+      operationId: getAlarm
+      parameters:
+      - in: path
+        name: alarm_id
+        required: true
+        schema:
+          title: Alarm Id
+          type: integer
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Alarm'
+          description: Successful Response
+        '422':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+          description: Validation Error
+      summary: Get Alarm
   /carriers/{carrier_id}/parts:
     get:
       description: "Which assemblies rode this carrier.\n\n\xA73.1 keeps the carriers in a closed loop,\

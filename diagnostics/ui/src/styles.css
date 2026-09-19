@@ -448,6 +448,13 @@ button:disabled {
   padding: var(--space-3);
 }
 
+/* A citation that did not open. Loud, because the alternative reading of a quiet panel is
+   "nothing found", and §6.5 rests on those two never being the same sentence. */
+.evidence--error {
+  background: var(--danger-tint);
+  border-inline-start: var(--border-width-marker) solid var(--danger);
+}
+
 .evidence dl,
 .trace dl {
   display: grid;
@@ -476,6 +483,107 @@ button:disabled {
 .evidence__image-error {
   color: var(--text-muted);
   margin: var(--space-3) 0 0;
+}
+
+/* The referent was not in what came back, which is neither a failure nor a result. The
+   marker bar is the one the state language uses for a fact that changes how the rest of
+   the panel should be read. */
+.evidence__missing {
+  border-inline-start: var(--border-width-marker) solid var(--border-strong);
+  margin: var(--space-3) 0;
+  padding-inline-start: var(--space-3);
+}
+
+/* Which interval the panel is a reading of. Given the weight of a standing notice rather
+   than of fine print: a reader who takes it for the answer's own window has been told
+   something false by a screen that looked right. */
+.evidence__window {
+  border-inline-start: var(--border-width-marker) solid var(--border-strong);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin: 0 0 var(--space-3);
+  padding-inline-start: var(--space-3);
+}
+
+.evidence__note {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin: var(--space-3) 0 0;
+}
+
+/* The SOP text itself (§7.2). `pre` because a procedure's own line breaks and its
+   numbering are part of what it says, and `wrap` because a phone is a supported client. */
+.evidence__document {
+  background: var(--surface-sunken);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  margin: var(--space-3) 0 0;
+  padding: var(--space-3);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.serials {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+/* --- §5.4's chain, and a trend ------------------------------------------------------- */
+
+.derivation {
+  margin-top: var(--space-4);
+}
+
+.derivation__title {
+  font-size: var(--text-md);
+  margin: 0 0 var(--space-2);
+}
+
+.derivation__links {
+  display: grid;
+  gap: var(--row-gap);
+  margin: 0;
+  padding-inline-start: var(--space-5);
+}
+
+.derivation__buffer,
+.derivation__termination {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+/* The one place a table is allowed to be wider than the viewport, and only inside this. */
+.scroller {
+  margin-top: var(--space-3);
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.trend {
+  border-collapse: collapse;
+  font-size: var(--text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+.trend caption {
+  color: var(--text-muted);
+  text-align: start;
+  padding-bottom: var(--space-2);
+}
+
+.trend th,
+.trend td {
+  border-bottom: var(--border-width) solid var(--border);
+  padding: var(--space-1) var(--space-3) var(--space-1) 0;
+  text-align: start;
+  white-space: nowrap;
+}
+
+.trend th {
+  color: var(--text-muted);
+  font-weight: var(--weight-medium);
 }
 
 .trace {
