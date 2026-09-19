@@ -715,3 +715,143 @@ button:disabled {
   cursor: pointer;
   min-height: var(--control-height);
 }
+
+/* --- §7.2's part, search and containment views --------------------------------------- */
+
+/* A lede and a standing note. Both cap at the prose measure: a sentence that runs the full
+   width of a desk browser is read twice, and these say the things a reader most needs to
+   read once. */
+.search__lede,
+.containment__lede,
+.part__note,
+.search__note,
+.containment__note {
+  color: var(--text-muted);
+  max-width: var(--measure-prose);
+}
+
+/* The same marker bar the state language uses for a fact that changes how the rest of the
+   screen should be read — "this station's record carries no instant" is one of those. */
+.part__note,
+.search__note,
+.containment__note {
+  border-inline-start: var(--border-width-marker) solid var(--border-strong);
+  font-size: var(--text-sm);
+  padding-inline-start: var(--space-3);
+}
+
+.part__section {
+  margin-top: var(--space-5);
+}
+
+.part__section h3 {
+  font-size: var(--text-md);
+  margin: 0 0 var(--space-2);
+}
+
+/* The station-by-station record. One block per station rather than a row per station: at
+   --viewport-min a four-column table is a sideways scroll, and this is the screen someone
+   opens on a tablet while standing at the reject bin. */
+.stations {
+  display: grid;
+  gap: var(--row-gap);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.stations__step {
+  background: var(--surface-raised);
+  border: var(--border-width) solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-2) var(--space-3);
+}
+
+.stations__name {
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+  margin: 0;
+}
+
+.stations__at {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin: var(--space-1) 0 0;
+  overflow-wrap: anywhere;
+}
+
+.stations__what {
+  margin: var(--space-1) 0 0;
+  overflow-wrap: anywhere;
+}
+
+/* The as-built structure, indented under the assembly it belongs to. The rule down the side
+   is the tree: one level is all §3.4a records, and drawing more levels would be a picture
+   of something the data does not say. */
+.genealogy {
+  border-inline-start: var(--border-width) solid var(--border);
+  display: grid;
+  gap: var(--row-gap);
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 var(--space-3);
+}
+
+.genealogy__part {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+}
+
+.genealogy__position {
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.genealogy__origin {
+  color: var(--text-muted);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+}
+
+/* Two short forms. They wrap into a column on a narrow screen and sit side by side on a
+   wide one, which is the whole of the responsive behaviour either of them needs. */
+.search__form,
+.containment__form {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--row-gap) var(--space-3);
+  margin: var(--space-4) 0;
+}
+
+.search__form label,
+.containment__field label {
+  color: var(--text-muted);
+  display: block;
+  font-size: var(--text-sm);
+}
+
+.search__form input,
+.containment__field input {
+  max-width: var(--measure-field);
+}
+
+.containment__field {
+  flex: 1 1 var(--measure-field);
+}
+
+.search__failed {
+  max-width: var(--measure-prose);
+}
+
+/* The export sits under the set it is a copy of, never in a toolbar above it: a file
+   offered beside a query that has not run is a file whose contents nobody has seen. */
+.containment__export {
+  border-top: var(--border-width) solid var(--border);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin-top: var(--space-4);
+  padding-top: var(--space-3);
+}
