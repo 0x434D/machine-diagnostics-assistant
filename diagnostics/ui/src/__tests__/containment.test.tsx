@@ -5,6 +5,11 @@
  * that matters below compares the file against the screen serial by serial, and against the
  * counts the service reported: a file short by one part is a part still in a customer's
  * hands, and nothing about the screen it came from would look wrong.
+ *
+ * The second thing pinned here is where the *window* comes from. A default read off this
+ * browser's clock would return rows, read as an answer and scope a containment to the wrong
+ * interval, so the tests below run under a system clock deliberately set nowhere near the
+ * service's and insist the form still opens on the service's window.
  */
 import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
@@ -13,10 +18,33 @@ import { MemoryRouter } from "react-router";
 import { AppRoutes } from "../App";
 import { AuthProvider } from "../AuthContext";
 import { TOKEN_STORAGE_KEY } from "../tokenStorage";
-import type { AffectedParts } from "../api";
+import type { AffectedParts, LineStatus, TimeResolution } from "../api";
+
+/** What `/time/resolve` makes of "this shift" — the phrase the form opens on. */
+const RESOLUTION: TimeResolution = {
+  expression: "this shift",
+  window: { from_ts: "2026-09-12T04:00:00Z", to_ts: "2026-09-12T12:00:00Z" },
+  label: "early shift 2026-09-12 06:00 – 2026-09-12 14:00 Europe/Berlin",
+  closed: false,
+  now: "2026-09-12T09:00:00Z",
+};
+
+/** A line whose simulated clock is **ahead** of the wall clock, which §5.3 reports as a
+ * negative staleness rather than clamping it away. */
+const LINE_STATUS: LineStatus = {
+  as_of: "2026-09-12T09:00:00Z",
+  latest_data_at: "2026-09-12T10:00:00Z",
+  staleness_seconds: -3600,
+  live: true,
+  live_within_seconds: 120,
+  stations: [],
+  buffers: [],
+  active_alarms: [],
+  last_part_out: null,
+};
 
 const AFFECTED: AffectedParts = {
-  window: { from_ts: "2026-09-12T01:00:00Z", to_ts: "2026-09-12T02:00:00Z" },
+  window: RESOLUTION.window,
   criteria: {
     station: null,
     carrier: null,
@@ -59,15 +87,54 @@ const CAPPED: AffectedParts = {
 /** Every blob the view handed to `createObjectURL`, in order. */
 let exported: Blob[] = [];
 
-function stub(body: unknown, status = 200): ReturnType<typeof vi.fn> {
-  const fetchMock = vi.fn(() =>
-    Promise.resolve(
-      new Response(JSON.stringify(body), {
-        status,
-        headers: { "Content-Type": "application/json" },
-      }),
-    ),
-  );
+function json(body: unknown, status: number): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
+/** The three endpoints this view reads, answered by URL.
+ *
+ * One mock returning one body for every request would let a test pass with the window read
+ * from the wrong response, which is the failure this file exists to catch.
+ */
+function stub(
+  options: {
+    affected?: unknown;
+    affectedStatus?: number;
+    /** Expressions `/time/resolve` refuses, as the real endpoint does — with the list of
+     * the ones it understands, which is the half a reader can act on. */
+    refuses?: string[];
+  } = {},
+): ReturnType<typeof vi.fn> {
+  const refuses = options.refuses ?? [];
+  const fetchMock = vi.fn((input: unknown) => {
+    const url = String(input);
+    if (url.includes("/time/resolve")) {
+      const expression =
+        new URL(url, "http://localhost").searchParams.get("expression") ?? "";
+      return Promise.resolve(
+        refuses.includes(expression)
+          ? json(
+              {
+                detail: {
+                  message: `no understood time expression matches '${expression}'`,
+                  understood: ["last night", "last shift", "this shift"],
+                },
+              },
+              422,
+            )
+          : json({ ...RESOLUTION, expression }, 200),
+      );
+    }
+    if (url.includes("/line/status")) {
+      return Promise.resolve(json(LINE_STATUS, 200));
+    }
+    return Promise.resolve(
+      json(options.affected ?? AFFECTED, options.affectedStatus ?? 200),
+    );
+  });
   vi.stubGlobal("fetch", fetchMock);
   return fetchMock;
 }
@@ -82,13 +149,14 @@ function containment() {
   );
 }
 
-function ask(criteria: Record<string, string> = {}): void {
-  fireEvent.change(screen.getByLabelText("From, UTC"), {
-    target: { value: "2026-09-12T01:00:00Z" },
-  });
-  fireEvent.change(screen.getByLabelText("To, UTC"), {
-    target: { value: "2026-09-12T02:00:00Z" },
-  });
+/** Which URLs the view fetched, in order. */
+function requested(fetchMock: ReturnType<typeof vi.fn>): string[] {
+  return fetchMock.mock.calls.map((call) => String(call[0]));
+}
+
+/** Wait for the service's window to reach the form, then ask over it. */
+async function ask(criteria: Record<string, string> = {}): Promise<void> {
+  await screen.findByDisplayValue(RESOLUTION.window.from_ts);
   for (const [label, value] of Object.entries(criteria)) {
     fireEvent.change(screen.getByLabelText(label), { target: { value } });
   }
@@ -117,6 +185,11 @@ function serialsIn(csv: string): string[] {
 }
 
 beforeEach(() => {
+  // Only `Date` is faked. Faking the timers as well would stop `findBy*` resolving, and the
+  // clock is the only thing these tests need to lie about: every window below must come
+  // from a service even though this browser believes it is a different month entirely.
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-11-01T23:17:00Z"));
   window.localStorage.setItem(TOKEN_STORAGE_KEY, "dev-token-123");
   exported = [];
   URL.createObjectURL = vi.fn((blob: Blob) => {
@@ -127,29 +200,133 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
   window.localStorage.clear();
 });
 
-test("no window is searched until one is given", () => {
-  const fetchMock = stub(AFFECTED);
+test("the default window is the service's and not this browser's clock", async () => {
+  // The finding this view was reopened for: an operator had to know an instant before they
+  // could ask the question. The fix must not be the other failure — a "last 24 hours" off
+  // `Date.now()`, which looks sensible and answers over the wrong interval, because all
+  // analysis reads the line's simulated clock rather than this device's.
+  const fetchMock = stub();
   containment();
 
   expect(
-    screen.getByRole("button", { name: "Find the affected set" }),
-  ).toBeDisabled();
-  // And the screen says why there is no default rather than silently having none: the
-  // clock every analysis reads is the line's simulated one, not this browser's.
-  expect(screen.getByText(/not pre-filled/)).toBeInTheDocument();
-  expect(fetchMock).not.toHaveBeenCalled();
+    await screen.findByDisplayValue(RESOLUTION.window.from_ts),
+  ).toBeInTheDocument();
+  expect(screen.getByDisplayValue(RESOLUTION.window.to_ts)).toBeInTheDocument();
+
+  // The system clock here says November. Nothing on the screen does.
+  expect(new Date().getUTCMonth()).toBe(10);
+  expect(screen.queryByDisplayValue(/2026-11/)).toBeNull();
+
+  expect(
+    requested(fetchMock).some((url) =>
+      url.includes("/time/resolve?expression=this+shift"),
+    ),
+  ).toBe(true);
+});
+
+test("the window in force says which interval it is, and that it is still open", async () => {
+  // §7.2's containment set is acted on away from this screen, so its interval has to be
+  // readable without opening the form. And a window still being written to has to say so:
+  // the same question asked an hour later answers over more parts.
+  stub();
+  containment();
+
+  await screen.findByDisplayValue(RESOLUTION.window.from_ts);
+  const inForce = screen.getByTestId("window-in-force");
+  expect(inForce).toHaveTextContent(RESOLUTION.window.from_ts);
+  expect(inForce).toHaveTextContent(RESOLUTION.window.to_ts);
+  expect(inForce).toHaveTextContent("early shift");
+  expect(inForce).toHaveTextContent(/still being written to at 2026-09-12/);
+});
+
+test("where the line's own clock has reached is on screen beside the window", async () => {
+  // §5.3 allows simulated time to sit *ahead* of the wall clock and reports the negative
+  // staleness rather than clamping it. A screen that showed "-3600 s" or hid the sign would
+  // leave a reader assuming the calendar and the data agree.
+  stub();
+  containment();
+
+  const clock = await screen.findByTestId("line-clock");
+  expect(clock).toHaveTextContent("2026-09-12T10:00:00Z");
+  expect(clock).toHaveTextContent(/3600 s ahead of/);
+  expect(clock).toHaveTextContent(/simulated time is running ahead/);
+});
+
+test("nothing is searched until the question is asked", async () => {
+  // The default is for the *form*. A containment query that ran on arrival would put a set
+  // of parts on screen that nobody asked about, under a window nobody had read yet.
+  const fetchMock = stub();
+  containment();
+
+  await screen.findByDisplayValue(RESOLUTION.window.from_ts);
+  expect(
+    requested(fetchMock).some((url) => url.includes("/parts/affected")),
+  ).toBe(false);
+  expect(
+    screen.getByText(/Nothing is read until the question is asked/),
+  ).toBeInTheDocument();
+});
+
+test("a refused phrase says what would have been accepted, and keeps the window", async () => {
+  // **Never a guess.** `/time/resolve` answers an expression it does not understand with the
+  // list of ones it does, precisely so the caller can try something real; collapsing that
+  // into "422" would throw away the half of the refusal a reader needs. And the refusal must
+  // not empty the window they already had.
+  stub({ refuses: ["penultimate"] });
+  containment();
+  await screen.findByDisplayValue(RESOLUTION.window.from_ts);
+
+  fireEvent.change(
+    screen.getByLabelText("Another phrase the calendar understands"),
+    { target: { value: "penultimate" } },
+  );
+  fireEvent.click(screen.getByRole("button", { name: "Resolve" }));
+
+  const refusal = await screen.findByTestId("shift-refusal");
+  expect(refusal).toHaveTextContent("penultimate");
+  expect(refusal).toHaveTextContent("last night");
+  expect(
+    screen.getByDisplayValue(RESOLUTION.window.from_ts),
+  ).toBeInTheDocument();
+});
+
+test("a window typed by hand is not given the calendar's name for another one", async () => {
+  // The label is a claim about *which* window. Left standing over instants somebody has
+  // since edited it would name an interval nothing on the screen is asking about.
+  stub();
+  containment();
+  await screen.findByDisplayValue(RESOLUTION.window.from_ts);
+  expect(screen.getByRole("button", { name: "this shift" })).toHaveAttribute(
+    "aria-pressed",
+    "true",
+  );
+
+  fireEvent.change(screen.getByLabelText("From, UTC"), {
+    target: { value: "2026-09-12T05:00:00Z" },
+  });
+
+  const inForce = screen.getByTestId("window-in-force");
+  expect(inForce).not.toHaveTextContent("early shift");
+  expect(inForce).toHaveTextContent(/typed by hand/);
+  // And the chip goes with it: a phrase left marked would say the form is asking about the
+  // shift when it is asking about something else.
+  expect(screen.getByRole("button", { name: "this shift" })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
 });
 
 test("the affected set is shown split by where each part went", async () => {
   // §5.3's split is the whole reason `/parts/affected` exists: the shipped ones are what
   // somebody has to act on tonight, and a total would bury them.
-  stub(AFFECTED);
+  stub();
   containment();
-  ask({ "Lot code": "L-4471" });
+  await ask({ "Lot code": "L-4471" });
 
   expect(await screen.findByText(/5 assemblies in all/)).toBeInTheDocument();
   expect(screen.getByText(/Rejected/)).toBeInTheDocument();
@@ -162,9 +339,9 @@ test("the affected set is shown split by where each part went", async () => {
 });
 
 test("the export contains exactly the rows the view showed, and its count matches", async () => {
-  stub(AFFECTED);
+  stub();
   containment();
-  ask();
+  await ask();
 
   const csv = await exportedCsv();
   const inFile = serialsIn(csv);
@@ -190,12 +367,24 @@ test("the export contains exactly the rows the view showed, and its count matche
   ).toHaveAttribute("download", "containment-5-of-5-parts.csv");
 });
 
+test("the exported file names the shift it was taken over", async () => {
+  // The file is the copy acted on away from the screen that produced it, and "the early
+  // shift" is how the person holding it will describe its interval to the next person.
+  stub();
+  containment();
+  await ask();
+
+  expect(await exportedCsv()).toContain(
+    "# window: 2026-09-12T04:00:00Z to 2026-09-12T12:00:00Z — early shift",
+  );
+});
+
 test("an export of a capped list says it is shorter than the count", async () => {
   // `count` is exact and `serials` is capped. A file holding one of 278 shipped parts is a
   // true answer; a file that let itself be read as all 278 is the failure that matters here.
-  stub(CAPPED);
+  stub({ affected: CAPPED });
   containment();
-  ask();
+  await ask();
 
   const csv = await exportedCsv();
   expect(serialsIn(csv)).toHaveLength(4);
@@ -217,16 +406,18 @@ test("an empty scope exports a file that says it is empty", async () => {
   // An empty scope is a real answer — criteria that matched nothing — and it is the case
   // where a bare column header would read as a broken export rather than as a result.
   stub({
-    ...AFFECTED,
-    parts: {
-      total: 0,
-      rejected: { count: 0, serials: [], truncated: false },
-      shipped: { count: 0, serials: [], truncated: false },
-      on_the_line: { count: 0, serials: [], truncated: false },
+    affected: {
+      ...AFFECTED,
+      parts: {
+        total: 0,
+        rejected: { count: 0, serials: [], truncated: false },
+        shipped: { count: 0, serials: [], truncated: false },
+        on_the_line: { count: 0, serials: [], truncated: false },
+      },
     },
   });
   containment();
-  ask();
+  await ask();
 
   const csv = await exportedCsv();
   expect(serialsIn(csv)).toEqual([]);
@@ -240,9 +431,12 @@ test("criteria the service refuses are reported in its own words", async () => {
   // that matched nothing — because they call for three different next steps (§6.5). A
   // reader told only "the request failed" retries a question that can never be answered in
   // that shape.
-  stub({ detail: "station S2 records no instant against a part" }, 422);
+  stub({
+    affected: { detail: "station S2 records no instant against a part" },
+    affectedStatus: 422,
+  });
   containment();
-  ask({ Station: "S2" });
+  await ask({ Station: "S2" });
 
   expect(
     await screen.findByText(/records no instant against a part/),

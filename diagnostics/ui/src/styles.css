@@ -1143,3 +1143,69 @@ button:disabled {
   font-size: var(--text-sm);
   margin-top: var(--space-5);
 }
+
+/* --- The window, resolved against the shift calendar ---------------------------------- */
+
+.shift {
+  display: grid;
+  gap: var(--row-gap);
+  margin: var(--space-4) 0;
+}
+
+.shift__lede {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin: 0;
+  max-width: var(--measure-prose);
+}
+
+/* The common phrases as one row of chips. They wrap rather than scroll: six short words
+   fit a phone in two rows, and a sideways-scrolling row hides the one nobody thought to
+   look for. */
+.shift__phrases {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.shift__phrase {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.shift__phrase label {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  width: 100%;
+}
+
+/* As in the timeline's picker: the global rule would give this input the whole flex row,
+   and it sits beside its button instead. */
+.shift__phrase input {
+  flex: 1 1 12rem;
+  max-width: var(--measure-field);
+  width: auto;
+}
+
+/* The interval in force, and how far the line's clock has run. Marked with the same bar
+   the state language gives a fact that changes how the rest of the screen reads — which
+   window a containment set is for is exactly such a fact. */
+.shift__inforce,
+.shift__clock {
+  border-inline-start: var(--border-width-marker) solid var(--border-strong);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin: 0;
+  max-width: var(--measure-prose);
+  padding-inline-start: var(--space-3);
+}
+
+.shift__phrases button[aria-pressed="true"] {
+  background: var(--accent-tint);
+  border-color: var(--accent);
+}
