@@ -1,8 +1,12 @@
-/** The two services, as the browser sees them.
+/** The services, as the browser sees them.
  *
  * Types come from `contracts/` via `pnpm generate` — never hand-written, because a
  * hand-written type asserts the shape of someone else's response with full confidence and
- * no way to be wrong out loud.
+ * no way to be wrong out loud. The issuer's two fields below are the exception and are
+ * hand-written on purpose: there is no entry for the development issuer in `contracts/`,
+ * because it is the one service a production deployment replaces rather than reimplements
+ * (§10.5), and generating a contract for something meant to be thrown away would assert
+ * that it is part of the system's surface.
  */
 import type { components } from "./generated/analysis";
 import type { MachineAgentAnswerObject63 } from "./generated/answer";
@@ -13,6 +17,9 @@ export type Part = components["schemas"]["Part"];
 /** Same-origin, and forwarded by the dev server or nginx. See vite.config.ts. */
 const AGENT = "/api/agent";
 const ANALYSIS = "/api/analysis";
+/** The development issuer publishes no port of its own — it sits on the internal diag-net
+ * and nginx forwards to it there — so this origin is the only way a browser reaches it. */
+const ISSUER = "/api/issuer";
 
 /** No token presented, or the one presented is invalid, expired, or for another issuer.
  * Every diagnostics endpoint answers this the same way (§10.5) and says nothing more --
@@ -31,7 +38,11 @@ export class ForbiddenError extends Error {}
  */
 export function describeFailure(reason: unknown): string {
   if (reason instanceof UnauthorizedError) {
-    return "Not signed in. Paste a token above and try again.";
+    // Reached while a token *is* held — the login screen stands in front of everything
+    // else — so this is the server refusing the one presented: expired, or minted by an
+    // issuer this deployment does not trust. Signing out and back in is the fix for both,
+    // and which of the two it was stays server-side (§10.5).
+    return "Not signed in: this token was refused. Sign out and sign in again.";
   }
   if (reason instanceof ForbiddenError) {
     return reason.message;
@@ -69,6 +80,35 @@ async function refuseIfDenied(response: Response): Promise<void> {
   throw response.status === 401
     ? new UnauthorizedError(message)
     : new ForbiddenError(message);
+}
+
+/** The login: credentials to the development issuer, a bearer token back.
+ *
+ * The only request in this file that carries no token, and the only one that may: it is
+ * where a token comes from. Everything else in the application is behind the screen that
+ * calls this.
+ *
+ * A refusal throws with **the issuer's own words**, not with a sentence invented here. Its
+ * two refusals say different things on purpose — "these credentials are not valid" tells the
+ * reader to retype, and the 503 that names `ISSUER_PRIVATE_KEY` tells them nothing they type
+ * will work until somebody configures the stack — and rewriting either into one client-side
+ * "sign-in failed" would throw the difference away. Note the credentials refusal is
+ * deliberately uniform on the server: it never says which half was wrong (§10.5).
+ */
+export async function signIn(
+  username: string,
+  password: string,
+): Promise<string> {
+  const response = await fetch(`${ISSUER}/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!response.ok) {
+    throw new Error(await detailOf(response));
+  }
+  const body = (await response.json()) as { access_token: string };
+  return body.access_token;
 }
 
 export async function fetchPart(

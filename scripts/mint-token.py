@@ -1,23 +1,33 @@
-"""The development issuer: one keypair on disk and a token minted from it.
+"""The development issuer's keypair on disk, and tokens minted from it on the command line.
 
-**It stands where Zitadel will.** §10.5's identity story is one OIDC issuer that the
-application is a client of; M5 was ruled slim and does not build that issuer, so this script
-occupies its place -- it is not a service, it is not in `diagnostics/compose.yml`, and it
-must not become a fourth container. What the milestone proves is the *validation* side:
-`diagnostics/auth` checks a signature, an audience and an issuer, and it does not care
-whether the thing that signed was a script or a broker.
+**This file's own docstring used to say the opposite, and the reversal is deliberate.** Until
+M6 it read: *"it is not a service, it is not in `diagnostics/compose.yml`, and it must not
+become a fourth container."* That was M5's constraint and it was right for M5 -- the
+milestone was ruled slim and what it set out to prove was the *validation* side, which
+`diagnostics/auth` proves without caring whether a script or a broker signed.
 
-What this deliberately does not do is what an issuer does: no login, no session, no refresh,
-no user store, no revocation, no JWKS endpoint. A token it mints is good until it expires.
+The human ruling of 2026-09-19 closes that, because M6's first line is a login and a
+paste-a-token field is not one. **The development issuer is now a service**:
+`diagnostics/issuer`, joined to `diag-net`, serving a token endpoint and a JWKS document, and
+it is what the UI's login screen posts credentials to. It still stands where Zitadel will
+(§10.5) and Zitadel still replaces it by configuration.
+
+What is left here is the half a service cannot do from inside a container: **it owns the
+keypair.** `.dev-issuer/` is gitignored, generated on first use, and is where both halves
+come from -- the public one configured into the four validators as `AUTH_PUBLIC_KEY`, the
+private one into the issuer as `ISSUER_PRIVATE_KEY`. It also stays the fastest way to mint a
+token for a `curl`, which is what every demo target in the Makefile does with it.
 
     # once -- writes .dev-issuer/, which is gitignored
     cd diagnostics && uv run --frozen python ../scripts/mint-token.py --public-key
+    cd diagnostics && uv run --frozen python ../scripts/mint-token.py --private-key
 
     # then, per token
     cd diagnostics && uv run --frozen python ../scripts/mint-token.py --role admin
 
-Give the services the public key it prints as `AUTH_PUBLIC_KEY` and send the token as
-`Authorization: Bearer <token>`.
+Send the token as `Authorization: Bearer <token>`. What this still does not do is what the
+service does not do either: no session, no refresh, no revocation. A token is good until it
+expires.
 """
 
 from __future__ import annotations
@@ -98,11 +108,25 @@ def main() -> None:
         action="store_true",
         help="print the public key to configure as AUTH_PUBLIC_KEY, and exit",
     )
+    parser.add_argument(
+        "--private-key",
+        action="store_true",
+        help="print the signing key to configure as ISSUER_PRIVATE_KEY, and exit",
+    )
     arguments = parser.parse_args()
 
     private, public = keypair()
     if arguments.public_key:
         print(public, end="")
+        return
+    # Printing a private key is what it looks like, and it is deliberate: this is a
+    # development keypair that this script generated, `.dev-issuer/` is gitignored twice
+    # over, and the alternative -- bind-mounting the directory into the issuer container --
+    # would put a host path in `diagnostics/compose.yml` and fail `docker compose up` before
+    # the issuer exists to say what is missing. When there is a real key to protect there is
+    # a real issuer holding it, and this flag goes with the service it feeds.
+    if arguments.private_key:
+        print(private, end="")
         return
 
     issued = datetime.now(UTC)

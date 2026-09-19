@@ -178,15 +178,72 @@ a {
   padding: 0 var(--space-2);
 }
 
-.token-field {
-  display: grid;
+/* Secondary next to the accent-filled primary button the global rule defines: leaving the
+   line and asking a question are not decisions of the same weight, and the bar would read
+   as though signing out were the thing to do. */
+.identity__signout {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text-muted);
   font-size: var(--text-sm);
-  gap: var(--space-1);
+}
+
+.identity__signout:hover {
+  background: var(--surface-sunken);
+  color: var(--text);
+}
+
+/* --- The login ---------------------------------------------------------------------- */
+
+.login {
+  margin-inline: auto;
+  max-width: var(--measure-prose);
+  padding: var(--space-6) var(--space-4);
+}
+
+.login__title {
+  font-size: var(--text-xl);
+  line-height: var(--leading-tight);
+  margin: 0;
+}
+
+.login__claim {
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin: var(--space-1) 0 var(--space-6);
+}
+
+.login__form {
+  display: grid;
+  gap: var(--row-gap);
+  /* A username and a password are short values; a paragraph-width box for either invites
+     the reader to expect a paragraph. `--measure-field` is the same cap the token field
+     this replaces used, and it is a maximum, so a narrow viewport still gets the width it
+     has. */
   max-width: var(--measure-field);
 }
 
-.token-field__status {
+.login__form label {
   color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+/* The claim the milestone's honesty rests on, given the weight of a standing notice rather
+   than of fine print: the marker bar is the same one the state language uses for a fact
+   that changes how the rest of the screen should be read. */
+.login__development {
+  border-inline-start: var(--border-width-marker) solid var(--border-strong);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  margin-top: var(--space-7);
+  max-width: var(--measure-prose);
+  padding-inline-start: var(--space-3);
+}
+
+.login__development-title {
+  color: var(--text);
+  font-size: var(--text-md);
+  margin: 0 0 var(--space-2);
 }
 
 /* --- The state language ------------------------------------------------------------- */

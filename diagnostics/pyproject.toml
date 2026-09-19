@@ -5,10 +5,16 @@
 # depend on either of the others: the analysis service serves §5.3's GET /knowledge/{id}
 # from it, the agent routes from it, and §6.11's MCP server exposes the same documents as
 # resources. A copy of the parser in each would be three readings of one vocabulary.
-members = ["analysis", "agent", "auth", "knowledge", "mcp"]
+members = ["analysis", "agent", "auth", "issuer", "knowledge", "mcp"]
 # `auth` is the second package extracted for the same reason and with the same three
 # consumers: §10.5's token rules, in one place, because the one domain where nobody should
 # own more code than they must is the one that decides who gets in.
+#
+# `issuer` is the other side of that door and the newest member: M5 minted tokens from a
+# script and the human ruling of 2026-09-19 made it a service, because M6's first line is a
+# login and a paste-a-token field is not one. It depends on `auth` for the claim shape and
+# on nothing else here; nothing depends on it, which is what keeps it replaceable by Zitadel
+# through configuration alone.
 
 [dependency-groups]
 dev = ["ruff==0.16.7", "mypy==2.3.1"]

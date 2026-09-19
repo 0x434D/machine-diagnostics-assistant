@@ -67,10 +67,16 @@ cannot see the ground-truth log. Nothing in it diagnoses anything; that is M3.
 back, then takes the **plant** away and asks the same question again, which is the step the
 architecture exists for.
 
-While either runs, the chat box is at `http://localhost:5173`. Ask *how many parts were
-rejected in the last hour, and what were the defects?* and click the citation chip under the
-answer: it opens the part it names — serial, when it was created, the verdict with every
-class the model scored, and the inspection image.
+While either runs, the chat box is at `http://localhost:5173`. **It asks you to sign in
+first**, and the screen tells you what it is signing you in to: a development issuer that
+holds its two accounts in `diagnostics/compose.yml` and signs its own tokens. They are
+`operator-7` / `operator-development` (§10.5's `user` role) and `quality-lead` /
+`quality-lead-development` (`admin`). Production configuration points the stack at a real
+identity provider and replaces that screen; nothing else in the application changes.
+
+Then ask *how many parts were rejected in the last hour, and what were the defects?* and click
+the citation chip under the answer: it opens the part it names — serial, when it was created,
+the verdict with every class the model scored, and the inspection image.
 
 Every published port in every demo is read from the environment, so a host that already has
 something on 8080 and 8000 runs `GATEWAY_PORT=18080 ANALYSIS_PORT=18000 make m2c-demo` and

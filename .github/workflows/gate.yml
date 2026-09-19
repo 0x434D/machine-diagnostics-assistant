@@ -49,6 +49,7 @@ jobs:
               - 'diagnostics/analysis/**'
               - 'diagnostics/agent/**'
               - 'diagnostics/auth/**'
+              - 'diagnostics/issuer/**'
               - 'diagnostics/knowledge/**'
               - 'diagnostics/mcp/**'
               - 'diagnostics/pyproject.toml'

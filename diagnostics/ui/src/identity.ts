@@ -7,9 +7,9 @@
  * exists so that a reader can see which identity their requests are going out under and
  * notice when it is the wrong one.
  *
- * M6 Task 1 replaces the pasted token with a real login against the development issuer.
- * The shell's slot for an identity does not change when it does; only where the token
- * comes from.
+ * The token now comes from a login against the development issuer (`Login.tsx`) rather than
+ * from a paste. Nothing in this file changed when it did, which was the point: where a token
+ * comes from and what it says are two questions, and only the first one moved.
  */
 
 export interface Identity {
@@ -26,8 +26,10 @@ export interface Identity {
  * on the server because an issuer decides the claim shape — Zitadel nests it under a
  * namespaced key — and it is a constant here because there is nothing in this bundle that
  * could be told the answer: the value would have to be baked in at build time, and a knob
- * no deployment can turn is worse than a stated assumption. Task 1's issuer service is
- * where the UI first has somewhere to ask.
+ * no deployment can turn is worse than a stated assumption. The issuer service does have
+ * somewhere it could be asked — its key set is served, and a claim-shape document could join
+ * it — but nothing reads either today, and inventing the endpoint before there is a reader
+ * would be a second place for this constant to be wrong.
  */
 const ROLE_CLAIM = "role";
 
@@ -52,9 +54,9 @@ export function identityFrom(token: string | null): Identity | null {
  *
  * The `catch` here is a recovery and not a swallow: `atob` and `JSON.parse` are the two
  * calls that throw on a string which is not a base64url-encoded JSON object, and a string
- * that is not a JWT is precisely what lands in the M5 token field when someone pastes the
- * wrong thing. Null is rendered as "identity unreadable" — a branch the shell draws, not
- * a blank where a name should be.
+ * that is not a JWT is precisely what a stale `localStorage` entry from an older build, or
+ * a hand-edited one, contains. Null is rendered as "identity unreadable" — a branch the
+ * shell draws, not a blank where a name should be.
  */
 function decodeClaims(payload: string): Record<string, unknown> | null {
   let parsed: unknown;

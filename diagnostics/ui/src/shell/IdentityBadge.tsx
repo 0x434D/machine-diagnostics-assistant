@@ -6,14 +6,14 @@
  * shell rather than on a settings page is the point: the answer to "why does this return
  * nothing" is on screen while the nothing is.
  *
- * The token field below it is M5's stand-in and is deliberately untouched here. Task 1
- * deletes it and puts a real login in this same slot.
+ * Sign-out is here for the same reason it is not on a settings page: the identity and the
+ * way to leave it belong together, and a reader who has noticed they are the wrong person
+ * should not have to go looking.
  */
 import { useAuth } from "../AuthContext";
-import { TokenField } from "../TokenField";
 
 export function IdentityBadge() {
-  const { token, identity } = useAuth();
+  const { token, identity, setToken } = useAuth();
 
   return (
     <div className="identity">
@@ -33,7 +33,20 @@ export function IdentityBadge() {
           <span className="identity__subject">not signed in</span>
         )}
       </p>
-      <TokenField />
+      <button
+        type="button"
+        className="identity__signout"
+        onClick={() => {
+          // The whole of signing out: the token is the only thing this browser holds. It
+          // leaves `localStorage` with it (`tokenStorage.saveToken`), and there is no
+          // server-side session to end — the development issuer keeps none, and neither
+          // will the real one as far as this application is concerned (§10.5: no
+          // revocation, a token is good until it expires).
+          setToken(null);
+        }}
+      >
+        Sign out
+      </button>
     </div>
   );
 }

@@ -36,7 +36,7 @@ targets=()
 #
 # contracts/ generates types for the Python services, the UI and the C# gateway's own
 # contract test, so it triggers all three.
-grep -qE '^(plant/|diagnostics/(analysis|agent|auth|knowledge|mcp)/|diagnostics/(pyproject\.toml|uv\.lock|\.python-version)|contracts/|harness/|knowledge/|measurements/|scripts/|ruff\.toml|mypy\.ini)' <<<"$staged" \
+grep -qE '^(plant/|diagnostics/(analysis|agent|auth|issuer|knowledge|mcp)/|diagnostics/(pyproject\.toml|uv\.lock|\.python-version)|contracts/|harness/|knowledge/|measurements/|scripts/|ruff\.toml|mypy\.ini)' <<<"$staged" \
   && targets+=(check-python)
 grep -qE '^(diagnostics/gateway/|contracts/|Directory\.(Build|Packages)\.props|BannedSymbols\.txt|NuGet\.config|global\.json)' <<<"$staged" \
   && targets+=(check-dotnet)

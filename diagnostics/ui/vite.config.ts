@@ -15,6 +15,14 @@ const proxy = {
     rewrite: (path: string) => path.replace(/^\/api\/analysis/, ""),
     changeOrigin: true,
   },
+  // The development issuer. It publishes no port in the container stack — it is on the
+  // internal diag-net and nginx forwards to it there — so this default is for an issuer run
+  // from the checkout: `uv run --package issuer uvicorn issuer.app:app --port 8003`.
+  "/api/issuer": {
+    target: process.env.VITE_ISSUER_URL ?? "http://localhost:8003",
+    rewrite: (path: string) => path.replace(/^\/api\/issuer/, ""),
+    changeOrigin: true,
+  },
 };
 
 export default defineConfig({

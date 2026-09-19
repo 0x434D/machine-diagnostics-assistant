@@ -23,9 +23,12 @@ x-runtime: &runtime
 # **The public key has no default and that is deliberate.** `auth.Settings` fails closed --
 # a service that was never given a key refuses everything -- and a default here would be
 # either a committed key (a credential in the repository) or a placeholder that turns the
-# failure into a puzzle. M5 is slim and there is no issuer container: `scripts/mint-token.py`
-# is the development issuer, `--public-key` prints what goes here, and the keypair it writes
-# is gitignored. Put AUTH_PUBLIC_KEY in `diagnostics/.env`, which is gitignored too.
+# failure into a puzzle. There *is* an issuer container since M6 (`issuer`, below), and the
+# validators still read their key from here rather than fetching its JWKS document -- see
+# that service's comment for why the half-change was not made. `scripts/mint-token.py` owns
+# the keypair: `--public-key` prints what goes here, `--private-key` what goes into the
+# issuer, and the pair it writes is gitignored. Put AUTH_PUBLIC_KEY in `diagnostics/.env`,
+# which is gitignored too.
 #
 # Nothing in this block is shared with the plant stack, and nothing in it ever may be: the
 # plant's one privileged action is gated by a secret in *its* `.env`, and two identity
@@ -247,6 +250,58 @@ services:
     # it is the one claim the whole architecture exists to support.
     networks: [diag-net, edge-net]
 
+  # §10.5's issuer, in development form. **A service since M6, and this file said the
+  # opposite until then**: M5 was ruled slim and `scripts/mint-token.py` carried the note
+  # that it must not become a fourth container. The human ruling of 2026-09-19 reverses it,
+  # because M6's first line is a login and a field you paste a token into is not one. Zitadel
+  # replaces this by configuration (§10.5) and this block goes with it.
+  #
+  # **The validators are not pointed at its JWKS document.** It serves one -- that is what an
+  # issuer offers and what `auth.config` names as Zitadel's arrival point -- but the analysis
+  # service, the agent, the MCP server and the gateway all still verify against the
+  # configured AUTH_PUBLIC_KEY above. Moving four validators onto a fetched key set brings a
+  # startup order, a cache and a failure mode with it; doing half of it would leave the stack
+  # with two answers to "which key is trusted", which is worse than either answer alone.
+  issuer:
+    <<: *runtime
+    build:
+      # The repository root, like the other three Python services: one Dockerfile per stack,
+      # parameterised on the package. This service reads neither `knowledge/` nor
+      # `contracts/`, but a second Dockerfile to omit them would be a second image shape.
+      context: ..
+      dockerfile: diagnostics/Dockerfile
+      args: { PACKAGE: issuer }
+    command: ["uvicorn", "issuer.app:app", "--host", "0.0.0.0", "--port", "8003"]
+    environment:
+      # The same anchor every validator reads, and the reason it is shared rather than
+      # restated: this service mints into the audience, issuer and role claim they check. A
+      # second copy here is how an issuer starts minting tokens its own stack refuses.
+      # AUTH_PUBLIC_KEY arrives with it and is ignored -- the public half is derived from the
+      # signing key below, so the key set it serves cannot disagree with what signed.
+      <<: *auth
+      # No default, the same way AUTH_PUBLIC_KEY has none and for the same reason: a
+      # committed signing key is a credential in the repository that mints admin tokens for
+      # every checkout of it. Empty and this issuer mints nothing and serves an empty key
+      # set. `make m1-demo` and the other demo targets set it from the same keypair they
+      # configure AUTH_PUBLIC_KEY from; for a stack you bring up yourself, see .env.example.
+      ISSUER_PRIVATE_KEY: "${ISSUER_PRIVATE_KEY:-}"
+      # Two obviously-development accounts, and the passwords say so in the value. There is
+      # no user store and no registration (§10.5), so the accounts are configuration --
+      # which is also what makes swapping in a real issuer a configuration change. Roles are
+      # exactly `admin` and `user`; a third value fails at startup rather than minting
+      # tokens every service refuses.
+      ISSUER_USERS: '${ISSUER_USERS:-{"operator-7":{"password":"operator-development","role":"user"},"quality-lead":{"password":"quality-lead-development","role":"admin"}}}'
+      # Every number is configuration (§10.3). An hour is long enough that a question and its
+      # follow-ups fit inside one token and short enough that a leaked one expires.
+      ISSUER_TOKEN_LIFETIME_MINUTES: "${ISSUER_TOKEN_LIFETIME_MINUTES:-60}"
+    # **diag-net and nothing else.** It publishes no port -- diag-net is internal, so it
+    # cannot -- and the browser reaches it only through the UI's own origin, which is why the
+    # UI joins diag-net below. It must never reach field-net or anything of the plant's: the
+    # plant authenticates separately and the two identity mechanisms stay disjoint by
+    # construction (§10.5, CLAUDE.md's fifth invariant,
+    # plant/simulator/tests/test_identity_boundary.py).
+    networks: [diag-net]
+
   ui:
     <<: *runtime
     build:
@@ -256,12 +311,18 @@ services:
     # nginx-unprivileged writes its temp paths under /tmp, which the shared block already
     # provides, and its pid to /tmp as well -- so read_only holds with no exceptions.
     user: "101:101"
-    depends_on: [agent, analysis]
+    depends_on: [agent, analysis, issuer]
     ports:
       - "127.0.0.1:${UI_PORT:-5173}:8080"
     # It proxies to the agent and the analysis service by name, and has never heard of
     # OPC UA. edge-net for both, and never field-net.
-    networks: [edge-net]
+    #
+    # **diag-net as well, since M6, and only to reach the issuer.** The issuer must not be
+    # published to the host, so the login form's POST has to arrive through this origin like
+    # every other request the browser makes -- which means nginx has to be on a network the
+    # issuer is on. The reach this grants is nginx's, not the browser's: `nginx.conf` serves
+    # three fixed proxy locations and no general one, so nothing here can address Postgres.
+    networks: [edge-net, diag-net]
 
 volumes:
   diagnostics-db:

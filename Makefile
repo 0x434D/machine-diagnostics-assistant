@@ -27,20 +27,23 @@ WARNASERROR := -warnaserror
 # --- The development issuer ----------------------------------------------------------------
 # §14 made every diagnostics endpoint refuse an unauthenticated request — the gateway's
 # /status and /reconcile, the agent's /ask, the analysis service's queries — and that includes
-# the calls the demo targets below make. M5 was ruled slim and builds no IdP, so
-# scripts/mint-token.py is the issuer: it keeps a gitignored keypair, generates it on first
-# use, prints the public key the services verify against, and mints the tokens to present.
+# the calls the demo targets below make. M6 made the development issuer a service
+# (diagnostics/issuer), but the keypair is still scripts/mint-token.py's: it is generated on
+# first use into a gitignored .dev-issuer/, and both halves are configured from here — the
+# public one into the four validators, the private one into the issuer container.
 #
 # Both of the two below are shell command substitutions embedded in recipes, NOT make
 # variables that $(shell ...) would expand. A $(shell ...) here runs on every invocation of
 # this file, so `make check` would mint a token it has no use for on every commit.
 MINT := cd $(CURDIR)/diagnostics && uv run --frozen python $(CURDIR)/scripts/mint-token.py
 
-# Configures the stack with the key the demo's own tokens are signed by, overriding anything
-# in diagnostics/.env or the shell. That override is the point rather than a rudeness: this
-# demo mints from the development issuer, so a stack pointed at any other key would refuse
-# every request it makes.
-DEV_PUBLIC_KEY = AUTH_PUBLIC_KEY="$$($(MINT) --public-key)"
+# Configures the stack with the keypair the demo's own tokens are signed by, overriding
+# anything in diagnostics/.env or the shell. That override is the point rather than a
+# rudeness: this demo mints from the development issuer, so a stack pointed at any other key
+# would refuse every request it makes — and the issuer container has to sign with the half
+# that matches, or a person logging in at the UI would be refused by every service while the
+# demo's own curl calls sailed through.
+DEV_ISSUER_KEYS = AUTH_PUBLIC_KEY="$$($(MINT) --public-key)" ISSUER_PRIVATE_KEY="$$($(MINT) --private-key)"
 
 # `user`, not `admin`. Every endpoint the demo calls is in §10.5's user column, and minting
 # the more privileged token would leave the demo unable to tell "open to an operator" from
@@ -204,6 +207,7 @@ lint-python: lock-check
 # in it, and a single run sees one name defined twice and stops before checking anything.
 	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini analysis
 	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini auth
+	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini issuer
 	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini agent
 	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini knowledge
 	cd diagnostics && uv run --frozen mypy --strict --config-file $(CURDIR)/mypy.ini mcp
@@ -237,7 +241,7 @@ m1-demo: preflight
 	@echo "== 2. a foreign client browses the address space"
 	$(MAKE) browse
 	@echo "== 3. diagnostics: connect, wait for the plant's phase, backfill, go live"
-	$(DEV_PUBLIC_KEY) docker compose -f diagnostics/compose.yml up -d --build
+	$(DEV_ISSUER_KEYS) docker compose -f diagnostics/compose.yml up -d --build
 	@until curl -sf $(BEARER) localhost:$${GATEWAY_PORT:-8080}/status | grep -q '"state":"live"'; do \
 	    curl -s $(BEARER) localhost:$${GATEWAY_PORT:-8080}/status; echo; sleep 5; done
 	@echo "== 4. ask, and open the citation"
@@ -435,7 +439,7 @@ m2c-demo: preflight
 	@echo "   with source=operator and no consequences: nobody wrote down what should follow"
 	@echo "   from a fault chosen at a keyboard."
 	@echo "== 4. diagnostics: topology, subscriptions, backfill, live"
-	$(DEV_PUBLIC_KEY) docker compose -f diagnostics/compose.yml up -d --build
+	$(DEV_ISSUER_KEYS) docker compose -f diagnostics/compose.yml up -d --build
 	@until curl -sf $(BEARER) localhost:$${GATEWAY_PORT:-8080}/status | grep -q '"state":"live"'; do \
 	    curl -s $(BEARER) localhost:$${GATEWAY_PORT:-8080}/status; echo; sleep 5; done
 	@echo "== 5. the consequences, out of §5.2's tables and nowhere else"
@@ -532,7 +536,7 @@ m2a-demo: preflight
 	@echo "== 3. a foreign client browses the address space, buffers and all"
 	$(MAKE) browse
 	@echo "== 4. diagnostics: discover the topology, subscribe to 25 streams, backfill, go live"
-	$(DEV_PUBLIC_KEY) docker compose -f diagnostics/compose.yml up -d --build
+	$(DEV_ISSUER_KEYS) docker compose -f diagnostics/compose.yml up -d --build
 	@until curl -sf $(BEARER) localhost:$${GATEWAY_PORT:-8080}/status | grep -q '"state":"live"'; do \
 	    curl -s $(BEARER) localhost:$${GATEWAY_PORT:-8080}/status; echo; sleep 5; done
 	@echo "== 5a. the one thing this stack can check about its own storage"
@@ -575,6 +579,7 @@ test-python: lock-check
 	$(call pytest-package,plant,simulator)
 	$(call pytest-package,plant,inspection)
 	$(call pytest-package,diagnostics,auth)
+	$(call pytest-package,diagnostics,issuer)
 	$(call pytest-package,diagnostics,knowledge)
 	$(call pytest-package,diagnostics,analysis)
 	$(call pytest-package,diagnostics,agent)
