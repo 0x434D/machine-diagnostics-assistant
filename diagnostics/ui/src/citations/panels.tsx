@@ -8,8 +8,6 @@
  * service says a thing is unknown, absent or incomplete, the panel says which of the three
  * — §4.4 and §6.5 both rest on those not collapsing into a blank.
  */
-import { Fragment } from "react";
-
 import {
   fetchAlarm,
   fetchComponentAssembly,
@@ -18,11 +16,11 @@ import {
   fetchPatterns,
   fetchSignalTrend,
   fetchStop,
-  type LotParts,
   type StopDetail,
 } from "../api";
 import type { CitationWindow } from "../generated/answer";
 import { StateBadge } from "../design/StateBadge";
+import { Outcomes } from "../parts/Outcomes";
 import { CitationPanel, NotInTheAnswer } from "./CitationPanel";
 import { PartLinks } from "./PartLinks";
 import { useResolution } from "./useResolution";
@@ -283,42 +281,6 @@ export function LotPanel({ lotCode }: { lotCode: string }) {
         </>
       )}
     </CitationPanel>
-  );
-}
-
-/** §5.3's split, and the reason `/parts/affected` exists: *"340 serials, 62 rejected, 278
- * shipped and need checking."* Collapsing the three into a total is what makes a
- * traceability answer useless, so they are never summed here. */
-function Outcomes({ parts }: { parts: LotParts["parts"] }) {
-  const groups = [
-    ["Rejected — already contained", parts.rejected],
-    ["Shipped — the ones someone has to act on", parts.shipped],
-    ["Still on the line — no disposition yet", parts.on_the_line],
-  ] as const;
-
-  return (
-    <>
-      <p className="evidence__note">{parts.total} assemblies in all.</p>
-      <dl>
-        {groups.map(([label, group]) => (
-          <Fragment key={label}>
-            <dt>{label}</dt>
-            <dd>
-              {group.count === 0 ? (
-                "none"
-              ) : (
-                <>
-                  {group.count}: <PartLinks serials={group.serials} />
-                  {group.truncated
-                    ? " …the service capped this list, so it is shorter than the count"
-                    : ""}
-                </>
-              )}
-            </dd>
-          </Fragment>
-        ))}
-      </dl>
-    </>
   );
 }
 
